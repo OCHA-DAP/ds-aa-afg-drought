@@ -1,0 +1,327 @@
+---
+title: "chirps vs oni"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(sf)
+library(ggiraph)
+library(glue)
+
+fps <- proj_paths()
+
+
+gdf_adm1_global <- sf::st_read(fps$ADM1_GAUL,
+                        "gaul1_asap")
+
+gdf_adm1 <-  gdf_adm1_global |> 
+  filter(name0=="Afghanistan")
+
+
+df_oni <- readr::read_table(fps$ONI_LINK) |> 
+  clean_names()
+
+  
+df_chirps <- read_csv(fps$ADM1_CHIRPS_MONTHLY) |> 
+  clean_names()
+  
+
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: true
+#| include: true
+#| eval: false
+
+# Here i interactively map and define groups for admin 1 regions to easy # visualizatons/plotting
+# this is a quick way i could quickly group them based on geography  -- i save the output w/ datapasta as a hard coded table to be joined to the chirps data. The hardcoded table is saved in the next chunk so that we can repeat the analysis/visualizations without this interactive step. Saving the interactive step as it's a useful/cool trick someone (maybe me!?) might like to borrow in the future.
+
+nw_grp <-mapedit::selectFeatures(x = gdf_adm1)
+sw_grp <-  mapedit::selectFeatures(x = gdf_adm1 |> 
+                                     filter(!name1 %in% nw_grp$name1))
+
+ne_grp <-  mapedit::selectFeatures(x = gdf_adm1 |> 
+                                     filter(!name1 %in% 
+                                              c(sw_grp$name1,nw_grp$name1)))
+central_grp <-  mapedit::selectFeatures(x = gdf_adm1 |> 
+                                     filter(!name1 %in% 
+                                              c(sw_grp$name1,
+                                                nw_grp$name1,
+                                                ne_grp$name1)))
+
+lst(nw_grp,sw_grp,ne_grp,central_grp) |> 
+  imap(\(gdft,nm_tmp){
+    gdft |> 
+      st_drop_geometry() |> 
+      select(name1) |> 
+      mutate(
+        grp = nm_tmp
+      )
+  }
+  ) |> 
+  list_rbind() |> 
+  datapasta::tribble_paste()
+```
+  
+```{r}
+#| echo: true
+#| eval: true
+
+# data pasta output from above
+
+adm1_grp_lookup<- tibble::tribble(
+           ~name1,          ~grp,
+          "Farah",      "nw_grp",
+          "Hirat",      "nw_grp",
+        "Badghis",      "nw_grp",
+         "Faryab",      "nw_grp",
+        "Jawzjan",      "nw_grp",
+          "Balkh",      "nw_grp",
+      "Sar-e-Pul",      "nw_grp",
+       "Samangan",      "nw_grp",
+           "Ghor",      "nw_grp",
+       "Kandahar",      "sw_grp",
+        "Hilmand",      "sw_grp",
+         "Nimroz",      "sw_grp",
+          "Zabul",      "sw_grp",
+       "Daykundi",      "sw_grp",
+        "Uruzgan",      "sw_grp",
+     "Badakhshan",      "ne_grp",
+         "Takhar",      "ne_grp",
+         "Kunduz",      "ne_grp",
+        "Baghlan",      "ne_grp",
+       "Nuristan",      "ne_grp",
+       "Panjsher",      "ne_grp",
+        "Paktika", "central_grp",
+         "Ghazni", "central_grp",
+          "Khost", "central_grp",
+         "Paktya", "central_grp",
+          "Logar", "central_grp",
+          "Kabul", "central_grp",
+         "Kapisa", "central_grp",
+        "Laghman", "central_grp",
+      "Nangarhar", "central_grp",
+          "Kunar", "central_grp",
+         "Wardak", "central_grp",
+         "Parwan", "central_grp",
+         "Bamyan", "central_grp"
+     )
+```
+
+```{r}
+
+df_oni <- df_oni |> 
+  mutate(
+    date= ym(paste0(yr,".",mon))
+  )
+
+df_proc <- df_chirps |> 
+  group_by(adm1_name,mo= month(date)) |> 
+  mutate(
+    rainfall_abs_anom = value - mean(value, na.rm=T),
+    rainfall_s_anom = rainfall_abs_anom/sd(value,na.rm=T)
+  ) |> 
+  ungroup() |> 
+  left_join(adm1_grp_lookup, by =c("adm1_name"="name1")) |> 
+  left_join(df_oni) |> 
+  mutate(
+    enso_class= case_when(anom<=-.5~"La Nina",
+                          anom< 0.5~"Neutral",
+                          anom>= 0.5 ~"El Nino")
+  ) 
+
+```
+
+```{r plotSeasonl}
+df_proc |> 
+  group_by(grp,adm1_name, mo = month(date,label =T, abbr=T)) |> 
+  summarise(
+    rainfall = mean(value,na.rm=T)
+  ) |> 
+  mutate(
+    prov_label = case_when(
+      adm1_name =="Hirat"~adm1_name,
+      TRUE~"other"
+    ),
+    grp_label = 
+      case_when(
+        str_detect(grp,"ne")~"North East",
+        str_detect(grp,"nw")~"North West",
+        str_detect(grp,"sw")~"South West",
+        str_detect(grp,"central")~"Central"
+      )
+  ) |> 
+  ggplot(
+    aes(x=mo, y=rainfall, 
+        group=adm1_name, 
+        color = prov_label)
+  )+
+  geom_line(aes(alpha= prov_label, 
+                color = prov_label))+
+   scale_alpha_manual(values=c(1,0.1))+  
+  scale_color_manual(values=c("red","black"))+
+  facet_wrap(~grp_label)+
+  labs(title= "Monthly Average Rainfall By Province",
+       subtitle= "Afghanistan",
+       y= "rainfall (mm)")+
+  theme(
+    # legend.position = "none",
+    legend.title= element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+
+```
+
+
+```{R}
+df_proc |> 
+  filter(
+    grp %in% c("ne_grp","nw_grp")
+  ) |> 
+  ggplot(
+    aes(x= date, y= value, group =adm1_name, color = adm1_name)
+  )+
+  # geom_point()+
+  geom_line(alpha=0.3)+
+  facet_wrap(~grp)+
+  theme(
+    legend.position ="none"
+  )
+
+
+df_hirat <-  
+  df_proc |> 
+  filter(
+    adm1_name=="Hirat"
+  )
+
+p_hirat <-
+  df_hirat |> 
+   ggplot(
+    aes(x= date, 
+        y= value
+        )
+  )+
+  geom_point_interactive(
+    aes(color=enso_class,
+        tooltip=glue("date: {date}
+                     oni score: {anom},
+                     enso class: {enso_class}")
+        )
+    
+    )+
+  geom_line(alpha=0.3)+
+  theme(
+    
+  )
+
+girafe(ggobj = p_hirat)
+
+```
+
+```{r}
+library(gghdx)
+gghdx()
+
+p_scatter_hirat <- df_hirat |> 
+  ggplot(
+    aes(x= anom, y= rainfall_abs_anom)
+  )+
+  geom_point(alpha= 0.5)+
+  labs(
+    x = "ENSO ONI Anomaly",
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly ONI anomaly and rainfall not strongly correlated",
+    subtitle= "Hirat Afghanistan",
+    caption = "Average total monthly rainfall anomaly across Hirat province againt global monthly ONI anomaly (1981-2024)"
+    )+
+  scale_y_continuous()+
+  # expand_limits (y= c(0,0))+
+  theme(
+    plot.title = element_text(size=10),
+    plot.subtitle  = element_text(size=10),
+    axis.title = element_text(size=8),
+    axis.text= element_text(size=8),
+    plot.caption = element_text(hjust= 0, size=8)
+  )
+
+p_boxplot_hirat <- df_hirat |> 
+  ggplot(
+    aes(x= enso_class, y= rainfall_abs_anom)
+  )+
+  geom_boxplot()+
+  labs(
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly rainfall anomaly not well differentiated by ENSO class",
+    subtitle= "Hirat Afghanistan",
+    caption = "Average total monthly rainfall anomaly by ONI scores classified an ONI score of:
+  - ≥ 0.5 -> El Nino
+  - <0.5 to -0.5 -> Neutral
+  - ≤ -0.5 -> La Nina"
+  )+
+  scale_y_continuous()+
+  # expand_limits (y= c(0,0))+
+  theme(
+    plot.title = element_text(size=10),
+    plot.subtitle  = element_text(size=10),
+    axis.title = element_text(size=8),
+    axis.text= element_text(size=8),
+    axis.title.x= element_blank(),
+    
+    plot.caption = element_text(hjust= 0, size=8)
+  )
+  
+```
+
+```{r}
+library(patchwork)
+p_scatter_hirat + p_boxplot_hirat
+```
+
+```{r}
+```
+
+
+```{r}
+
+# DESCRIPTION: Warm (red) and cold (blue) periods based on a threshold of +/- 0.5oC for the Oceanic Niño Index (ONI) [3 month running mean of ERSST.v5 SST anomalies in the Niño 3.4 region (5oN-5oS, 120o-170oW)], based on centered 30-year base periods updated every 5 years.
+# since El Nino seems 
+# https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/ensostuff/ONI_v5.php
+
+# looks good.
+df_oni |> 
+  mutate(
+    oni_mean3= zoo::rollmeanr(anom,3,fill=NA)
+  )
+
+df_oni |> 
+  ggplot(
+    aes(x= date, y=anom)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(date_breaks= "1 year",date_labels = "%y")+
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+```{r}
+
+
+```
+
+
