@@ -17,6 +17,8 @@ library(rhdx)
 library(tidyverse)
 ee_Initialize()
 
+overwrite_csv <-  c(T,F)[2]
+
 chirps_daily_url <- "UCSB-CHG/CHIRPS/DAILY"
 chirps_ic <- ee$ImageCollection(chirps_daily_url)
 
@@ -25,8 +27,8 @@ adm1_fc <- ee$FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level1")
 # filter adm1 to get only those in Afghanistan
 adm1_afghanistan <- adm1_fc$filter(ee$Filter$eq("ADM0_NAME", "Afghanistan"))
 
-# Add to map to quickly check
-Map$addLayer(adm1_afghanistan, list(color = "red"), "Afghanistan")
+# Add to map to quickly check - only for interactive viewing (not backaground job)
+# Map$addLayer(adm1_afghanistan, list(color = "red"), "Afghanistan")
 
 # convert to tidyee IC for easy temporal aggregation
 chirps_tic <-  as_tidyee(chirps_ic)
@@ -56,5 +58,8 @@ df_csv_outpath <-file.path(
   "chirps_monthly_afg_adm1_historical.csv"
   ) 
 
-write_csv(x = df_chirps_monthly,
-          file = df_csv_outpath)
+if(overwrite_csv){
+  write_csv(x = df_chirps_monthly,
+            file = df_csv_outpath)
+}
+
