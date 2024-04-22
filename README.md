@@ -20,7 +20,7 @@ As of now, all work/code is just exploratory and contained in the
 
 Quarto outputs for sharing will be linked as the one below:
 
-[Exploration - 01_chirps_Vs_ond](https://rpubs.com/zackarno/1176965)
+[Exploration - 01_chirps_Vs_oni](https://rpubs.com/zackarno/1176973)
 
 ## Overview of Analysis
 
