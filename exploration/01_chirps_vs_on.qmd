@@ -1,49 +1,84 @@
 ---
-title: "chirps vs oni"
-format: html
+title: Exploratory - Afghanistan Rainfall and ONI
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
 editor: visual
+project:
+  execute-dir: project
 ---
 
-## Quarto
+## Intro
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+**Document objectives:**
 
-## Running Code
+- Geography - province level with emphasis on **Hirat**
+- Explore CHIRPS data to better understand seasonality of rainfall
+- Explore relationship between CHIRPS data and ENSO ONI anomaly
 
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+### Data Sets
+
+- Monthly rainfall by province derived from CHIRPS daily + FAO GAUL admin 1
+- [Monthly ONI from Climate Prediction Center (CPC) NOAA](https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/ensostuff/)
 
 ```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
 library(tidyverse)
 library(janitor)
 library(sf)
 library(ggiraph)
 library(glue)
+library(gghdx)
+library(here)
+library(patchwork)
 
-fps <- proj_paths()
+source(here("R/utils.R"))
 
 
+gghdx()
+
+fps <- proj_paths() # convenience func to load paths
+
+# load gaul geodf/sf
 gdf_adm1_global <- sf::st_read(fps$ADM1_GAUL,
-                        "gaul1_asap")
+                        "gaul1_asap",quiet = T)
 
+# filter to afg
 gdf_adm1 <-  gdf_adm1_global |> 
   filter(name0=="Afghanistan")
 
-
+# load montly oni data
 df_oni <- readr::read_table(fps$ONI_LINK) |> 
   clean_names()
 
-  
+# load monthly chirps data (downloaded from GEE)
 df_chirps <- read_csv(fps$ADM1_CHIRPS_MONTHLY) |> 
   clean_names()
-  
 
 ```
 
-You can add options to executable code like this
 
 ```{r}
-#| echo: true
-#| include: true
+#| echo: false
+#| include: false
 #| eval: false
 
 # Here i interactively map and define groups for admin 1 regions to easy # visualizatons/plotting
@@ -76,10 +111,7 @@ lst(nw_grp,sw_grp,ne_grp,central_grp) |>
   datapasta::tribble_paste()
 ```
   
-```{r}
-#| echo: true
-#| eval: true
-
+```{r grpLookup}
 # data pasta output from above
 
 adm1_grp_lookup<- tibble::tribble(
@@ -121,17 +153,22 @@ adm1_grp_lookup<- tibble::tribble(
      )
 ```
 
-```{r}
+```{r wrangleChirpsONI}
 
+# wrangle ONI & chirps
 df_oni <- df_oni |> 
   mutate(
+    # create propoer date col
     date= ym(paste0(yr,".",mon))
   )
 
+# df_processed 
 df_proc <- df_chirps |> 
   group_by(adm1_name,mo= month(date)) |> 
   mutate(
+    # creat absolute anomaly
     rainfall_abs_anom = value - mean(value, na.rm=T),
+    # as well as one divide by SD
     rainfall_s_anom = rainfall_abs_anom/sd(value,na.rm=T)
   ) |> 
   ungroup() |> 
@@ -144,6 +181,10 @@ df_proc <- df_chirps |>
   ) 
 
 ```
+
+## Rainfall By Month
+
+Below I've (somewhat arbitrarily) split the provinces in to larger regional groups and plotted the average monthly rainfall by province and month. As Hirat, is our initial Area of Interest (AOI), I've highlighted it in the plot.
 
 ```{r plotSeasonl}
 df_proc |> 
@@ -186,28 +227,23 @@ df_proc |>
 
 ```
 
-
-```{R}
-df_proc |> 
-  filter(
-    grp %in% c("ne_grp","nw_grp")
-  ) |> 
-  ggplot(
-    aes(x= date, y= value, group =adm1_name, color = adm1_name)
-  )+
-  # geom_point()+
-  geom_line(alpha=0.3)+
-  facet_wrap(~grp)+
-  theme(
-    legend.position ="none"
-  )
-
-
+```{r}
 df_hirat <-  
   df_proc |> 
   filter(
     adm1_name=="Hirat"
   )
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+#| include: false
+
+
+
+
 
 p_hirat <-
   df_hirat |> 
@@ -233,10 +269,15 @@ girafe(ggobj = p_hirat)
 
 ```
 
-```{r}
-library(gghdx)
-gghdx()
+## Rainfall & ONI
 
+### Overall
+
+- Let's focus on `Hirat` to simplify the research questions and visuals.
+
+- Below we look at absolute rainfall anomaly and ONI. When we look at all months no clear relationships pop out.
+
+```{r}
 p_scatter_hirat <- df_hirat |> 
   ggplot(
     aes(x= anom, y= rainfall_abs_anom)
@@ -281,22 +322,156 @@ p_boxplot_hirat <- df_hirat |>
     axis.title = element_text(size=8),
     axis.text= element_text(size=8),
     axis.title.x= element_blank(),
-    
     plot.caption = element_text(hjust= 0, size=8)
   )
   
 ```
 
 ```{r}
-library(patchwork)
 p_scatter_hirat + p_boxplot_hirat
 ```
 
+### Winter wheat growing season
+
+- Perhaps different seasons/months have different relationships (stronger/less strong) and this is adding noise.
+- A this stage of the project I believe the main season of interest is the **Winter Wheat Season**.
+  + [FAO Crop Calendar](https://www.fao.org/giews/countrybrief/country.jsp?code=AFG&lang=ar#:~:text=Harvesting%20of%20the%202023%20winter,conditions%20in%202021%20and%202022) shows that this growing season is Dec-April (inclusive). Therefore let's filter down to these months.
+  
 ```{r}
+
+# let's just copy the code above and filter by to the winter wheat growing season and change plot title
+
+df_hirat_ww <- df_hirat |> 
+  filter(month(date)%in% c(12,1,2,3,4))
+
+p_scatter_hirat_ww <- df_hirat_ww |> 
+  ggplot(
+    aes(x= anom, y= rainfall_abs_anom)
+  )+
+  geom_point(alpha= 0.5)+
+  labs(
+    x = "ENSO ONI Anomaly",
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly ONI anomaly and rainfall not strongly correlated",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season",
+    caption = "Average total monthly rainfall anomaly across Hirat province againt global monthly ONI anomaly (1981-2024)"
+    )+
+  scale_y_continuous()+
+  # expand_limits (y= c(0,0))+
+  theme(
+    plot.title = element_text(size=10),
+    plot.subtitle  = element_text(size=10),
+    axis.title = element_text(size=8),
+    axis.text= element_text(size=8),
+    plot.caption = element_text(hjust= 0, size=8)
+  )
+
+p_boxplot_hirat_ww <- df_hirat_ww |> 
+  ggplot(
+    aes(x= enso_class, y= rainfall_abs_anom)
+  )+
+  geom_boxplot()+
+  labs(
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly rainfall anomaly not well differentiated by ENSO class",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season",
+    caption = "Average total monthly rainfall anomaly by ONI scores classified an ONI score of:
+  - ≥ 0.5 -> El Nino
+  - <0.5 to -0.5 -> Neutral
+  - ≤ -0.5 -> La Nina"
+  )+
+  scale_y_continuous()+
+  # expand_limits (y= c(0,0))+
+  theme(
+    plot.title = element_text(size=10),
+    plot.subtitle  = element_text(size=10),
+    axis.title = element_text(size=8),
+    axis.text= element_text(size=8),
+    axis.title.x= element_blank(),
+    plot.caption = element_text(hjust= 0, size=8)
+  )
+  
+```
+
+- Plots are still relatively similar after filtering
+
+```{r}
+p_scatter_hirat_ww + p_boxplot_hirat_ww
+```
+
+- Instead of looking at monthly values lets' look at the whole season as one value (anomaly and rainfall)
+- So we take the average ONI and sum of rainfall for all seasons Dec-April
+
+```{r}
+#| include: true
+#| eval: true
+#| echo: true
+
+df_hirat_ww_seas <- df_hirat_ww |> 
+  select(date,adm1_name,value, contains("rainfall"),"anom",everything()) |> 
+  group_by(
+    adm1_name,
+  ) |> 
+  mutate(
+    mean_oni = zoo::rollmeanr(anom,4,fill=NA),
+    rainfall = zoo::rollsumr(value,4,fill=NA),
+  ) |> 
+  filter(
+    month(date)==4
+  ) |> 
+  group_by(
+    adm1_name
+  ) |> 
+  mutate(
+    rainfall_abs_anom = rainfall - mean(rainfall, na.rm=TRUE),
+    rainfall_sd_anom = rainfall_abs_anom/sd(rainfall,na.rm=T),
+    enso_class= case_when(
+      mean_oni >= 0.5 ~ "El Nino",
+      mean_oni < 0.5 & mean_oni > -0.5 ~ "Neutral",
+      mean_oni <= -0.5 ~ "La Nina"
+    )
+    
+  ) |> 
+  ungroup()
+
+
+pal_enso <-  c("La Nina"= "#FBB4AE" ,
+                 "El Nino" = "#B3CDE3" ,
+                 "Neutral" ="#CCEBC5"
+)
+
+df_hirat_ww_seas |> 
+   ggplot(
+    aes(x= mean_oni, y= rainfall_abs_anom, color=enso_class)
+  )+
+  geom_point(alpha= 1)+
+  scale_color_manual(values = pal_enso)+
+  labs(
+    x = "ENSO ONI Anomaly",
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly ONI anomaly and rainfall not strongly correlated",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season",
+    caption = "Average rainfall anomaly across Hirat winter wheat growing season (Dec-April) plotted against global ONI anomaly averaged for each season (1981-2024)"
+    )+
+  scale_y_continuous()+
+  # expand_limits (y= c(0,0))+
+  theme(
+    plot.title = element_text(size=10),
+    plot.subtitle  = element_text(size=10),
+    axis.title = element_text(size=8),
+    axis.text= element_text(size=8),
+    plot.caption = element_text(hjust= 0, size=8),
+    legend.title = element_blank()
+  )
+  
 ```
 
 
+
+
 ```{r}
+#| eval: false
+#| include: false
 
 # DESCRIPTION: Warm (red) and cold (blue) periods based on a threshold of +/- 0.5oC for the Oceanic Niño Index (ONI) [3 month running mean of ERSST.v5 SST anomalies in the Niño 3.4 region (5oN-5oS, 120o-170oW)], based on centered 30-year base periods updated every 5 years.
 # since El Nino seems 
