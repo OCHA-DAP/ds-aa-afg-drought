@@ -2,3 +2,13 @@
 .Rhistory
 .RData
 .Ruserdata
+
+src/.ipynb_checkpoints
+*.pyc
+.venv-afg-drought/*
+.ipynb_checkpoints/
+*.grib
+*.idx
+src.egg-info/
+*.tif
+*.gif
