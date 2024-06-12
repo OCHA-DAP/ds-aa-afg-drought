@@ -2,6 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+_targets/*
 
 src/.ipynb_checkpoints
 *.pyc
