@@ -6,7 +6,7 @@ from ecmwfapi import ECMWFService
 
 from src.blob_utils import load_env_vars, upload_file
 
-sas_token, container_name, storage_account = load_env_vars()
+SAS_TOKEN, CONTAINER_NAME, STORAGE_ACCOUNT = load_env_vars()
 
 # make abounding box around afghanistan
 xmin = 60
@@ -45,7 +45,7 @@ for year in range(start_year, end_year):
         # create outpath in temp dir
         tp = os.path.join(td, f"ecmwf_mars_{year}.grib")
         temp_base = os.path.basename(tp)
-        blob_outpath = os.path.join("ds-aa-afg-drought", "raw", temp_base)
+        BLOB_OUTPATH = os.path.join("ds-aa-afg-drought", "raw", temp_base)
 
         start_date = pd.to_datetime(f"{year}-01-01")
         end_date = pd.to_datetime(f"{year}-12-01")
@@ -88,8 +88,8 @@ for year in range(start_year, end_year):
         )
         upload_file(
             local_file_path=tp,
-            sas_token=sas_token,
-            container_name=container_name,
-            storage_account=storage_account,
-            blob_path=blob_outpath,
+            sas_token=SAS_TOKEN,
+            container_name=CONTAINER_NAME,
+            storage_account=STORAGE_ACCOUNT,
+            blob_path=BLOB_OUTPATH,
         )
