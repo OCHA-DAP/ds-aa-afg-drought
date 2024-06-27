@@ -17,20 +17,20 @@ from src.blob_utils import (
     upload_file,
 )
 
-sas_token, container_name, storage_account = load_env_vars()
+SAS_TOKEN, CONTAINER_NAME, STORAGE_ACCOUNT = load_env_vars()
 
 
 grib_files = list_blobs(
-    sas_token=sas_token,
-    container_name=container_name,
-    storage_account=storage_account,
-    name_starts_with="ds-aa-afg-drought/raw",
+    sas_token=SAS_TOKEN,
+    container_name=CONTAINER_NAME,
+    storage_account=STORAGE_ACCOUNT,
+    name_starts_with="ds-aa-afg-drought/raw/",
 )
 
 grib_files = [file for file in grib_files if file.endswith(".grib")]
-grib_file_samp = grib_files[:1]
+
 # Loop through each blob path
-for blob_name in grib_file_samp:
+for blob_name in grib_files:
     print(f"name: {os.path.basename(blob_name)}")
 
     # Create a temporary file
@@ -40,9 +40,9 @@ for blob_name in grib_file_samp:
         tf = td / temp_base_path
         # Download the file
         download_file(
-            sas_token=sas_token,
-            container_name=container_name,
-            storage_account=storage_account,
+            sas_token=SAS_TOKEN,
+            container_name=CONTAINER_NAME,
+            storage_account=STORAGE_ACCOUNT,
             blob_path=blob_name,
             local_file_path=tf,
         )
@@ -121,9 +121,9 @@ for blob_name in grib_file_samp:
                     )  # Write to the first (and only) band
 
                 upload_file(
-                    sas_token=sas_token,
-                    container_name=container_name,
-                    storage_account=storage_account,
+                    sas_token=SAS_TOKEN,
+                    container_name=CONTAINER_NAME,
+                    storage_account=STORAGE_ACCOUNT,
                     local_file_path=out_path,
                     blob_path=os.path.join(
                         "ds-aa-afg-drought/cogs", out_raster
