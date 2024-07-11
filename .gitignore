@@ -2,16 +2,28 @@
 .Rhistory
 .RData
 .Ruserdata
+_targets/*
+.scrap/*
 
 src/.ipynb_checkpoints
+exploration/rsconnect/*
+exploration/rsconnect_rpubsupload.R
+AFG_AdminBoundaries_AGCHO_20211117/*
+pub_rpubs/*
+
 *.pyc
 .venv-afg-drought/*
 .ipynb_checkpoints/
 *.grib
 *.idx
+*.html
+
 src.egg-info/
 *.tif
 *.gif
+*.zip
+*.csv
+*.parquet
 
 .python-version
 
