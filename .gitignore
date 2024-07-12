@@ -2,9 +2,12 @@
 .Rhistory
 .RData
 .Ruserdata
+
 _targets/*
 .scrap/*
 
+*.html
+exploration/rsconnect/*
 src/.ipynb_checkpoints
 exploration/rsconnect/*
 exploration/rsconnect_rpubsupload.R
