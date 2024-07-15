@@ -1,4 +1,4 @@
-
+#' Helper functions to load data sets
 
 load_wfp_chirps <- function(){
 
@@ -7,6 +7,16 @@ load_wfp_chirps <- function(){
   df_chirps_adm2 <- read_csv(tf)
 
   df_chirps_adm2[-1,] |>
+    clean_names() |>
+    type_convert()
+}
+
+load_wfp_ndvi <- function(){
+  url <- "https://data.humdata.org/dataset/fa36ae79-984e-4819-b0eb-a79fbb168f6c/resource/d79de660-6e50-418b-a971-e0dfaa02586f/download/afg-ndvi-adm2-full.csv"
+  download.file(url, tf <- tempfile("afg-ndvi-adm2-full.csv"))
+  df_adm2 <- read_csv(tf)
+
+  df_adm2[-1,] |>
     clean_names() |>
     type_convert()
 }

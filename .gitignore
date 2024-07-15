@@ -16,6 +16,7 @@ pub_rpubs/*
 
 *.pyc
 .venv-afg-drought/*
+.vscode/*
 .ipynb_checkpoints/
 *.grib
 *.idx

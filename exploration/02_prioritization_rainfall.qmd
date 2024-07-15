@@ -39,36 +39,46 @@ The document will focus on 3 main data sets:
 
 
 ```{r libsData}
+box::use(dplyr[...])
+box::use(purrr[...])
+box::use(stringr[...])
+box::use(forcats[...])
+box::use(lubridate[...])
+box::use(ggplot2[...])
+box::use(ggfx[...])
+box::use(gghdx[...])
+box::use(patchwork[...])
+box::use(terra[...])
+box::use(sf[...])
+box::use(janitor[...])
 
-library(tidyverse)
-library(terra)
-library(sf)
-library(leaflet)
-library(arrow)
-library(geoarrow)
-library(ggfx)
-library(janitor)
-library(gghdx)
-library(patchwork)
+box::use(ggiraph)
+box::use(ripc)
+
+box::use(../R/utils[download_fieldmaps_sf])
+box::use(blob = ../R/blob_connect)
+
 gghdx()
 
 
-box::use(../R/utils[download_fieldmaps_sf])
-
+# load admin boundaries
 gdf_adm1 <- download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm1") |>
-  janitor::clean_names() |>
-  dplyr::select(matches("adm\\d_[pe]"))
+  clean_names() |>
+  select(matches("adm\\d_[pe]"))
+
 
 gdf_adm2 <- download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm2") |>
-  janitor::clean_names() |>
-  dplyr::select(matches("adm\\d_[pe]"))
+  clean_names() |>
+  select(matches("adm\\d_[pe]"))
 
+# load chirps rainfall
+fps <- blob$proj_blob_paths()
+pc <- blob$load_proj_contatiners()
 
 df_chirps_adm2 <- cumulus::read_az_file(
-  file_path = "ds-aa-afg-drought/raw/vector/wfp-chirps-adm2.csv",
+  file_path = fps$DF_ADM2_CHIRPS_WFP,
   container ="projects"
 )
-
 ```
 
 
@@ -208,9 +218,8 @@ gdf_top5_diss <- gdf_adm1_ranked |>
 ```{r}
 #| fig.height: 7
 
-
 ggplot()+
-  ggiraph::geom_sf_interactive(
+  ggiraph$geom_sf_interactive(
     data= gdf_adm1_ranked,
     aes(
       fill = anom_abs,
@@ -360,16 +369,16 @@ Data source (IPC)
 ipc_get_areas_current_sf <- function(country){
 
   # get full list of data sets
-  ipc_pop_area <- ripc::ipc_get_population(country = country)$area
+  ipc_pop_area <- ripc$ipc_get_population(country = country)$area
 
   # grab area analysis ids
   area_analysis_ids <- unique(ipc_pop_area$analysis_id)
 
-  gdf_ipc_area <- purrr::map(
+  gdf_ipc_area <- map(
     area_analysis_ids,
     \(id_tmp){
 
-      gdf_area <- ripc::ipc_get_areas(
+      gdf_area <- ripc$ipc_get_areas(
         id = id_tmp,
         period = "C",
         return_format = "geojson"
@@ -436,7 +445,7 @@ latest_analysis_id <- gdf_ipc_sf_current |>
 
 # could put warning if latest_analysis_id > 1 -- here
 
-gdf_ipc_sf_projected_latest <- ripc::ipc_get_areas(
+gdf_ipc_sf_projected_latest <- ripc$ipc_get_areas(
   id = latest_analysis_id,
   period = "P",
   return_format = "geojson"
@@ -455,13 +464,12 @@ gdf_ipc_sf_latest <- bind_rows(
 ) |>
   mutate(
     ipc_period_label = if_else(ipc_period =="C","Current","Projected")
-
   )
 
 
 gdf_ipc_sf_latest_poly <- gdf_ipc_sf_latest |>
   filter(
-    !(stringr::str_detect(sf::st_geometry_type(geometry), "POINT") )
+    !(str_detect(st_geometry_type(geometry), "POINT") )
   ) |>
   st_as_sf() |>
   mutate(
@@ -512,15 +520,11 @@ Next we filter to last 5 years (2020-2024) to get an overview of how the situati
 
 ```{r ipc}
 
-
-
 gdf_ipc_sf_current_polys <- gdf_ipc_sf_current |>
-  dplyr::filter(
-    !(stringr::str_detect(sf::st_geometry_type(geometry), "POINT") )
+  filter(
+    !(str_detect(st_geometry_type(geometry), "POINT") )
   ) |>
   st_as_sf()
-
-
 
 
 gdf_areas_filt <- gdf_ipc_sf_current_polys |>
@@ -696,10 +700,10 @@ p_ipc_weighted_mean <- ggplot()+
 
 p_ipc_mode +
   p_ipc_weighted_mean+
-  patchwork::plot_layout(
+  plot_layout(
     nrow= 2, ncol =1
   )+
-  patchwork::plot_annotation(
+  plot_annotation(
     title = "IPC Phase Aggregated 2020-2024",
   )
 ```

@@ -1,5 +1,5 @@
 library(targets)
-
+library(dplyr)
 # Set target options:
 tar_option_set(
   packages = c(
@@ -14,10 +14,24 @@ tar_option_set(
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source()
 # tar_source("other_functions.R") # Source other scripts as needed.
-library(dplyr)
-zf <- "afg_admbnda_agcho.zip"
-zf_vp <- paste0("/vsizip/",zf)
-gdf_adm2 <- sf::st_read(zf_vp,"afg_admbnda_adm2_agcho_20211117") |>
+
+
+fbps <- proj_blob_paths()
+pc <- load_proj_contatiners()
+tf <- tempfile(fileext = ".parquet")
+
+AzureStor::download_blob(
+  container = pc$PROJECTS_CONT,
+  src = fps$GDF_ADM2,
+  dest = tf, overwrite =T
+)
+
+gdf_adm2 <- arrow::open_dataset(tf) |>
+  st_as_sf()
+
+
+
+gdf_adm2 <- gdf_adm2 |>
   janitor::clean_names() |>
   dplyr::select(matches("adm\\d_[pe]")) %>%
   # adding this in so we can run weighted stats to aggregate all other admin zones
