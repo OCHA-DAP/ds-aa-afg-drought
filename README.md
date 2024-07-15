@@ -41,13 +41,14 @@ The code in this repository is organized as follows:
 
 ``` shell
 ├── _targets.R    # Main analytical pipeline to produce thresholds for AA
-                    monitoring
+                  #     monitoring
 ├── analysis      # Any remaining validated analytical work/visualization not
-                    in _targets
+                  #     in _targets
 ├── exploration   # Exploratory code for proof of concepts/discussoins
 ├── src           # Code to run monitoring system pipeline
 ├── data-raw      # code that produces data-files required for notebooks or
-├                   targets
+                  #     targets
+|
 ├── .gitignore
 ├── README.md
 └── requirements.txt
