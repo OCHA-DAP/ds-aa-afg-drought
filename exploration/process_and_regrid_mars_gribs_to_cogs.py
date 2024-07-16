@@ -1,3 +1,16 @@
+"""
+process_and_regrid_mars_gribs_to_cogs.py
+NOTE:
+    NO LONGER IN USE: saved for interesting re-gridding concepts
+Description:
+    This script was originally used for processing MARS GRIB files by
+    re-gridding and interpolating the data due to an irregular grid caused by a
+    typo in the `grid` parameter of the API call. Although this issue has been
+    resolved and the script is no longer in active use, it is preserved for its
+    interesting approach to handling GRIB files and may serve as a reference
+    for future applications.
+"""
+
 import os
 import tempfile
 from pathlib import Path
