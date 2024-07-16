@@ -70,7 +70,7 @@ for blob_name in grib_files:
             print(filename_prefix)
 
             fms = da_out.forecastMonth.values
-            for i, fm_tmp in enumerate(fms):
+            for fm_tmp in fms:
                 da_lt_out = da_out.sel(forecastMonth=fm_tmp)
 
                 lt = fm_tmp - 1
