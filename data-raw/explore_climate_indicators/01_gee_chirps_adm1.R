@@ -75,23 +75,23 @@ if(overwrite_csv){
 
 
 # read all csv files
-df_snow_frac_processed <- read_csv(
+df_chirps_processed <- read_csv(
   df_csv_outpath
 )
 
 # write to temp and then upload to blob
 tf <- tempfile(fileext = ".csv")
 write_csv(
-  df_snow_frac_processed,
+  df_chirps_processed,
   tf
 )
 
 pc <-  load_proj_containers()
-fps <- proj_blob_paths()
+fbps <- proj_blob_paths()
 
 
 AzureStor::upload_blob(
   container = pc$PROJECTS_CONT,
   src = tf,
-  dest = fps$DF_ADM1_CHIRPS
+  dest = fbps$DF_ADM1_CHIRPS
 )

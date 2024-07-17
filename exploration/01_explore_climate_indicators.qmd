@@ -142,26 +142,6 @@ df_oni <- readr::read_table(fps$ONI_LINK) |>
 ```
 
 ```{r}
-#| eval: false
-#| echo: false
-#| incldue: false
-
-# was attempting to join ndvi data
-gdf_adm2 <-  read_rds(fps$ADM2_AFG_GAUL) |>
-  clean_names()
-
-df_adm2 <- gdf_adm2 %>% # kind of annoying have to use magrittr to get this to work
-  mutate(
-    area= as.numeric(sf::st_area(.))
-  ) |>
-  st_drop_geometry() |>
-  select(matches("adm\\d") ,area)
-
-df_adm2$adm2_name %in% df_ndvi_adm2$adm2_nam
-df_ndvi_adm2$adm2_id %in% df_adm2$adm2_code
-```
-
-```{r}
 #| echo: false
 #| include: false
 #| eval: false
