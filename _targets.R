@@ -16,8 +16,6 @@ tar_option_set(
   )
 )
 
-
-
 # Load files req for pipeline ---------------------------------------------
 
 fbps <- proj_blob_paths()
