@@ -49,6 +49,7 @@ proj_blob_paths <- function(){
     DF_ADM1_CHIRPS = paste0(vector_processed,"chirps_monthly_afg_adm1_historical.csv"),
     DF_ADM1_MODIS_NDVI_CROPS = paste0(vector_processed, "modis_ndvi_crops_adm1.csv"),
     DF_ADM1_MODIS_SNOW = paste0(vector_processed, "modis_snow_frac_monthly_afg_adm1_historical.csv"),
-    GIF_MODIS_NDVI_CROPS = paste0(processed_root, "modis_ndvi_crops_hirat_animation.gif")
+    GIF_MODIS_NDVI_CROPS = paste0(processed_root, "modis_ndvi_crops_hirat_animation.gif"),
+    DIR_COGS = paste0(raw_root, "cogs/")
   )
 }
