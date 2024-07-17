@@ -1,37 +1,41 @@
 library(targets)
 library(dplyr)
-# Set target options:
+library(sf)
+library(arrow)
+library(geoarrow)
+
+tar_source() # source custom funcs
+
+# packages required for targets
 tar_option_set(
   packages = c(
     "tibble",
     "sf",
     "tidyverse",
     "terra"
-
   )
 )
 
-# Run the R scripts in the R/ folder with your custom functions:
-tar_source()
-# tar_source("other_functions.R") # Source other scripts as needed.
 
+
+# Load files req for pipeline ---------------------------------------------
 
 fbps <- proj_blob_paths()
-pc <- load_proj_contatiners()
+pc <- load_proj_containers()
 tf <- tempfile(fileext = ".parquet")
 
 AzureStor::download_blob(
   container = pc$PROJECTS_CONT,
-  src = fps$GDF_ADM2,
-  dest = tf, overwrite =T
+  src = fbps$GDF_ADM2,
+  dest = tf,
+  overwrite =T
 )
 
-gdf_adm2 <- arrow::open_dataset(tf) |>
+gdf_adm2 <- open_dataset(tf) |>
   st_as_sf()
 
 
-
-gdf_adm2 <- gdf_adm2 |>
+  gdf_adm2 <- gdf_adm2 |>
   janitor::clean_names() |>
   dplyr::select(matches("adm\\d_[pe]")) %>%
   # adding this in so we can run weighted stats to aggregate all other admin zones
@@ -47,7 +51,8 @@ gdf_adm2 <- gdf_adm2 |>
 list(
   tar_target(
     name = df_chirps_adm2,
-    command = load_wfp_chirps()
+    command = load_wfp_chirps(),
+    description = "Afghanistan: Rainfall Indicators at Subnational (admin 2) Level - WFP - HDX"
   ),
   tar_target(
     name = df_mars_zonal_raw,
@@ -55,7 +60,8 @@ list(
       r= load_mars_stack(),
       geom = gdf_adm2,
       geom_cols_keep = colnames(gdf_adm2),
-      stat = "mean")
+      stat = "mean"),
+    description = "MARS Seasonal Forecast: Zonal Means at admin 2"
   ),
   tar_target(
     name = df_mars_zonal,
@@ -65,6 +71,7 @@ list(
         lt = parse_number(str_extract(name,"lt\\d{1}")),
         valid_date = pub_date + months(lt)
       ) |>
-      select(-name)
+      select(-name),
+    description = "MARS Seasonal Zonal Forecast Means Wrangled"
   )
 )
