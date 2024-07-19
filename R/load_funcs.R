@@ -7,8 +7,8 @@ load_wfp_chirps <- function(){
   df_chirps_adm2 <- read_csv(tf)
 
   df_chirps_adm2[-1,] |>
-    clean_names() |>
-    type_convert()
+    janitor::clean_names() |>
+    readr::type_convert()
 }
 
 load_wfp_ndvi <- function(){
@@ -17,6 +17,6 @@ load_wfp_ndvi <- function(){
   df_adm2 <- read_csv(tf)
 
   df_adm2[-1,] |>
-    clean_names() |>
-    type_convert()
+    janitor::clean_names() |>
+    readr::type_convert()
 }
