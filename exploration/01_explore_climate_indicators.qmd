@@ -1,0 +1,966 @@
+---
+title: Exploratory look at ENSO ONI and other observed environmental indicators
+subtitle: Afghanistan - Focus on Hirat & the Winter Wheat Growing Season
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+## Intro
+
+**Document objectives:**
+
+-   Geography - province level with emphasis on **Hirat**
+-   Explore CHIRPS data to better understand seasonality of rainfall
+-   Explore relationship between CHIRPS data and ENSO ONI anomaly
+
+### Data Sets
+
+-   Monthly rainfall by province derived from CHIRPS daily + FAO GAUL admin 1
+-   [Monthly ONI from Climate Prediction Center (CPC) NOAA](https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/ensostuff/)
+
+```{r}
+#| echo: true
+#| warning: false
+#| message: false
+
+library(tidyverse)
+library(janitor)
+library(sf)
+library(ggiraph)
+library(glue)
+library(gghdx)
+library(here)
+library(patchwork)
+source(here("R/utils.R"))
+source(here("R/blob_connect.R"))
+gghdx()
+update_theme_gghdx(context= "rpubs") # custom text sizes that work better w/ quarto pub on rpbus
+
+clean_environmental_indicators <-  function(df,indicator){
+  df |>
+    janitor::clean_names() |>
+    dplyr::rename(
+      !!indicator := value
+    ) |>
+    dplyr::select(
+      matches("adm\\d"),
+      dplyr::all_of(
+        c(
+          "date",
+          indicator
+        )
+      )
+    )
+}
+
+
+
+#' I've migrated most of the project specific files to the blob
+fbps <- proj_blob_paths()
+pc <-  load_proj_containers()
+adm1_blobpath_names <- c("DF_ADM1_MODIS_NDVI_CROPS","DF_ADM1_MODIS_SNOW","DF_ADM1_CHIRPS")
+adm1_indicators = c("ndvi","snow_frac","rainfall")
+
+
+ldf_adm1_environ <- map2(
+  adm1_blobpath_names,
+  adm1_indicators,
+  \(blob_nm,ind){
+
+    tf <- tempfile(fileext = ".csv")
+    AzureStor::download_blob(
+      container  = pc$PROJECTS_CONT,
+      src= fbps[[blob_nm]],
+      dest= tf
+    )
+
+    df <- read_csv(tf)
+    unlink(tf)
+    # for
+    if(ind == "snow_frac") {
+      df <- df |>
+        filter(
+          parameter == "NDSI_Snow_Cover_mean"
+        )
+    }
+
+    clean_environmental_indicators(
+      df= df,
+      indicator=ind
+    )
+  }
+)
+
+df_adm1_gee <- ldf_adm1_environ |>
+  purrr::reduce(.f =left_join)
+
+
+# There are still a few files that don't belong to this project that are not
+# on the blob, but still in drive
+fps <- proj_paths()
+
+gdf_adm1 <- sf::st_read(
+  dsn = fps$ADM1_GAUL,
+  quiet = T,
+  query="select * from \"gaul1_asap\" where name0 = 'Afghanistan'"
+) |>
+  clean_names()
+
+
+
+
+df_ndvi_adm2 <-  read_csv(fps$ADM2_NDVI_WFP_HDX)[-1,] |>
+  readr::type_convert()
+
+df_adm2_cod <- readxl::read_xlsx(fps$ADM_TABULAR_COD,"ADM2") |>
+  clean_names()
+
+
+# load montly oni data
+df_oni <- readr::read_table(fps$ONI_LINK) |>
+  clean_names()
+
+
+```
+
+```{r}
+#| echo: false
+#| include: false
+#| eval: false
+
+# Here i interactively map and define groups for admin 1 regions to easy # visualizatons/plotting
+# this is a quick way i could quickly group them based on geography  -- i save the output w/ datapasta as a hard coded table to be joined to the chirps data. The hardcoded table is saved in the next chunk so that we can repeat the analysis/visualizations without this interactive step. Saving the interactive step as it's a useful/cool trick someone (maybe me!?) might like to borrow in the future.
+
+nw_grp <-mapedit::selectFeatures(x = gdf_adm1)
+sw_grp <-  mapedit::selectFeatures(x = gdf_adm1 |>
+                                     filter(!name1 %in% nw_grp$name1))
+
+ne_grp <-  mapedit::selectFeatures(x = gdf_adm1 |>
+                                     filter(!name1 %in%
+                                              c(sw_grp$name1,nw_grp$name1)))
+central_grp <-  mapedit::selectFeatures(x = gdf_adm1 |>
+                                     filter(!name1 %in%
+                                              c(sw_grp$name1,
+                                                nw_grp$name1,
+                                                ne_grp$name1)))
+
+lst(nw_grp,sw_grp,ne_grp,central_grp) |>
+  imap(\(gdft,nm_tmp){
+    gdft |>
+      st_drop_geometry() |>
+      select(name1) |>
+      mutate(
+        grp = nm_tmp
+      )
+  }
+  ) |>
+  list_rbind() |>
+  datapasta::tribble_paste()
+```
+
+```{r grpLookup}
+# data pasta output from above
+
+adm1_grp_lookup<- tibble::tribble(
+           ~name1,          ~grp,
+          "Farah",      "nw_grp",
+          "Hirat",      "nw_grp",
+        "Badghis",      "nw_grp",
+         "Faryab",      "nw_grp",
+        "Jawzjan",      "nw_grp",
+          "Balkh",      "nw_grp",
+      "Sar-e-Pul",      "nw_grp",
+       "Samangan",      "nw_grp",
+           "Ghor",      "nw_grp",
+       "Kandahar",      "sw_grp",
+        "Hilmand",      "sw_grp",
+         "Nimroz",      "sw_grp",
+          "Zabul",      "sw_grp",
+       "Daykundi",      "sw_grp",
+        "Uruzgan",      "sw_grp",
+     "Badakhshan",      "ne_grp",
+         "Takhar",      "ne_grp",
+         "Kunduz",      "ne_grp",
+        "Baghlan",      "ne_grp",
+       "Nuristan",      "ne_grp",
+       "Panjsher",      "ne_grp",
+        "Paktika", "central_grp",
+         "Ghazni", "central_grp",
+          "Khost", "central_grp",
+         "Paktya", "central_grp",
+          "Logar", "central_grp",
+          "Kabul", "central_grp",
+         "Kapisa", "central_grp",
+        "Laghman", "central_grp",
+      "Nangarhar", "central_grp",
+          "Kunar", "central_grp",
+         "Wardak", "central_grp",
+         "Parwan", "central_grp",
+         "Bamyan", "central_grp"
+     )
+```
+
+```{r wrangleChirpsONI}
+# wrangle ONI & chirps
+df_oni <- df_oni |>
+  mutate(
+    # create propoer date col
+    date= ym(paste0(yr,".",mon))
+  )
+
+# df_processed
+df_proc <- df_adm1_gee |>
+  group_by(adm1_name,mo= month(date)) |>
+  left_join(adm1_grp_lookup, by =c("adm1_name"="name1")) |>
+  left_join(df_oni) |>
+    mutate(
+      across(
+        .cols =c("rainfall","ndvi","snow_frac"),
+        \(x) x- mean(x,na.rm=T),
+        .names= "{.col}_abs_anom"
+      ),
+      across(
+        .cols =c("rainfall","ndvi","snow_frac"),
+        \(x) (x- mean(x,na.rm = T))/sd(x,na.rm=T),
+        .names= "{.col}_s_anom"
+      ),
+      enso_class = oni_to_enso_class(anom)
+    ) |>
+  ungroup()
+
+```
+
+## Rainfall By Month
+
+Below I've (somewhat arbitrarily) split the provinces in to larger regional groups and plotted the average monthly rainfall by province and month. As Hirat, is our initial Area of Interest (AOI), I've highlighted it in the plot.
+
+```{r plotSeasonl}
+df_proc |>
+  group_by(grp,adm1_name, mo = month(date,label =T, abbr=T)) |>
+  summarise(
+    rainfall = mean(rainfall,na.rm=T)
+  ) |>
+  mutate(
+    prov_label = case_when(
+      adm1_name =="Hirat"~adm1_name,
+      TRUE~"other"
+    ),
+    grp_label =
+      case_when(
+        str_detect(grp,"ne")~"North East",
+        str_detect(grp,"nw")~"North West",
+        str_detect(grp,"sw")~"South West",
+        str_detect(grp,"central")~"Central"
+      )
+  ) |>
+  ggplot(
+    aes(x=mo, y=rainfall,
+        group=adm1_name,
+        color = prov_label)
+  )+
+  geom_line(aes(alpha= prov_label,
+                color = prov_label))+
+   scale_alpha_manual(values=c(1,0.1))+
+  scale_color_manual(values=c("red","black"))+
+  facet_wrap(~grp_label)+
+  labs(title= "Monthly Average Rainfall By Province",
+       subtitle= "Afghanistan (each line is a province)",
+       y= "rainfall (mm)")
+
+```
+
+```{r}
+df_hirat <-
+  df_proc |>
+  filter(
+    adm1_name=="Hirat"
+  )
+```
+
+```{r}
+#| echo: false
+#| eval: false
+#| include: false
+
+p_hirat <-
+  df_hirat |>
+   ggplot(
+    aes(x= date,
+        y= value
+        )
+  )+
+  geom_point_interactive(
+    aes(color=enso_class,
+        tooltip=glue("date: {date}
+                     oni score: {anom},
+                     enso class: {enso_class}")
+        )
+
+    )+
+  geom_line(alpha=0.3)+
+  theme(
+
+  )
+
+girafe(ggobj = p_hirat)
+
+```
+
+## Rainfall & ONI
+
+### Overall
+
+-   Let's focus on `Hirat` to simplify the research questions and visuals.
+
+-   Below we look at absolute rainfall anomaly and ONI. When we look at all months no clear relationships pop out.
+
+```{r}
+p_scatter_hirat <- df_hirat |>
+  ggplot(
+    aes(x= anom, y= rainfall_abs_anom)
+  )+
+  geom_point(alpha= 0.5)+
+  labs(
+    x = "ENSO ONI Anomaly",
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly ONI anomaly and rainfall not strongly correlated",
+    subtitle= "Hirat Afghanistan",
+    caption = "Average total monthly rainfall anomaly across Hirat province againt global monthly ONI anomaly (1981-2024)"
+    )+
+  scale_y_continuous()
+
+p_boxplot_hirat <- df_hirat |>
+  ggplot(
+    aes(x= enso_class, y= rainfall_abs_anom)
+  )+
+  geom_boxplot()+
+  labs(
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly rainfall anomaly not well differentiated by ENSO class",
+    subtitle= "Hirat Afghanistan",
+    caption = "Average total monthly rainfall anomaly by ONI scores classified an ONI score of:
+  - ≥ 0.5 -> El Nino
+  - <0.5 to -0.5 -> Neutral
+  - ≤ -0.5 -> La Nina"
+  )+
+  scale_y_continuous()+
+  theme(
+    axis.text.x= element_text(size=8,angle=0),
+    axis.title.x = element_blank()
+  )
+
+```
+
+```{r}
+p_scatter_hirat + p_boxplot_hirat
+```
+
+### Winter wheat growing season
+
+-   Perhaps different seasons/months have different relationships (stronger/less strong) and this is adding noise.
+-   A this stage of the project I believe the main season of interest is the **Winter Wheat Season**.
+    -   [FAO Crop Calendar](https://www.fao.org/giews/countrybrief/country.jsp?code=AFG&lang=ar#:~:text=Harvesting%20of%20the%202023%20winter,conditions%20in%202021%20and%202022) shows that this growing season is Dec-April (inclusive). Therefore let's filter down to these months.
+
+```{r}
+
+# let's just copy the code above and filter by to the winter wheat growing season and change plot title
+
+df_hirat_ww <- df_hirat |>
+  filter(month(date)%in% months_of_interest()$winter_wheat)
+
+p_scatter_hirat_ww <- df_hirat_ww |>
+  ggplot(
+    aes(x= anom, y= rainfall_abs_anom)
+  )+
+  geom_point(alpha= 0.5)+
+  labs(
+    x = "ENSO ONI Anomaly",
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly ONI anomaly and rainfall not strongly correlated",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season",
+    caption = "Average total monthly rainfall anomaly across Hirat province againt global monthly ONI anomaly (1981-2024)"
+    )+
+  scale_y_continuous()
+
+
+p_boxplot_hirat_ww <- df_hirat_ww |>
+  ggplot(
+    aes(x= enso_class, y= rainfall_abs_anom)
+  )+
+  geom_boxplot()+
+  labs(
+    y= "Rainfall Anomaly (mm)",
+    title = "Drier conditions observable in La Nina phase",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season",
+    caption = "Average total monthly rainfall anomaly by ONI scores classified an ONI score of:
+  - ≥ 0.5 -> El Nino
+  - <0.5 to -0.5 -> Neutral
+  - ≤ -0.5 -> La Nina"
+  )+
+  scale_y_continuous()+
+  theme(
+    axis.title.x= element_blank(),
+    axis.text.x = element_text(angle=0)
+  )
+
+```
+
+-   Plots are still relatively similar after filtering
+
+```{r}
+p_scatter_hirat_ww + p_boxplot_hirat_ww
+```
+
+-   Instead of looking at monthly values lets' look at the whole season as one value (anomaly and rainfall)
+-   So we take the average ONI and sum of rainfall for all seasons Dec-April
+-   Here we do see a bit of relationship and the lowest rainfall anomalies do tend to have lower ENSO ONI values. However, there are lots of exceptions where we see strongly negative ONI values assocaited with strongly positive anomalies as will as strongly positive ONI values with low/negative rainfall values
+
+```{r}
+
+df_proc_seasonal_summary <- df_proc |>
+  # filter(month(date)%in% months_of_interest()$winter_wheat) |>
+  group_by(
+    across(matches("adm\\d"))
+  ) |>
+  mutate(
+    rainfall = zoo::rollsumr(rainfall,4,fill=NA),
+    across(
+        .cols =c("anom","ndvi","snow_frac"),
+        \(x) zoo::rollmeanr(x,4,fill=NA)
+      )
+  ) |>
+  filter(
+    month(date)==4
+  ) |>
+  group_by(
+    adm1_name
+  ) |>
+  mutate(
+       across(
+        .cols =c("rainfall","ndvi","snow_frac"),
+        \(x) x- mean(x,na.rm=T),
+        .names= "{.col}_abs_anom"
+      ),
+      across(
+        .cols =c("rainfall","ndvi","snow_frac"),
+        \(x) (x- mean(x,na.rm=T))/sd(x,na.rm=T),
+        .names= "{.col}_s_anom"
+      ),
+      enso_class = oni_to_enso_class(anom)
+  ) |>
+  ungroup() |>
+  select(
+    matches("adm\\d"),
+    date,
+    mean_oni=anom,
+    enso_class,
+    starts_with("rainfall"),
+    starts_with("ndvi"),
+    starts_with("snow")
+
+  )
+```
+
+```{r}
+#| include: true
+#| eval: true
+#| echo: true
+pals <- proj_palettes()
+
+df_proc_seasonal_summary |>
+  filter(adm1_name =="Hirat") |>
+
+   ggplot(
+    aes(x= mean_oni, y= rainfall_abs_anom, color=enso_class)
+  )+
+  geom_point(alpha= 1)+
+  scale_color_manual(values = pals$enso_palette)+
+  labs(
+    x = "ENSO ONI Anomaly",
+    y= "Rainfall Anomaly (mm)",
+    title = "Monthly ONI anomaly and rainfall not strongly correlated",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season",
+    caption = "Average rainfall anomaly across Hirat winter wheat growing season (Dec-April) plotted against global ONI anomaly averaged for each season (1981-2024)"
+    )+
+  scale_y_continuous()
+
+```
+
+This might be the take away plot. We do see drier conditions over that season most clearly here, but as seen in the rest of the analysis the relationship is messy:
+
+```{r}
+
+df_proc_seasonal_summary |>
+  filter(adm1_name =="Hirat") |>
+   ggplot(
+    aes(x= enso_class, y= rainfall_abs_anom, fill=enso_class)
+  )+
+  geom_boxplot(alpha= 1)+
+  # scale_color_manual(values = pals$enso_palette)+
+  scale_fill_manual(values = pals$enso_palette)+
+  labs(
+    y= "Rainfall Anomaly (mm)",
+    title = "Drier conditions associated with La Nina Phase (avg ONI ≤ 0.5)",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season"
+    )+
+  scale_y_continuous()+
+  theme(
+    axis.title.x= element_blank(),
+    axis.text.x = element_text(angle=0),
+    legend.position = "none"
+  )
+
+```
+
+Sine march is the month with maximum average rainfall Let's just look at March rainfall and it's relationship to ENSO.
+
+```{r}
+#| fig.height: 8
+
+df_proc |>
+  filter(month(date)==3) |>
+  ggplot(
+    aes(x= anom, y= rainfall_abs_anom, color=enso_class)
+  )+
+  geom_point(alpha=0.3)+
+  facet_wrap(~adm1_name,scales="free")+
+  geom_point(alpha= 1)+
+  scale_color_manual(values = pals$enso_palette)
+
+```
+
+```{r}
+df_proc |>
+  filter(month(date)==3) |>
+  ggplot(
+    aes(x= enso_class, y= rainfall_abs_anom, fill=enso_class)
+  )+
+  geom_boxplot(alpha= 1, color="black",linewidth=0.2)+
+  facet_wrap(~adm1_name,scales="free")+
+  # scale_color_manual(values = pals$enso_palette)+
+  scale_fill_manual(values = pals$enso_palette)+
+  labs(
+    y= "Rainfall Anomaly (mm)",
+    title = "March rainfall by ENSO phase",
+    subtitle= "Hirat Afghanistan"
+    )+
+  scale_y_continuous()+
+  theme(
+    axis.title.x= element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none"
+  )
+
+```
+
+```{r}
+#| eval: false
+#| include: false
+
+# DESCRIPTION: Warm (red) and cold (blue) periods based on a threshold of +/- 0.5oC for the Oceanic Niño Index (ONI) [3 month running mean of ERSST.v5 SST anomalies in the Niño 3.4 region (5oN-5oS, 120o-170oW)], based on centered 30-year base periods updated every 5 years.
+# since El Nino seems
+# https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/ensostuff/ONI_v5.php
+
+# looks good.
+df_oni |>
+  mutate(
+    oni_mean3= zoo::rollmeanr(anom,3,fill=NA)
+  )
+
+df_oni |>
+  ggplot(
+    aes(x= date, y=anom)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(date_breaks= "1 year",date_labels = "%y")+
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+## NDVI & ONI
+
+### Method 1 (WFP NDVI)
+
+-   Rather than processing and extracting NDVI from MODIS/GEE I was trying to use WFP NDVI values on HDX - values are at admin 2 level. The only admin id is `adm2_pcodes`
+-   to summaries to adm1 level, we would need to join to spatial admin 2 layer and then do weighted summaries based on geometry area. Currently waiting for a suitable admin 2 boundary file. In the meantime we explore admin 2 level data inside `Hirat` province
+-   We summaries the dekadal WFP data to month via average and compare with global ONI.
+
+### Results Method 1 (WFP NDVI)
+
+-   Here we look at all historical months for which we have both NDVI & ONI (2002-2024)
+-   correlation generally weak, although in some provinces we might see a weak, but significant positive correlation between ONI and NDVI.
+
+```{r}
+df_hirat_adm2_pcodes <- df_adm2_cod |>
+  filter(str_detect(adm1_en,"Hirat")) |>
+  distinct(adm1_en,adm2_pcode,adm2_en)
+
+df_hirat_ndvi <- df_hirat_adm2_pcodes |>
+  left_join(
+    df_ndvi_adm2 |>
+      clean_names()
+  )
+
+
+df_hirat_ndvi_month <- df_hirat_ndvi |>
+  mutate(
+    date_yr_mo = floor_date(date,unit="month")
+  ) |>
+  group_by(across(matches("adm\\d")),date_yr_mo) |>
+  summarise(
+    across(.cols= matches("^vi"),\(x) mean(x,na.rm=T)),.groups="drop"
+  )
+
+df_hirat_ndvi_oni <- df_hirat_ndvi_month |>
+  left_join(df_oni, by = c("date_yr_mo"="date")) |>
+  mutate(
+   enso_class= oni_to_enso_class(anom)
+  )
+
+df_hirat_ndvi_oni |>
+  filter(
+    date_yr_mo<"2024-04-01"
+    )|>
+  ggplot(
+    aes(x= anom, y= viq, color = enso_class)
+  )+
+  geom_point(alpha=0.4, size= 1)+
+  scale_color_manual(values = pals$enso_palette)+
+  facet_wrap(~adm2_en,scales="free")+
+  labs(
+    title= "Monthly ONI vs NDVI Anomaly by Admin 2",
+    subtitle = "Afghanistan - Hirat Province"
+  )
+
+```
+
+-   Next we filter the values to only monthly values within winter wheat growing season (Dec -April)
+-   similar results, perhaps some positive correlations are easier to see?
+
+```{r}
+df_hirat_ndvi_oni_ww <- df_hirat_ndvi_oni |>
+  filter(
+    date_yr_mo<"2024-04-01",
+    month(date_yr_mo) %in% months_of_interest()$winter_wheat
+         )
+df_hirat_ndvi_oni_ww |>
+  ggplot(
+    aes(x= anom, y= viq, color = enso_class)
+  )+
+  geom_point(alpha=0.4, size= 1)+
+  scale_color_manual(values = pals$enso_palette)+
+  facet_wrap(~adm2_en,scales="free")+
+  labs(
+    title= "Monthly ONI vs NDVI Anomaly by Admin 2",
+    subtitle = "Afghanistan - Hirat Province - Winter Wheat Growing Season Months"
+  )
+```
+
+-   Next instead of looking at individual months we take the average of the values across each winter wheat season. This simplifies the plot quite a bit and some positive correlations are easier to see?
+
+```{r}
+df_hirat_ww_seas <- df_hirat_ndvi_oni_ww |>
+  group_by(
+    across(matches("adm\\d"))
+  ) |>
+  mutate(
+    mean_oni = zoo::rollmeanr(anom,4,fill=NA),
+    viq = zoo::rollmean(viq,4,fill=NA),
+  ) |>
+  filter(
+    month(date_yr_mo)==4
+  ) |>
+  group_by(
+    across(matches("adm\\d"))
+  ) |>
+  mutate(
+
+    enso_class= oni_to_enso_class(mean_oni)
+
+  ) |>
+  ungroup()
+
+
+df_hirat_ww_seas |>
+  ggplot(
+    aes(x= mean_oni, y= viq, color = enso_class)
+  )+
+  geom_point(alpha=1, size= 1)+
+  scale_color_manual(values = pals$enso_palette)+
+  facet_wrap(~adm2_en,scales="free")+
+  labs(
+    x = "ENSO ONI Anomaly (Seasonal)",
+    y= "NDVI Anomaly (Seasonal)",
+    title= "Seasonal ONI vs NDVI Anomaly by Admin 2",
+    subtitle = "Afghanistan - Hirat Province - Winter Wheat Growing Season Aggregated"
+  )
+```
+
+### Discussion Method 1 (WFP NDVI)
+
+-   positive direction is what we expect with less health vegetation being associated with "drier" la nina conditions.
+-   Qualitatively this looks to be the case in a number of districts in Hirat province but not all
+-   Need better understanding of differences at admin 2 level w/ respect to land use
+
+### Limitaiton Method 1 (WFP NDVI)
+
+-   analysis is very limited due to rigidity of data structure for a number of reasons
+    -   As data is already in tabular format cannot apply crop or active crop masks
+    -   Issue with spatial CODs that can be harmonized which would allow analysis-level flexibility
+-   **Recommendation**:
+    -   run analysis with MODIS data with crop masks/active crop area masks at admin 1 level
+
+### Method 2 (NDVI over cropland)
+
+-   Extract monthly NDVI just over cropland
+
+-   Datasets:
+
+    -   [MODIS Terra NDVI (2000-2024)](https://lpdaac.usgs.gov/products/mod13q1v061/)
+    -   [MODIS Aqua NDVI (2000-2024)](https://lpdaac.usgs.gov/products/myd13q1v061/)
+    -   [MODIS Land Cover (2001-2022)](https://lpdaac.usgs.gov/products/mcd12q1v061/)
+
+Process:
+
+1.  Apply cloud masking/filtering and scaling to Terra & Aqua
+2.  Merge processed Aqua & Terra NDVI
+3.  MODIS LULC provides yearly land cover classification. Therefore we create a crop cover mask for each year
+4.  For each image in the merged Aqua-Terra classification we mask the NDVI with the relevant years crop mask.
+5.  We then take the median composite by year-month (compositing \~3-4 images) for each year-month
+6.  Then we run the zonal statistics (mean) on the composite image collection
+
+The gif below illustrates the methodology over Hirat. We've simplified the gif visualization to yearly mean composites rather than monthly.
+
+```{r gifNDVIcrop}
+tf <- tempfile(fileext = ".gif")
+AzureStor::download_blob(
+  container  = pc$PROJECTS_CONT,
+  src= fbps$GIF_MODIS_NDVI_CROPS,
+  dest= tf
+)
+
+knitr::include_graphics(
+  tf
+)
+```
+
+### Results Method 2 (NDVI over cropland)
+
+Below are the admin 1 level results. Here we plot ONI vs NDVI. Both values are averaged over the winter wheat growing season.
+
+```{r}
+#| fig.height: 8
+
+df_proc_seasonal_summary |>
+  filter(
+    !is.na(ndvi)
+  ) |>
+  ggplot(
+    aes(x= mean_oni,
+        y= ndvi_abs_anom,
+        color = enso_class)
+  )+
+  geom_point(alpha=1, size= 1)+
+  scale_color_manual(values = pals$enso_palette)+
+  facet_wrap(~adm1_name,scales="free")+
+  labs(
+    x= "ONI",
+    y= "NDVI anomaly",
+    title= "ONI vs NDVI over cropland by district",
+    subtitle = "Summarised over winter wheat growing season"
+
+  )
+```
+
+Here we look the NDVI anomaly (winter wheat season) over time for each province
+
+```{r}
+df_proc_seasonal_summary |>
+  filter(
+    !is.na(ndvi)
+  ) |>
+  mutate(
+   adm1_color= if_else(adm1_name=="Hirat",adm1_name,"other")
+  ) |>
+  ggplot(
+    aes(x= date, y= ndvi_abs_anom,group=adm1_name, color=adm1_color, alpha=adm1_color)
+  )+
+  geom_line()+
+  scale_alpha_manual(values=c(1,0.1))+
+  scale_color_manual(values=c("red","black"))+
+  labs(
+    title = "NDVI anomaly over cropland",
+    subtitle = "Each line is a province, Hirat is in red",
+    y= "NDVI anomaly (absolute)"
+  )+
+  theme(
+    axis.title.x = element_blank(),
+    legend.position = "none"
+  )
+
+
+
+```
+
+```{r}
+df_proc_seasonal_summary |>
+  filter(
+    !is.na(ndvi),
+    adm1_name=="Hirat"
+  ) |>
+  ggplot(
+    aes(x= mean_oni,
+        y= ndvi_abs_anom,
+        color = enso_class)
+  )+
+  geom_point(alpha=1, size= 1)+
+  geom_text(aes(label = year(date)))+
+  scale_color_manual(values = pals$enso_palette)+
+  facet_wrap(~adm1_name,scales="free")+
+  labs(
+    x= "ONI",
+    y= "NDVI anomaly",
+    title= "ONI vs NDVI over cropland by district",
+    subtitle = "Summarised over winter wheat growing season"
+
+  )
+```
+
+```{r}
+#| eval: false
+#| include: false
+#| echo: false
+
+df_proc |>
+  filter(
+    !is.na(ndvi),
+    mo %in% months_of_interest()$winter_wheat
+  ) |>
+  select(
+    matches("adm\\d"),date,mo, yr, grp, total, starts_with("ndvi"),anom,enso_class
+  ) |>
+  ggplot(
+    aes(x= anom, y= ndvi_abs_anom)
+  )+
+  geom_point(alpha=0.4, size= 1)+
+  facet_wrap(~adm1_name,scales="free")
+
+
+```
+
+## Snow Cover
+
+Just a quick look at MODIS NDSI snow cover data. Unclear exactly what we will do next, but this is just exploratory to see how feasible useful it might be:
+
+**Method**
+
+1.  [MODIS Snow Cover Daily L3 Global 500m Grid](https://modis.gsfc.nasa.gov/data/dataprod/mod10.php) monthly temporal composites made (mean, min , max).
+2.  Zonal means (per adm 1) calculated per admin 1 for each temporal composite band. Therefore we have a monthly average value per admin for all months `2000-current` for each temporal composite (min, max, mean). So we have the average minimum snowfall, average maximum snowfall, average mean snowfall composite values as tabular.
+
+-   Below we just perform a gut-check to see how CHIRPS precipitation lines up with snowfall.
+    -   when filtered to winter months where it would make sense for rainfall + snow to be correlated it does!
+    -   thought that perhaps rainfall lagged by 1 month might be correlated w/ snow cover, but relationship is weaker
+
+```{r}
+
+df_proc |>
+  filter(
+    month(date) %in% months_of_interest()$winter_wheat,
+    adm1_name == "Hirat"
+  ) |>
+  ggplot(
+    aes(x= rainfall, y= snow_frac)
+  )+
+  geom_point(alpha=0.7)+
+  labs(
+    x= "CHIRPS Rainfall (mm)",
+    y= "MODIS - NDSI Snow Cover Fraction",
+    title = "Rainfall (CHIRPS) vs Snow Frac (MODIS NDSI)",
+    subtitle= "Hirat Afghanistan - November to February",
+    caption = "Correlation between monthly average NDSI and CHIRPS average rainfall"
+  )
+
+
+df_proc_seasonal_summary |>
+    filter(
+    adm1_name == "Hirat"
+  ) |>
+  ggplot(
+    aes(x= rainfall, y= snow_frac)
+  )+
+  geom_point(alpha=0.7)+
+  labs(
+    x= "CHIRPS Rainfall (mm)",
+    y= "MODIS - NDSI Snow Cover Fraction",
+    title = "Rainfall (CHIRPS) vs Snow Frac (MODIS NDSI)",
+    subtitle= "Hirat Afghanistan - Aggregated for entire season (D-A)",
+    caption = "Correlation between monthly average NDSI and CHIRPS average rainfall"
+  )
+
+
+```
+
+```{r}
+
+df_proc |>
+  filter(
+    month(date) %in% months_of_interest()$winter_wheat,
+    adm1_name == "Hirat"
+  ) |>
+  mutate(
+    chirps_lag1 = lag(rainfall,1)
+  ) |>
+  ggplot(
+    aes(x= chirps_lag1, y= snow_frac)
+  )+
+  geom_point(alpha=0.7)+
+  labs(
+    x= "CHIRPS Rainfall Lag 1 month (mm)",
+    y= "MODIS - NDSI Snow Cover Fraction",
+    title = "Rainfall Lagged 1 month (CHIRPS) vs Snow Frac (MODIS NDSI)",
+    subtitle= "Hirat Afghanistan - November to February",
+    caption = "Less correlation between monthly average NDSI and 1 month lagged CHIRPS rainfall"
+  )
+```
+
+```{r}
+df_proc_seasonal_summary |>
+  filter(
+    adm1_name == "Hirat"
+  ) |>
+   ggplot(
+    aes(x= mean_oni, y= snow_frac_abs_anom, color=enso_class)
+  )+
+  geom_point(alpha= 1)+
+  ggrepel::geom_text_repel(aes(label = format(date,"%y")))+
+  # geom_text(aes(label = format(date,"%y")),nudge_x=0.1,nudge_y = 0.5)+
+  scale_color_manual(values = pals$enso_palette)+
+  labs(
+    x = "ENSO ONI Anomaly",
+    y= "Snow Frac Anomaly",
+    title = "Correlation between ONI anomaly and average snow fraction anomaly",
+    subtitle= "Hirat Afghanistan - Winter Wheat Growing Season",
+    caption = "Average snow frac anomaly across Hirat winter wheat growing season (Dec-April) plotted against global ONI anomaly averaged for each season (2000-2024). Could be a good correlation if high leverage outliers removed?"
+    )+
+  scale_y_continuous()
+
+```
