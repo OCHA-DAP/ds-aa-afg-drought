@@ -721,6 +721,24 @@ df_ndvi_perf <- df_ndvi_wy |>
   )
 
 ###########################
+#### RAINFALL TIMELINE ####
+###########################
+
+df_chirps |>
+  dplyr$mutate(
+    month = factor(months(date, abbreviate = TRUE), levels = month.abb)
+  ) |>
+  gg$ggplot(
+    mapping = gg$aes(x = month, y = value)
+  ) +
+  gg$geom_boxplot() +
+  gg$labs(
+    x = "",
+    y = "Precipitation (mm)",
+    title = "Distribution of monthly rainfall, 1984 to 2024, CHIRPS"
+  )
+
+###########################
 #### JOINT PERFORMANCE ####
 ###########################
 
