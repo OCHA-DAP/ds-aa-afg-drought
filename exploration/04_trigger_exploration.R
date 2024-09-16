@@ -360,6 +360,40 @@ df_chirps_wy_2000 <- df_chirps |>
     year
   )
 
+# look at CHIRPS just across MAM
+
+df_chirps_mam_wy <- df_chirps |> 
+  dplyr$mutate(
+    month = lubridate$month(date),
+    year = lubridate$year(date)
+  ) |> 
+  dplyr$filter(
+    month %in% 3:5,
+    year >= 1984
+  ) |> 
+  dplyr$group_by(
+    year
+  ) |> 
+  dplyr$mutate(
+    precipitation_cum = cumsum(value)
+  ) |>
+  dplyr$group_by(
+    month
+  ) |> 
+  dplyr$arrange(
+    precipitation_cum,
+    .by_group = TRUE
+  ) |> 
+  dplyr$slice(
+    1:8
+  ) |> 
+  dplyr$ungroup() |> 
+  dplyr$transmute(
+    indicator = "CHIRPS",
+    month,
+    year
+  )
+
 df_emdat_wy <- df_emdat |> 
   dplyr$transmute(
     indicator = "EMDAT",
@@ -564,6 +598,31 @@ df_seas5_perf <- df_seas5_wy |>
 # CHIRPS
 
 df_chirps_perf <- df_chirps_wy |> 
+  dplyr$mutate(
+    x = TRUE
+  ) |> 
+  tidyr$complete(
+    year = 1984:2024,
+    month = 1:5,
+    fill = list(
+      indicator = "CHIRPS",
+      x = FALSE
+    )
+  ) |> 
+  dplyr$left_join(
+    df_val,
+    by = "year"
+  ) |>
+  dplyr$group_by(
+    month
+  ) |> 
+  calc_metrics(
+    x = x,
+    y = asi
+  )
+
+# performance just looking at MAM
+df_chirps_mam_perf <- df_chirps_mam_wy |> 
   dplyr$mutate(
     x = TRUE
   ) |> 
