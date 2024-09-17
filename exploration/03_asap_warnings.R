@@ -9,6 +9,10 @@ box::use(
   utils
 )
 
+box::use(
+  ../R/blob_connect
+)
+
 gghdx$gghdx()
 
 #######################
@@ -34,9 +38,7 @@ df_warnings <- readr$read_delim(
 #### BRING IN EMDAT DATA ####
 #############################
 
-df_emdat <- readxl$read_excel(
-  path = "/Users/caldwellst/Desktop/country_data/Major Drought Events_Afghanistan_2000-2023.xlsx"
-)
+df_emdat <- blob_connect$read_blob_file("DF_EMDAT")
 
 ################################
 #### FILTER TO FARYAB CROPS ####
