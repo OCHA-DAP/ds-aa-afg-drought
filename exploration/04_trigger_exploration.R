@@ -1,3 +1,30 @@
+"
+This script evaluates various environmental indicators for their utility as
+trigger metrics in Faryab Province in Afghanistna. The triggers are evaluated:
+  
+Forecasted:
+  SEAS5 – cumulative predicted rainfall for MAM predicted form Nov-March
+Observational:
+  CHIRPS – Monthly rainfall: November - May
+  SWE – Monthly SWE: November – May
+  NDVI – Monthly NDVI: March- May
+  Combined Monthly CHIRPS & SWE: March- May
+
+For each indicator we determine the worst years on record (drought-wise) across
+each monitoring moment/time-step. We then see how well the worst years at each
+of these indicator-timestep combinations line up with the worst years
+calculated according to ASI Dekad 3 calculation. We look at ASI Dekad 3 of May
+because ASI is a measure of scale of drought at a geographical level based on
+NDVI and crop specific coefficients. May Dekad 3 is after the growing season
+and just as the harvest begins for spring wheat, so is a good time to measure
+this cumulative indicator. It corresponded with the EMDAT dataset on historical
+drought in Faryab.
+
+
+The heatmap & rainfall time-series produced here are included in this
+[slide deck](https://docs.google.com/presentation/d/1pfqpEGx-MB_-1A8PiCnDmcOwifUQ-EXyTDuqQyBiw1c/edit#slide=id.g2fe5782e44e_0_45)
+"
+
 box::use(
   ../R/blob_connect
 )
@@ -22,6 +49,15 @@ gghdx$gghdx()
 #############################
 #### PERFORMANCE METRICS ####
 #############################
+
+# We calculate performance in a specific way. It is by passing in a dataset
+# that has years when we would want to activate, `y`, and and years when we would
+# activate for a certain indicator, `x`. These are then used to calculate precision
+# and recall. We also use bootstrapping to test if we are better than random.
+#
+# Since we have a set return period for the historical activation data, and also
+# the same desired activation rate as the return period, in this instance, sum(x)
+# and sum(y) are equal, so precision and recall are equal.
 
 # functions to calculate metrics
 precision <- function(x, y) {
@@ -58,7 +94,8 @@ calc_metrics <- function(df, x, y) {
     dplyr$summarise(
       precision = metric_calc({{ x }}, {{ y }}, precision),
       recall = metric_calc({{ x }}, {{ y }}, recall),
-      indicator = unique(indicator)
+      indicator = unique(indicator),
+      .groups = "drop"
     ) |> 
     tidyr$unnest(
       cols = tidyr$everything()
@@ -75,7 +112,7 @@ df_chirps <- blob_connect$read_blob_file("DF_ADM1_CHIRPS") |>
     ADM1_NAME == "Faryab"
   ) |> 
   dplyr$group_by(
-    lubridate$month(date)
+    mo = lubridate$month(date)
   ) |> 
   dplyr$mutate(
     chirps_z = (value - mean(value)) / stats$sd(value)
@@ -94,7 +131,7 @@ df_snow <- blob_connect$read_blob_file("DF_ADM1_MODIS_SNOW") |>
     parameter == "NDSI_Snow_Cover_mean"
   ) |> 
   dplyr$group_by(
-    lubridate$month(date)
+    mo = lubridate$month(date)
   ) |> 
   dplyr$mutate(
     swe_z = (value - mean(value)) / stats$sd(value)
@@ -102,7 +139,7 @@ df_snow <- blob_connect$read_blob_file("DF_ADM1_MODIS_SNOW") |>
   dplyr$ungroup()
 
 df_smi <- blob_connect$read_blob_file("DF_ADM1_SMI", skip = 1) |> 
-  dplyr$slice(-1) |> 
+  dplyr$slice(-1) |>  # first line is just an extra line of headers
   dplyr$transmute(
     date = as.Date(paste0(Province, "-01")),
     year = lubridate$year(date),
@@ -165,7 +202,7 @@ df_vhi_wy <- df_vhi |>
     Data
   ) |> 
   dplyr$slice(
-    1:8
+    1:8 # 1 in 5 year RP
   ) |> 
   dplyr$transmute(
     indicator = "VHI",
@@ -204,7 +241,7 @@ df_seas5_wy <- df_seas5 |>
   dplyr$summarize(
     precipitation = mean(precip_mm_day),
     leadtime = min(leadtime),
-    pub_month = if (leadtime < 3) 3 - leadtime else 15 - leadtime,
+    pub_month = lubridate$month(min(pub_date)),
     .groups = "drop"
   ) |> 
   dplyr$filter(
@@ -218,7 +255,7 @@ df_seas5_wy <- df_seas5 |>
     .by_group = TRUE
   ) |>
   dplyr$slice(
-    1:8
+    1:8 # 1 in 5 year RP
   ) |> 
   dplyr$ungroup() |> 
   dplyr$transmute(
@@ -249,7 +286,7 @@ df_ndvi_wy <- df_ndvi |>
     .by_group = TRUE
   ) |> 
   dplyr$slice(
-    1:8
+    1:8 # 1 in 5 year RP
   ) |> 
   dplyr$ungroup() |> 
   dplyr$transmute(
@@ -319,7 +356,7 @@ df_chirps_wy <- df_chirps |>
     .by_group = TRUE
   ) |> 
   dplyr$slice(
-    1:8
+    1:8 # 1 in 5 year RP
   ) |> 
   dplyr$ungroup() |> 
   dplyr$transmute(
@@ -385,7 +422,7 @@ df_chirps_mam_wy <- df_chirps |>
     .by_group = TRUE
   ) |> 
   dplyr$slice(
-    1:8
+    1:8 # 1 in 5 year RP
   ) |> 
   dplyr$ungroup() |> 
   dplyr$transmute(
@@ -397,7 +434,7 @@ df_chirps_mam_wy <- df_chirps |>
 df_emdat_wy <- df_emdat |> 
   dplyr$transmute(
     indicator = "EMDAT",
-    year = c(2001, 2007, 2008, 2011, 2018, 2023),
+    year = c(2000, 2001, 2002, 2007, 2008, 2011, 2018, 2019, 2021, 2022, 2023),
     faryab = stringr$str_detect(`Location (Affected provinces)`, "Faryab")
   ) 
 
@@ -420,7 +457,7 @@ df_asi_dek_wy <- df_asi |>
     .by_group = TRUE
   ) |> 
   dplyr$slice(
-    1:8
+    1:8 # 1 in 5 year RP
   ) |> 
   dplyr$transmute(
     indicator = "ASI",
@@ -438,7 +475,7 @@ df_asi_wy <- df_asi |>
     dplyr$desc(Data)
   ) |> 
   dplyr$slice(
-    1:8
+    1:8 # 1 in 5 year RP
   ) |> 
   dplyr$transmute(
     indicator = "ASI",
@@ -464,24 +501,19 @@ df_asi_wy_2000 <- df_asi |>
 
 df_snow_wy <- df_snow |> 
   dplyr$mutate(
-    month = lubridate$month(date),
-    year = ifelse(month > 5, lubridate$year(date) + 1, lubridate$year(date))
+    month = lubridate$month(date)
   ) |> 
   dplyr$filter(
     month %in% c(1:5, 11:12)
   ) |> 
-  dplyr$group_by(
-    year
+  dplyr$group_by(month) |> 
+  dplyr$slice_min(
+    order_by = value,
+    n = 5,
+    with_ties = FALSE
   ) |> 
-  dplyr$group_by(
-    month
-  ) |> 
-  dplyr$arrange(
-    value,
-    .by_group = TRUE
-  ) |> 
-  dplyr$slice(
-    1:5
+  dplyr$mutate(
+    year = ifelse(month > 5, lubridate$year(date) + 1, lubridate$year(date))
   ) |> 
   dplyr$ungroup() |> 
   dplyr$transmute(
@@ -572,14 +604,14 @@ df_val <- dplyr$tibble(
 # Seasonal forecasts
 df_seas5_perf <- df_seas5_wy |>
   dplyr$mutate(
-    x = TRUE
+    worst_year = TRUE
   ) |> 
   tidyr$complete(
     year = 1984:2024,
     pub_month = c(11, 12, 1:3),
     fill = list(
       indicator = "SEAS5",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -590,7 +622,7 @@ df_seas5_perf <- df_seas5_wy |>
     pub_month
   ) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi
   )
 
@@ -599,14 +631,14 @@ df_seas5_perf <- df_seas5_wy |>
 
 df_chirps_perf <- df_chirps_wy |> 
   dplyr$mutate(
-    x = TRUE
+    worst_year = TRUE
   ) |> 
   tidyr$complete(
     year = 1984:2024,
     month = 1:5,
     fill = list(
       indicator = "CHIRPS",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -617,21 +649,21 @@ df_chirps_perf <- df_chirps_wy |>
     month
   ) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi
   )
 
 # performance just looking at MAM
 df_chirps_mam_perf <- df_chirps_mam_wy |> 
   dplyr$mutate(
-    x = TRUE
+    worst_year = TRUE
   ) |> 
   tidyr$complete(
     year = 1984:2024,
     month = 1:5,
     fill = list(
       indicator = "CHIRPS",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -642,21 +674,21 @@ df_chirps_mam_perf <- df_chirps_mam_wy |>
     month
   ) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi
   )
 
 # CHIRPS (from 2000)
 df_chirps_wy_2000 |> 
   dplyr$mutate(
-    x = TRUE
+    worst_year = TRUE
   ) |> 
   tidyr$complete(
     year = 2000:2024,
     month = 1:5,
     fill = list(
       indicator = "CHIRPS",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -667,7 +699,7 @@ df_chirps_wy_2000 |>
     month
   ) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi_2000
   )
 
@@ -676,14 +708,14 @@ df_chirps_wy_2000 |>
 
 df_snow_perf <- df_snow_wy |> 
   dplyr$mutate(
-    x = TRUE
+    worst_year = TRUE
   ) |> 
   tidyr$complete(
     year = 2000:2024,
     month = c(11:12, 1:3),
     fill = list(
       indicator = "SWE",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -694,7 +726,7 @@ df_snow_perf <- df_snow_wy |>
     month
   ) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi_2000
   )
 
@@ -702,7 +734,7 @@ df_snow_perf <- df_snow_wy |>
 
 df_asi_perf <- df_asi_dek_wy |> 
   dplyr$mutate(
-    x = TRUE
+    worst_year = TRUE
   ) |> 
   tidyr$complete(
     year = 1984:2024,
@@ -710,7 +742,7 @@ df_asi_perf <- df_asi_dek_wy |>
     dekad = 1:3,
     fill = list(
       indicator = "ASI",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -722,7 +754,7 @@ df_asi_perf <- df_asi_dek_wy |>
     dekad
   ) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi
   )
 
@@ -730,7 +762,7 @@ df_asi_perf <- df_asi_dek_wy |>
 df_combo_perf <- df_combo_wy |> 
   dplyr$ungroup() |> 
   dplyr$mutate(
-    x = TRUE,
+    worst_year = TRUE,
     indicator = "CHIRPS\n& SWE"
   ) |> 
   tidyr$complete(
@@ -738,7 +770,7 @@ df_combo_perf <- df_combo_wy |>
     month = 1:5,
     fill = list(
       indicator = "CHIRPS\n& SWE",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -747,7 +779,7 @@ df_combo_perf <- df_combo_wy |>
   ) |> 
   dplyr$group_by(month) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi_2000
   )
 
@@ -755,7 +787,7 @@ df_combo_perf <- df_combo_wy |>
 
 df_ndvi_perf <- df_ndvi_wy |> 
   dplyr$mutate(
-    x = TRUE
+    worst_year = TRUE
   ) |> 
   tidyr$complete(
     year = 1984:2024,
@@ -763,7 +795,7 @@ df_ndvi_perf <- df_ndvi_wy |>
     dekad = 1:3,
     fill = list(
       indicator = "NDVI",
-      x = FALSE
+      worst_year = FALSE
     )
   ) |> 
   dplyr$left_join(
@@ -775,7 +807,7 @@ df_ndvi_perf <- df_ndvi_wy |>
     dekad
   ) |> 
   calc_metrics(
-    x = x,
+    x = worst_year,
     y = asi
   )
 
@@ -835,8 +867,9 @@ dplyr$bind_rows(
     y = "",
     x = "",
     fill = "Precision/Recall",
-    title = "Trigger performance, approximately 5 year RP",
-    subtitle = "Measured against ASI"
+    title = "How well can we predict worst years",
+    subtitle = "Measured against ASI end-of-season (May)",
+    caption = "Methodology compares how well a 1 in 5 year RP level threshold correlates\nto the the worst to 1 in 5 year level drought at the end of the spring wheat season as measured by ASIS"
   ) +
   gg$scale_fill_gradient(
     low = gghdx$hdx_hex("sapphire-ultra-light"),
