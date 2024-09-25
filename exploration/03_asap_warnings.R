@@ -38,11 +38,17 @@ df_warnings <- readr$read_delim(
 #### BRING IN EMDAT DATA ####
 #############################
 
+# provided directly by the Afghanistan team by email
+# pre-processed to all drought disasters type in Afghanistan
 df_emdat <- blob_connect$read_blob_file("DF_EMDAT")
 
 ################################
 #### FILTER TO FARYAB CROPS ####
 ################################
+
+# you can check the `w_crop_na` column to see what the warnings correspond to,
+# but basically the second digit (or only digit) corresponds to the warning level
+# so 0 and 20 are no warning/successful season, and so on.
 
 df_faryab <- df_warnings |> 
   dplyr$filter(

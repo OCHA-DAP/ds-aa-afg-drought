@@ -195,14 +195,14 @@ df_seas5_wy <- df_seas5 |>
     valid_month %in% 3:5
   ) |> 
   dplyr$group_by(
-    date,
+    pub_date,
     valid_year
   ) |> 
   dplyr$filter(
     dplyr$n() == 3
   ) |> 
   dplyr$summarize(
-    precipitation = sum(precipitation),
+    precipitation = mean(precip_mm_day),
     leadtime = min(leadtime),
     pub_month = if (leadtime < 3) 3 - leadtime else 15 - leadtime,
     .groups = "drop"

@@ -55,7 +55,7 @@ seas5_sources <- terra$sources(seas5)
 seas5_data <- terra$sources(seas5) |> 
   stringr$str_match("(\\d{4}-\\d{2}-\\d{2})_(lt(\\d){1})") |> 
   dplyr$as_tibble(
-    .name_repair = ~ c("full", "date", "small", "leadtime")
+    .name_repair = ~ c("full", "pub_date", "small", "leadtime")
   )
 
 # create and save out CSV
@@ -70,14 +70,10 @@ seas_faryab |>
     seas5_data
   ) |> 
   dplyr$transmute(
-    date,
-    date_no_leap = as.Date(paste0("2021-", lubridate$month(date), "-20")),
-    valid_date = date + months(leadtime),
+    pub_date = as.Date(pub_date),
+    valid_date = pub_date + months(as.numeric(leadtime)),
     leadtime,
-    precipitation = precipitation * 60*60*24*1000 * lubridate$days_in_month(date_no_leap)
-  ) |> 
-  dplyr$select(
-    -date_no_leap
+    precip_mm_day = precipitation * 60 * 60 * 1000 * 24 # TODO: remove once blob updated
   ) |> 
   readr$write_csv(
     tf <- tempfile(fileext = ".csv")
