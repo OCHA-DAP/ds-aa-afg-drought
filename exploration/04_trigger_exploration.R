@@ -77,7 +77,7 @@ metric_calc <- function(x, y, fun, indicator) {
   threshold <- fun(x = x, y = y)
   pct_better <- purrr$map_lgl(
     .x = 1:1000,
-    .f = \(a) fun(x = x, y = sample(y, size = length(y), replace = FALSE)) <= threshold
+    .f = \(a) fun(x = sample(x, size = length(x), replace = FALSE), y = y) <= threshold
   ) |> 
     mean()
   
