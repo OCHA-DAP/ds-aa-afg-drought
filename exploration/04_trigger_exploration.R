@@ -138,6 +138,7 @@ df_snow <- blob_connect$read_blob_file("DF_ADM1_MODIS_SNOW") |>
   ) |> 
   dplyr$ungroup()
 
+# not used later on because the time series is much more limited than the rest
 df_smi <- blob_connect$read_blob_file("DF_ADM1_SMI", skip = 1) |> 
   dplyr$slice(-1) |>  # first line is just an extra line of headers
   dplyr$transmute(
