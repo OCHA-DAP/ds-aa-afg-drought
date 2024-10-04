@@ -26,15 +26,14 @@ load_mars_stack <- function(){
 
 load_seas5_stack <- function() {
   pc <- blob_connect$load_proj_containers()
-  
   cog_df <- AzureStor$list_blobs(
     container = pc$GLOBAL_CONT,
-    dir = "seas5/mars/processed"
+    dir = "seas5/monthly/processed"
   )
-  
+
   container_vp <- paste0("/vsiaz/raster/")
   urls <- paste0(container_vp, cog_df$name)
-  
+
   Sys.setenv(AZURE_STORAGE_SAS_TOKEN=Sys.getenv("DSCI_AZ_SAS_PROD"))
   Sys.setenv(AZURE_STORAGE_ACCOUNT="imb0chd0prod")
   terra$rast(urls)
