@@ -33,16 +33,20 @@ This code has been copied into the quarto book for illustration of methods. Howe
 - Additionally, it's nice to be able to run the code interactively here and leverage the nice visualizations built into `GEE`/`{rgee}` that can't be easily displayed in a book.
 
 
+- Method adopted from [Armstrong et al., 2023](https://developers.google.com/earth-engine/tutorials/community/identifying-first-day-no-snow)
+
+
 ```{r}
-library(rgee)
+
 library(sf)
 library(tidyverse)
 library(gghdx)
 library(glue)
 library(ggiraph)
 library(glue)
-library(tidyrgee) # recommend github verison : devtools::install_github("r-tidy-remote-sensing/tidyrgee")
 library(rgee)
+library(tidyrgee) # recommend github verison : devtools::install_github("r-tidy-remote-sensing/tidyrgee")
+
 # ee_check()
 ee_Initialize()
 write_to_blob <- c(TRUE,FALSE)[2]
