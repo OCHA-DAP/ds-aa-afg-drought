@@ -57,6 +57,8 @@ proj_blob_paths <- function(){
     DF_ADM1_CHIRPS = paste0(vector_processed,"chirps_monthly_afg_adm1_historical.csv"),
     DF_ADM1_MODIS_NDVI_CROPS = paste0(vector_processed, "modis_ndvi_crops_adm1.csv"),
     DF_ADM1_MODIS_SNOW = paste0(vector_processed, "modis_snow_frac_monthly_afg_adm1_historical.csv"),
+    DF_ADM1_MODIS_SNOWMELT_M2010 = paste0(vector_processed, "modis_first_day_no_snow_2010_mask.csv"),
+    DF_ADM1_MODIS_SNOWMELT_M2006 = paste0(vector_processed, "modis_first_day_no_snow_m2006_14e_120c.csv"),
     DF_ADM1_SMI = paste0(raw_root, "country_data/Afghanistan Monthly Soil moisture 2018-2024.csv"),
     DF_ADM1_FLDAS_SWE = paste0(vector_processed,"fldas_snow_SWE_adm1.csv"),
     DF_FARYAB_SEAS5 = paste0(vector_processed, "ecmwf_seas5_faryab.csv"),
