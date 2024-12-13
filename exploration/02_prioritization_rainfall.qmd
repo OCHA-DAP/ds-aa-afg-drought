@@ -33,10 +33,9 @@ While targeting decisions should ultimately be made by in-country experts and im
 
 The document will focus on 3 main data sets:
 
-1. Winter wheat crops mask (TBD)
-2. Rainfall (CHIRPS)
-3. Food Insecurity (IPC Phase Classification)
-
+1.  Winter wheat crops mask (TBD)
+2.  Rainfall (CHIRPS)
+3.  Food Insecurity (IPC Phase Classification)
 
 ```{r libsData}
 box::use(dplyr[...])
@@ -54,6 +53,7 @@ box::use(janitor[...])
 
 box::use(ggiraph)
 box::use(ripc)
+box::use(cumulus)
 
 box::use(../R/utils[download_fieldmaps_sf])
 box::use(blob = ../R/blob_connect)
@@ -73,21 +73,20 @@ gdf_adm2 <- download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm2") |>
 
 # load chirps rainfall
 fps <- blob$proj_blob_paths()
-pc <- blob$load_proj_contatiners()
+pc <- blob$load_proj_containers()
 
-df_chirps_adm2 <- cumulus::read_az_file(
-  file_path = fps$DF_ADM2_CHIRPS_WFP,
+df_chirps_adm2 <- cumulus$blob_read(
+  name = fps$DF_ADM2_CHIRPS_WFP,
+  stage = "dev",
   container ="projects"
 )
 ```
-
 
 ## Winter Wheat
 
 Data source: **TBD** (waiting for officially recommended winter wheat crop mask layer).
 
 Idea: On basis that activities/framework will be centered around winter wheat agricultural season we should target areas where winter wheat is grown. If we have a crop mask we could analyze total area/% area growing winter wheat at an admin level and use that as an input for the targeting/prioritization analysis.
-
 
 ## Rainfall
 
@@ -213,8 +212,6 @@ gdf_top5_diss <- gdf_adm1_ranked |>
   summarise()
 ```
 
-
-
 ```{r}
 #| fig.height: 7
 
@@ -254,7 +251,6 @@ ggplot()+
     axis.line.x.bottom = element_blank()
   )
 ```
-
 
 ```{r}
 gdf_adm1_ranked_overall<- gdf_adm1_ranked |>
@@ -355,14 +351,11 @@ df_chirps_adm1_anomaly |>
   facet_wrap(~yr, scales = "free")
 ```
 
-
 ## Food Insecurity (IPC)
 
 Data source (IPC)
 
 **preliminary analysis** - needs further validation
-
-
 
 ```{r}
 # bugfix/pop-areas
@@ -559,8 +552,6 @@ gdf_areas_filt <- gdf_areas_filt |>
     overall_phase_factor = fct_relevel(fct_expand(as_factor(overall_phase),"0","1","2","3","4","5"),"0","1","2","3","4","5")
   )
 ```
-
-
 
 ```{r}
 #| fig.height: 7
