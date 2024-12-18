@@ -1,0 +1,58 @@
+# Introduction
+
+This is a **Work in Progress (WIP).**
+
+-   This book provides the different analyses considered during the development of the Afghanistan - Drought AA framework.
+
+-   The majority of analyses here are based on environment/climatic remotely sensed data. As the data sets and analyses resemble many other environmental analyses it's important to clarify what the objectives are and are not:
+
+    -   The current analyses target the March-April-May season in Northern Afghanistan which coincides with the Spring wheat growing season.
+
+    -   The current analyses are aimed at understanding if any environmental indicators or combinations of environmental indicators can be useful in anticipating drought conditions over this growing season that would result in negative humanitarian consequences.
+
+    -   We seek to understand if we can establish thresholds on data sets at specified trigger moments (moments in time) where if breached pre-arranged finances can be released for pre-arranged activities.
+
+    -   The goal is not to build a comprehensive drought monitoring system the extends beyond the area of interest or season of interest.
+
+## Data Sets Explored
+
+-   Precipitation forecast:
+
+    -   The European Centre for Medium-Range Weather Forecasts—System 5 (ECMWF-SEAS5) @johnson2019seas5
+
+-   Precipitation observed:
+
+    -   The Climate Hazards group Infrared Precipitation with Stations (CHIRPS) @funk2015climate
+    -   ERA5: Fifth generation of ECMWF atmospheric reanalyses of the global climate @copernicus2017era5
+
+-   Vegetation/crop development
+
+    -   FAO Agricultural Stress Index System (ASIS) @fao_asis
+
+    -   FA0 Vegetation Health Index (VHI) - Near Real Time (Dekadal) @fao_asis
+
+    -   NDVI - MODIS Terra & Aqua @didan2015mod13a2 @didan2015myd13q1
+
+-   Snow
+
+    -   NDSI - MODIS @hall2015modis
+
+    -   SWE ERA5 @mcnally2017land
+
+    -   Snow depth water equivalen - ERA5-Land: monthly averaged data from 1981 to present @munoz2019era5
+
+-   Soil Moisture
+
+    -   Volumetric soil moisture layers 1- 4 @munoz2019era5
+
+-   Runoff
+
+    -   @munoz2019era5
+
+-   Temperature
+
+    -   @copernicus2017era5
+
+This is a book created from markdown and executable code.
+
+See @knuth84 for additional discussion of literate programming.

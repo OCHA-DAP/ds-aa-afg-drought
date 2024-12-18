@@ -1,6 +1,5 @@
 ---
-title: Exploratory - AFG Drought Framework
-subtitle: Prioritization support
+title: AOI Selection - Prioritization
 format:
   html:
     toc: true
@@ -25,17 +24,28 @@ project:
 
 ## Intro
 
-Preliminary **work in progress**
+Preliminary **work**
 
-This document contains exploratory work done to support area targeting for drought monitoring and AA activity implementation. So far discussion has centered around drought monitoring over the winter wheat agricultural season in Afghanistan.
+This document contains exploratory work done to support area targeting for drought monitoring and AA activity implementation. Initially the discussion centered around drought monitoring over the winter wheat agricultural season in Afghanistan, later this was revised to the Spring wheat growing season
 
 While targeting decisions should ultimately be made by in-country experts and implementing partners to reflect operational realities, this document aims to explore several additional data sets to support this process and encourage discussion.
 
-The document will focus on 3 main data sets:
+The document focuses on 3 main data sets:
 
-1.  Winter wheat crops mask (TBD)
+1.  Winter wheat/Spring wheat crops mask (TBD)
 2.  Rainfall (CHIRPS)
 3.  Food Insecurity (IPC Phase Classification)
+
+### Key Takeaways
+
+1.  To date no winter/spring wheat crop mask provided. Therefore, the identification of key wheat growing areas has been left to in-country experts
+2.  Rainfall analysis provides useful clustering of provinces based on historical scarcity in alignment with general feedback from in-country partners
+3.  Up to date IPC Phase Classifications have not shown to be useful for prioritization due to homogeneity of the latest classification which offers little discriminatory power for this project
+
+Working group feedback:
+
+1.  The initial group decision was to focus the pilot on `Faryab` province in the north
+2.  As of December 2024, the group has tentatively decided to expand to include `Faryab` ,`Takhar`, `Badakhshan`, `Badghis`, `Sar-e-Pul` provinces.
 
 ```{r libsData}
 box::use(dplyr[...])
@@ -55,30 +65,29 @@ box::use(ggiraph)
 box::use(ripc)
 box::use(cumulus)
 
-box::use(../R/utils[download_fieldmaps_sf])
 box::use(blob = ../R/blob_connect)
 
 gghdx()
 
 
 # load admin boundaries
-gdf_adm1 <- download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm1") |>
+gdf_adm1 <- cumulus$download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm1")$afg_adm1 |>
   clean_names() |>
   select(matches("adm\\d_[pe]"))
 
 
-gdf_adm2 <- download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm2") |>
+gdf_adm2 <- cumulus$download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm2")$afg_adm2 |>
   clean_names() |>
   select(matches("adm\\d_[pe]"))
 
 # load chirps rainfall
 fps <- blob$proj_blob_paths()
-pc <- blob$load_proj_containers()
 
 df_chirps_adm2 <- cumulus$blob_read(
   name = fps$DF_ADM2_CHIRPS_WFP,
-  stage = "dev",
-  container ="projects"
+  container ="projects",
+  stage= "dev",
+  progress_show =FALSE
 )
 ```
 
@@ -214,6 +223,7 @@ gdf_top5_diss <- gdf_adm1_ranked |>
 
 ```{r}
 #| fig.height: 7
+#| label: fig-plot_chirps_2020_2023
 
 ggplot()+
   ggiraph$geom_sf_interactive(
@@ -253,6 +263,9 @@ ggplot()+
 ```
 
 ```{r}
+#| label: fig-plot_chirps_2020_2023_avg
+
+
 gdf_adm1_ranked_overall<- gdf_adm1_ranked |>
   mutate(
     # these weights are subjective first go
@@ -422,6 +435,7 @@ ipc_fill_pal <- c(
 Below we plot the latest IPC phase classifications produced:
 
 ```{r}
+#| label: fig-plot_ipc_latest
 
 gdf_ipc_sf_current <- ipc_get_areas_current_sf(country = "AF")
 
@@ -555,6 +569,8 @@ gdf_areas_filt <- gdf_areas_filt |>
 
 ```{r}
 #| fig.height: 7
+#| label: fig-plot_ipc_2020_current_snapshots
+
 # map each time period
 ggplot()+
   geom_sf(
@@ -593,6 +609,7 @@ Finally we attempt to aggregate recent years by two methods as an attempt to try
 
 ```{r}
 #| fig.height: 8
+#| label: fig-plot_ipc_weighted_mean
 
 mode <- function(codes){
   which.max(tabulate(codes))

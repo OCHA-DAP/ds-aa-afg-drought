@@ -1,0 +1,871 @@
+---
+title: "Snow Melt Date"
+editor: visual
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: false
+  results: "asis"
+  out.width: "100%"
+---
+
+## Intro
+
+- Since snow fraction (NDSI) and snow water equivalent (SWE) results were largely inconclusive for scope of project Here we look to see if any information can be gained by trying to understand snow melt date.
+- This document demonstrates a method for extracting date of snow melt at the pixel level and then summarizing this value to different areas of interests
+- This  adapts the Google Earth Engine methods provided by @armstrong23
+
+```{r}
+#| eval: true
+
+aoi_adm1 <- c(
+  "Takhar",
+  "Badakhshan",
+  "Badghis",
+  "Sar-e-Pul" ,
+  "Faryab"
+  )
+```
+
+```{r}
+#| eval: false
+#| echo: true
+
+library(rgee)
+library(sf)
+library(tidyverse)
+library(gghdx)
+library(glue)
+library(ggiraph)
+library(glue)
+library(tidyrgee)
+
+```
+
+```{r}
+#| echo: false
+#| eval: true
+
+box::use(
+  gghdx[...],
+  dplyr[...],
+  tidyr[...],
+  lubridate[...],
+  janitor[...],
+  ggplot2[...],
+  ggiraph[...],
+  glue[...],
+  purrr[...]
+)
+
+box::use(
+  ../R/blob_connect,
+   loaders =../R/load_funcs[...]
+)
+gghdx()
+```
+
+```{r}
+#| eval: false
+
+library(rgee)
+ee_check()
+ee_Initialize()
+
+basin_levels = c("4"=4,"5"=5,"6"=6,"7"= 7)
+
+img_dem = ee$Image('NASA/NASADEM_HGT/001')$select('elevation')
+terrain = ee$Terrain$products(img_dem)
+
+
+fc_river = ee$FeatureCollection('WWF/HydroSHEDS/v1/FreeFlowingRivers')
+img_river = ee$Image()$byte()$paint(fc_river, 'RIV_ORD', 2);
+adm1_fc <- ee$FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level1")
+adm0_fc <- ee$FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level0")
+
+# filter adm1 to get only those in Afghanistan
+adm1_afghanistan <- adm1_fc$filter(ee$Filter$eq("ADM0_NAME", "Afghanistan"))
+adm0_afghanistan <- adm0_fc$filter(ee$Filter$eq("ADM0_NAME", "Afghanistan"))
+fc_faryab <- adm1_afghanistan$filter(ee$Filter$eq("ADM1_NAME","Faryab"))
+
+Map$centerObject(fc_faryab,7)
+
+l_hybas = map(basin_levels,\(x)ee$FeatureCollection(paste0('WWF/HydroSHEDS/v1/Basins/hybas_',x)))
+riv_vis = list(
+  min= 1,
+  max= 10,
+  palette= list('#08519c', '#3182bd', '#6baed6', '#bdd7e7', '#eff3ff')
+)
+hybas_vis = list(
+  color= '#808080',
+  strokeWidth= 1
+)
+
+```
+
+## Overview of AOI & hydrology
+
+
+```{r}
+#| eval: false
+
+m_hydro <- Map$addLayer(img_river,riv_vis, "hydroshed rivers")+
+  Map$addLayer(l_hybas$`5`$style(fillColor="#00000000", color = "darkblue", width =1))+
+  Map$addLayer(fc_faryab$style(fillColor = "#00000000", color = "red"))+
+  Map$addLayer(adm0_afghanistan$style(fillColor="#00000000", color = "black", width = 5))
+# mapview::mapshot2(x =m_hydro,file ="outputs/aoi_hydro.png", remove_url =TRUE )
+
+```
+
+```{r}
+#| eval: true
+#| echo: false
+#| label: fig-map_aoi_hydro
+
+knitr::include_graphics("../outputs/aoi_hydro.png")
+```
+
+## Snow Masking
+
+The methodology uses MODIS `NDSI` snow fraction. An requires us to define an area mask. For the mask we want to consider pixels that represent ephemeral/seasonal snow. We want pixels that consistently get winter snow, but do not have snow year round or nearly year round.
+
+The methodology by @armstrong23 does this by choosing a single year and using the temporal pixel level snow dynamics of that year to create a mask that used across all years of analysis. For comparative purposes we implement this methodology and another which rather than using a single year uses a composite derivative to create the mask.
+
+In order to create the single year mask we have to select a year that is representative of general snow fall. To do this we look at the yearly distributions of winter precipitation (Dec - Feb) @fig-plot_snow_overview and select a year close to the median. For the purpose of this analysis/chapter we focus on Faryab and select the year 2006
+
+
+### Method 1: Single Year Mask
+
+```{r}
+#| eval: true
+#| label: fig-plot_winter_precip
+
+df_chirps <- blob_connect$read_blob_file("DF_ADM1_CHIRPS") |>
+  filter(
+    ADM1_NAME %in% aoi_adm1
+  )
+
+df_chirps_winter <- df_chirps |>
+  mutate(
+    mo = month(date)
+  ) |>
+  filter(
+    mo %in% c(12,1,2)
+  ) |>
+  mutate(
+    yr_adj = ifelse(mo==1,year(date),year(date)+1)
+  )|>
+  arrange(ADM1_NAME, date) |>
+  filter(yr_adj>1981) |>
+  group_by(
+    ADM0_NAME, ADM1_NAME, yr_adj
+  ) |>
+  summarise(
+    value = sum(value)
+  ) |>
+  mutate(
+    long_term_mean = mean(value),
+    long_term_median = median(value),
+      diff = abs(value - long_term_median),
+      # min_diff = diff== min(diff),
+    min_diff = diff%in% diff[ which(diff %in% sort(diff)[1:4])]
+    )
+
+
+p_chirps_winter <- df_chirps_winter |>
+  ggplot(
+    aes(x= ADM1_NAME,y= value)
+  )+
+  geom_boxplot(color = "grey", fill = "black")+
+  geom_jitter_interactive(aes(color = min_diff, tooltip= glue("{yr_adj}")))+
+  ggrepel::geom_text_repel(
+    data= df_chirps_winter |>
+      filter(min_diff),
+    aes(x= ADM1_NAME, y= value, label= yr_adj), color= "red", size =4
+  )+
+  labs(
+  title = "Dec-Feb Precipitation Distributions"
+  )+
+  theme(
+    axis.title.x = element_blank(),
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+girafe(ggobj = p_chirps_winter)
+
+```
+
+Below we calculate the mask components independently soley for visualization/communication purposes.
+
+
+```{r}
+# Define complete collection
+complete_col <- ee$ImageCollection("MODIS/061/MOD10A1")$
+  select("NDSI_Snow_Cover")
+```
+
+
+1. create water mask
+2. create mask w/ pixels >= 10 % NDSI for at least 14 days of year (2006)
+3. create mask w/ pixels >= 10 % NDSI no more than 120 days (3 months) of year
+4. multiply all masks together to create analysis mask
+
+
+```{r}
+#| eval: false
+
+# Define water mask
+water_mask <- ee$Image("MODIS/MOD44W/MOD44W_005_2000_02_24")$
+  select("water_mask")$Not()
+
+# Define snow cover ephemeral mask
+snow_cover_ephem <- complete_col$
+  filterDate("2006-01-01", "2007-01-01")$
+  map(function(img) img$gte(10))$
+  sum()$
+  gte(14) # at least 2 weeks > 10 %
+
+# Define snow cover constraint mask
+snow_cover_const <- complete_col$
+  filterDate("2006-01-01", "2007-01-01")$
+  map(function(img) img$gte(10))$
+  sum()$
+  lte(120) # if LTE 200 days 1, otherwise 0
+
+analysis_mask_2006 <- water_mask$
+  multiply(snow_cover_ephem)$
+  multiply(snow_cover_const)
+
+
+
+snow_gtex <- complete_col$
+  filterDate("2006-01-01", "2007-01-01")$
+  map(function(img) img$gte(10))$
+  sum()$
+  gt(120)
+
+#
+snow_gtex <- snow_gtex$mask(snow_gtex)
+
+snow_cover_ephem_masked <- snow_cover_ephem$mask(snow_cover_ephem)
+
+
+m_snow_masks <-   Map$addLayer(
+    snow_cover_ephem_masked,list(palette= c("cyan")),"ephemeral_snow"
+    )+
+    Map$addLayer(snow_gtex,list(palette = c("blue")),"snow_all_time")+
+    Map$addLayer(fc_faryab$style(fillColor = "#00000000", color = "red"))
+
+
+blob_mapshot <- function(x,stage="dev", container="projects", name){
+  mapview::mapshot2(x =x,file = tf<- tempfile(fileext = ".png"), remove_url =TRUE )
+  AzureStor::upload_blob(
+    src = tf,
+    dest= name,
+    container= cumulus::blob_containers(stage= stage)[[container]]
+    )
+}
+
+blob_mapshot(
+  m_snow_masks,
+  stage = "dev" ,
+  container= "projects",
+  name ="ds-aa-afg-drought/processed/images/snow_masks_y2006_14e_120c_14e_120c.png"
+  )
+
+mapview::mapshot2(x =m_snow_masks,file ="../outputs/snow_masks_y2006_14e_120c_14e_120c.png", remove_url =TRUE )
+
+analysis_mask_masked <- analysis_mask_2006$mask(analysis_mask_2006)
+
+m_analysis_mask <- Map$addLayer(analysis_mask_masked, list(palette= "black"),"analysis_mask")+
+  Map$addLayer(fc_faryab$style(fillColor = "#00000000", color = "red"))
+
+mapview::mapshot2(x =m_analysis_mask,file ="../outputs/analysis_masks_y2006_14e_120c_14e_120c.png", remove_url =TRUE )
+blob_mapshot(
+  m_analysis_mask,
+  stage = "dev" ,
+  container= "projects",
+  name ="ds-aa-afg-drought/processed/images/analysis_masks_y2006_14e_120c_14e_120c.png"
+  )
+
+
+```
+
+- In light cyan blue you see the areas that has > 10% snow fall for more than 2 weeks.
+- In dark blue you see the areas that had >10 % snow fall for more than three months
+```{r}
+#| eval: true
+#| echo: false
+#| label: fig-map_snow_mask_illustration_method1
+
+# AzureStor::download_blob(
+#   container = cumulus::blob_containers( stage = "dev")$projects,
+#   src = "ds-aa-afg-drought/processed/images/snow_masks_y2006_14e_120c_14e_120c.png",
+#   dest = tf <-  tempfile(fileext =".png")
+# )
+# knitr::include_graphics(tf)
+knitr::include_graphics("../outputs/snow_masks_y2006_14e_120c_14e_120c.png")
+
+```
+
+
+- We multiply these values together to get our analysis mask
+
+```{r}
+#| eval: true
+#| echo: false
+#| label: fig-map_analysis_mask_method1
+
+# AzureStor::download_blob(
+#   container = cumulus::blob_containers( stage = "dev")$projects,
+#   src = "ds-aa-afg-drought/processed/images/analysis_masks_y2006_14e_120c_14e_120c.png",
+#   dest = tf <-  tempfile(fileext =".png")
+# )
+# knitr::include_graphics(tf)
+knitr::include_graphics("../outputs/analysis_masks_y2006_14e_120c_14e_120c.png")
+
+```
+
+
+### Method 2: Multi-year composite mask
+
+- After experimenting w/ different years used for masking we realize that the year chosen does have a significant impact on final results. Additionally the method is not generalize able to multiple AOIs as seen in @fig-plot_winter_precip , different areas have different years that would be considered more or less "typical"/"representative"
+- Therefore, the premise of this composite method is to iterate through each year on record creating a mask for each year using the same methodology as above, but then finally compositing all the masks to retain a new mask that represents the area w/ 70 % agreement between all masks.
+
+
+```{r}
+#| eval: false
+#| echo: true
+
+# The example above uses 1 "typical" year to define mask, but it seems like this decision does have a big impact on the results
+create_snow_masks <- function(year) {
+
+  water_mask <- ee$Image("MODIS/MOD44W/MOD44W_005_2000_02_24")$
+  select("water_mask")$Not()
+
+  start <- ee$Date$fromYMD(year, 1, 1)
+  end <- ee$Date$fromYMD(year, 12, 31)
+
+   modis_snow <- ee$ImageCollection("MODIS/061/MOD10A1")$
+     select("NDSI_Snow_Cover")
+
+  # Filter MODIS snow cover dataset for the given year
+  snow_lte_120d <- modis_snow$
+    filterDate(start, end)$
+    map(function(img) img$gte(10))$
+    sum()$
+    lte(120)
+
+  snow_gte_14d <- modis_snow$
+    filterDate(start, end)$
+    map(function(img) img$gte(10))$
+    sum()$
+    gte(14)
+
+  water_mask$multiply(snow_gte_14d)$
+    multiply(snow_lte_120d)
+
+
+}
+
+start_year <- 2000
+end_year <-  2024
+years <- ee$List$sequence(start_year, end_year)
+
+yearly_analysis_masks <- years$map(ee_utils_pyfunc(function(year) {
+  create_snow_masks(year)
+  }
+ )
+)
+
+num_years <- length(start_year:end_year)
+
+# Aggregate across years to calculate the percentage of agreement
+
+composite_analysis_mask <- ee$ImageCollection$fromImages(yearly_analysis_masks)$
+  sum()$
+  divide(num_years)$
+  gte(0.7) # Agreement threshold: >70% of years
+
+```
+
+below we see the two masking methods compared. Dark green represents the composite map wheras black represents the single-year mask (2006)
+
+```{r}
+#| eval: false
+#| echo: true
+vis_params_composite <- list(min = 0, max = 1, palette = c("white", "darkgreen"))
+
+m_mask_comparison <-
+   Map$addLayer(analysis_mask_masked, list(palette= "black"),"Analysis Mask 2006")+
+  Map$addLayer(composite_analysis_mask$mask(composite_analysis_mask), vis_params_composite, "Composite Ephemeral")+
+  Map$addLayer(fc_faryab$style(fillColor = "#00000000", color = "red"))
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+
+mapview::mapshot2(x =m_mask_comparison,file ="../outputs/analysis_mask_comparison_y2006_composite_14e_120c.png", remove_url =TRUE )
+blob_mapshot(
+  m_mask_comparison,
+  stage = "dev" ,
+  container= "projects",
+  name ="ds-aa-afg-drought/processed/images/analysis_mask_comparison_y2006_composite_14e_120c.png"
+  )
+```
+
+```{r}
+#| echo: false
+#| eval: true
+#| label: fig-map_analysis_mask_comparison
+
+# AzureStor::download_blob(
+#   container = cumulus::blob_containers( stage = "dev")$projects,
+#   src = "ds-aa-afg-drought/processed/images/analysis_mask_comparison_y2006_composite_14e_120c.png",
+#   dest = tf <-  tempfile(fileext =".png")
+# )
+# knitr::include_graphics(tf)
+knitr::include_graphics("../outputs/analysis_mask_comparison_y2006_composite_14e_120c.png")
+
+```
+
+## Calculate Date Snow Disappearance
+
+Below we calculate the first day-of-year (DOY) of now snow at the pixel level using both the 2006 single year mask and the composite mask
+
+```{r}
+#| eval: false
+#| echo: true
+
+# Define constants
+# start_doy <- 1
+# start_year <- 2000
+# end_year <- 2024
+
+# Define function to add date bands
+add_date_bands <- function(img) {
+  # Get image date
+  date <- img$date()
+
+  # Get calendar day-of-year
+  cal_doy <- date$getRelative('day', 'year')
+
+  # Get relative day-of-year
+  # rel_doy <- date$difference(ee$Date(start_date), 'day')
+
+  # Get the date as milliseconds from Unix epoch
+  millis <- date$millis()
+
+  # Add date bands to the image
+  date_bands <- ee$Image$constant(
+    c(
+      cal_doy,
+      # rel_doy,
+      millis,
+      start_year
+      ))$
+    rename(
+      c("calDoy",
+        # "relDoy",
+        "millis", "year"))$
+    cast(list(calDoy = "int",
+              # relDoy = "int",
+              millis = "long", year = "int"))
+
+  img$addBands(date_bands)$set(list(millis = millis))
+}
+
+```
+
+```{r}
+#| eval: false
+#| echo: true
+
+annual_snow_disappearance <- function(start_year,end_year, mask_selection){
+  years <- ee$List$sequence(start_year,end_year)
+  annual_list <- years$map(ee_utils_pyfunc(function(year) {
+    # Define date range for the year
+    start_date <- ee$Date$fromYMD(year, 1, 1)$advance(1 - 1, "day") # 1 - 1 because first 1 used to be start_doy - can be used when we don't want to start Jan 1.
+    end_date <- start_date$advance(250, "day")$advance(1, "day")
+
+    sys_date <- ee$Date$fromYMD(year, 1, 1)
+    # Filter collection by year
+    year_col <- complete_col$filterDate(start_date, end_date)
+
+    # Generate no-snow image
+    no_snow_img <- year_col$
+      map(add_date_bands)$
+      sort("millis")$
+      reduce(ee$Reducer$min(
+        4
+      ))$
+      rename(c("snowCover",
+               "calDoy",
+               "millis", "year"))$
+      updateMask(mask_selection)$
+      set("year", year)$
+      set("system:time_start",sys_date)
+
+    no_snow_img$updateMask(no_snow_img$select("snowCover")$eq(0))
+  }))
+  ee$ImageCollection$fromImages(annual_list)
+}
+annual_col_composite <- annual_snow_disappearance(start_year=2000,end_year = 2024, mask_selection = composite_analysis_mask)
+annual_col_2006 <- annual_snow_disappearance(start_year=2000,end_year = 2024, mask_selection = analysis_mask_2006)
+```
+
+### Snow Melt Map
+
+- For the purpose of map visualization we just map the DOY of snow disappearance using the method 1 mask (single year)
+- Below you see the our analysis mask, AOI, and a raster colored by approximate date of **snow disappearance in 2023** where yellow colors represent later snow melt dates (higher altitudes) and darker blue colors are earlier snow melt dates
+
+```{r}
+#| eval: false
+#| echo: true
+
+# Define visualization arguments
+viz_doy <- list(
+  bands = c("calDoy"),
+  min = 50,
+  max = 150,
+  palette = c("#0D0887", "#5B02A3", "#9A179B", "#CB4678", "#EB7852", "#FBB32F", "#F0F921")
+)
+
+# Visualize a specific year
+
+first_day_no_snow_2023 <- annual_col_2006$filter(ee$Filter$eq("year", 2023))$first()
+first_day_no_snow_2024 <- annual_col_2006$filter(ee$Filter$eq("year", 2024))$first()
+
+m_no_snow_2023 <- Map$addLayer(first_day_no_snow_2023, viz_doy, "First day of no snow, 2023")+
+  Map$addLayer(fc_faryab$style(fillColor = "#00000000", color = "red"))
+
+
+
+m_no_snow_2024 <- Map$addLayer(first_day_no_snow_2024, viz_doy, "First day of no snow, 2024")+
+  Map$addLayer(fc_faryab$style(fillColor = "#00000000", color = "red"))
+
+m_no_snow_2023 | m_no_snow_2024
+
+```
+
+```{r}
+#| eval: false
+#| echo: false
+
+blob_mapshot(
+  m_no_snow_2023,
+  stage = "dev" ,
+  container= "projects",
+  name ="ds-aa-afg-drought/processed/images/map_snow_doy_2023_m2006.png"
+  )
+blob_mapshot(
+  m_no_snow_2024,
+  stage = "dev" ,
+  container= "projects",
+  name ="ds-aa-afg-drought/processed/images/map_snow_doy_2024_m2006.png"
+  )
+mapview::mapshot2(x =m_no_snow_20203,file ="../outputs/map_snow_doy_2023_m2006.png", remove_url =TRUE )
+mapview::mapshot2(x =m_no_snow_2024,file ="../outputs/map_snow_doy_2024_m2006.png", remove_url =TRUE )
+```
+
+
+```{r}
+#| eval: true
+#| echo: false
+#| label: fig-map_snow_doy_2023_method1
+
+# AzureStor::download_blob(
+#   container = cumulus::blob_containers( stage = "dev")$projects,
+#   src = "ds-aa-afg-drought/processed/images/map_snow_doy_2023_m2006.png" ,
+#   dest = tf <-  tempfile(fileext =".png")
+# )
+# knitr::include_graphics(tf)
+
+knitr::include_graphics("../outputs/map_snow_doy_2023_m2006.png")
+```
+
+
+By comparing the above map for 2023 with that for **2024** we can see much earlier snow melt dates in 2024.
+
+```{r}
+#| eval: true
+#| echo: false
+#| label: fig-map_snow_doy_2024_method1
+
+# AzureStor::download_blob(
+#   container = cumulus::blob_containers( stage = "dev")$projects,
+#   src = "ds-aa-afg-drought/processed/images/map_snow_doy_2024_m2006.png" ,
+#   dest = tf <-  tempfile(fileext =".png")
+# )
+# knitr::include_graphics(tf)
+knitr::include_graphics("../outputs/map_snow_doy_2024_m2006.png")
+
+```
+
+## Timeseries Extraction
+
+- For each we get the earliest snow melt date per pixel in our AOI and mask and get calculate the average snow melt date in our AOI with zonal statistics.
+
+
+```{r}
+#| eval: false
+#| echo: true
+
+
+fc_filtered <- adm1_afghanistan$filter(
+  ee$Filter$inList("ADM1_NAME", aoi_adm1)
+  )
+
+list(
+  "m_y2006" = annual_col_2006,
+  "m_composite" = annual_col_composite
+) |>
+  imap(
+    \(ict,nmt){
+      cat(nmt,"\n")
+      tic_annual <-  as_tidyee(ict$select('calDoy'))
+      df_snowmelt <- ee_extract_tidy(
+        x = tic_annual,
+        y=fc_filtered,
+        stat = "mean",
+        scale = 500
+      )
+      cumulus::blob_write(
+        df_snowmelt,
+        stage = "dev" ,
+        name = glue("ds-aa-afg-drought/processed/vector/modis_first_day_no_snow_{nmt}_14e_120c.csv"),
+        container = "projects"
+      )
+    }
+  )
+
+
+```
+
+- We then compare that against both `end of may` and `end of jun` `VHI` and `ASI`
+
+```{r}
+#| eval: true
+
+df_fao <- loaders$load_fao_vegetation_data()
+df_fao_wide <- df_fao |>
+  mutate(
+    mo = month(date, label = TRUE,abbr= TRUE)
+  ) |>
+  filter(
+    dekad == 3,
+    month %in% c("05","06")
+  ) |>
+  pivot_wider(
+    id_cols = c("country","adm1_code","province","year"),
+    values_from = data,
+    names_from= c("type","mo")
+  ) |>
+  rename(
+    yr = year,
+    adm1_name = province
+  )
+```
+
+```{r}
+#| eval: true
+#| echo: true
+
+ldf_snow_melt <- list(
+  "single_year" = "m_y2006",
+  "composite" ="m_composite"
+) |>
+  map(\(file_id){
+    tfn <- glue("ds-aa-afg-drought/processed/vector/modis_first_day_no_snow_{file_id}_14e_120c.csv")
+    cumulus::blob_read(
+      tfn,
+      stage= "dev"
+      )
+  })
+
+ldf_snow_fao <- ldf_snow_melt |>
+  map(
+    \(dft){
+      dft |>
+        clean_names() |>
+        filter(
+          adm1_name %in% aoi_adm1
+        ) |>
+        arrange(adm1_code, adm1_name, date) |>
+        mutate(
+          yr = year(date),
+          date_melt = date+ days(as.integer(value)),
+          doy_melt = value,
+          date_plot = as_date("2023-01-01")+ days(as.integer(doy_melt)),
+          label= glue(
+            "year: {yr}
+      snow melted: {format(date_melt,'%d %b')}"
+          )
+        ) |>
+        left_join(
+          df_fao_wide , by = c("adm1_code","adm1_name","yr")
+        )
+    }
+  )
+
+
+lp_snowmelt <- ldf_snow_fao |>
+  map(\(dft){
+    dft |>
+      filter(adm1_name %in% "Faryab") |>
+      select(-value) |>
+      mutate(
+        across(starts_with("asi"),\(x)x/100)
+      ) |>
+      pivot_longer(
+        cols = asi_May:vhi_Jun,
+      ) |>
+      ggplot(
+        aes(x= date_plot, y= value)
+      )+
+      geom_point_interactive(
+        aes(tooltip= label)
+      )+
+      geom_vline(
+        xintercept = c(50,85)
+      ) |>
+      labs(
+        x= "Approximate day of snow melt",
+        y= "ASI end of June"
+      )+
+      geom_vline(
+        xintercept = as_date(c("2023-04-01","2023-02-15"))
+      ) +
+      facet_wrap(~name, scales="free_y")+
+      labs(
+        x= "Day of snow disapperance",
+        y= "Vegetative Index"
+      )+
+      scale_y_continuous(labels =scales::label_percent())+
+      scale_x_date(date_labels = "%e %b",breaks = scales::breaks_width("20 days"))+
+      theme(
+        axis.text.x = element_text(angle = 90)
+      )
+
+
+  })
+
+```
+
+## Snow Melt Date By ASI
+
+- Method 1 pushes the snow disappearance dates much earlier than method 2.
+- Under method 1 we see the majority of snow melt dates occurring before 15 Feb
+- Method 1 we see a lot of snow disappearance occurring after Feb 15
+
+
+### Method 1
+
+
+```{r}
+#| echo: true
+#| eval: true
+#| label: fig-plot_snow_disappearance_method1
+
+girafe(ggobj=lp_snowmelt$single_year)
+```
+
+### Method 2
+
+```{r}
+#| echo: true
+#| eval: true
+#| label: fig-plot_snow_disappearance_method2
+
+girafe(ggobj=lp_snowmelt$composite)
+```
+
+- Perhaps the median/average "representative" snow year chosen in method 1 (2006) is too heavily weighted towards an earlier snow fall pattern in the 2000's. Whereas method 2 may do a better job of capturing a change in snowfall dynamic/regime over time.
+- Method 2 seems more aligned with the general snow fall distribution we see in @fig-plot_snow_overview
+- Method 2 seems more generalizeable to expand the AOI.
+
+```{r scrap}
+#| eval: false
+#| echo: false
+#| include: false
+
+
+ee_check()
+# py_config()
+# reticulate::use_python(python = "/Users/zackarno/.virtualenvs/rgee/bin/python")
+# ?rgee::ee_install_set_pyenv()
+
+
+annual_list <- years$map(ee_utils_pyfunc(function(year) {
+  # Define date range for the year
+  start_date <- ee$Date$fromYMD(year, 1, 1)$advance(start_doy - 1, "day")
+  end_date <- start_date$advance(250, "day")$advance(1, "day")
+
+  sys_date <- ee$Date$fromYMD(year, 1, 1)
+  # Filter collection by year
+  year_col <- complete_col$filterDate(start_date, end_date)
+
+  # Generate no-snow image
+  no_snow_img <- year_col$
+    map(add_date_bands)$
+    sort("millis")$
+    reduce(ee$Reducer$min(
+      # 5
+      4
+      ))$
+    rename(c("snowCover",
+             "calDoy",
+             # "relDoy",
+             "millis", "year"))$
+    updateMask(mask_to_use)$
+    set("year", year)$
+    set("system:time_start",sys_date)
+
+  no_snow_img$updateMask(no_snow_img$select("snowCover")$eq(0))
+}))
+
+# Convert to an ImageCollection
+annual_col <- ee$ImageCollection$fromImages(annual_list)
+
+tic_annual <-  as_tidyee(annual_col$select('calDoy'))
+
+# Filter features where ADM1_NAME matches any value in aoi
+
+
+
+# complete_col$first()$projection()$nominalScale()$getInfo()
+
+df_avg_snowmelt <- ee_extract_tidy(
+  x = tic_annual,
+  y=fc_filtered,
+  stat = "mean",
+  scale = 500
+  )
+
+# write_csv(df_avg_snowmelt,"data/modis_first_day_no_snow_2010_mask.csv")
+cumulus::blob_write(
+  df_avg_snowmelt,
+  stage = "dev" ,
+  name = glue("ds-aa-afg-drought/processed/vector/modis_first_day_no_snow_{mask_selection}_14e_120c.csv"),
+  container = "projects"
+)
+# cumulus::blob_write(
+#   df_avg_snowmelt,
+#   stage = "dev" ,
+#   name = "ds-aa-afg-drought/processed/vector/modis_first_day_no_snow_2010_mask.csv",
+#   container = "projects"
+# )
+
+```

@@ -1,0 +1,537 @@
+---
+title: Snow Cover/Water Equivalent
+subtitle: Initial Analysis - NDSI & SWE
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+**WIP**
+
+## Intro
+
+In code below we try to assess if monthly remotely sensed snow indicators have predictive power on vegetative indicators Agriculture Stress Index (ASI) and Vegetative Health Index (FAO) over the March-April-May (MAM) planting season in Afghanistan.
+
+**Data Sources**
+
+-   Normalized Difference Snow Index (NDSI): MODIS Terra Satellite
+-   Snow Water Equivalent (SWE): Famine Early Warning Systems Network (FEWS NET) Land Data Assimilation System (FLDAS)
+-   Agricultural Stress Index (ASI): FAO
+-   Vegetative Health Index (VHI): FAO
+
+## Results
+
+-   These results concur with the previous [analysis](https://docs.google.com/presentation/d/1pfqpEGx-MB_-1A8PiCnDmcOwifUQ-EXyTDuqQyBiw1c/edit?pli=1#slide=id.g2e1f646d655_0_126) of Faryab province that indicated a low correlation/predictive between driest SWE years and least healthy ASI years within
+-   Feb-Mar snow indicators (SWE & NDSI) show a more intuitive relationship with ASI than Dec-Jan snow indicators. This could indicate that later season hydro-dynamics play a more important role in agricultural MAM drought than the actual the total quantity of snow detected in the heart of the winter months (D-J).
+-   SWE & NDSI are moderately correlated with each other as expected
+
+## Discussion & Next Steps
+
+-   Simple N-D-J aggregated snow indicators (NDSI & SWE) do not appear to be useful in trigger design.
+-   To confirm or support the importance of late-season hydro-dynamics we may consider further integrating snow-melt dynamics into the analysis as started [output here](https://rpubs.com/zackarno/snow_melt_date_vs_asi)
+
+```{r}
+strip_text_size <- 8
+pt_size <- 0.5
+box::use(
+  ../R/blob_connect,
+  loaders =../R/load_funcs[...]
+)
+
+box::use(
+  dplyr[...],
+  forcats[...],
+  ggplot2[...],
+  gghdx[...],
+  janitor[...],
+  lubridate[...],
+  purrr[...],
+  readr[...],
+  scales[...],
+  stringr[...],
+  glue[...],
+  tidyr[...],
+  scales
+)
+
+gghdx()
+
+df_ndsi <- blob_connect$read_blob_file("DF_ADM1_MODIS_SNOW") |>
+  filter(
+    # ADM1_NAME == "Faryab",
+    parameter == "NDSI_Snow_Cover_mean"
+  ) |>
+  clean_names()
+
+df_swe <- blob_connect$read_blob_file("DF_ADM1_FLDAS_SWE")
+
+df_snow <- bind_rows(df_swe,df_ndsi |> select(all_of(colnames(df_swe)))) |>
+  mutate(
+    type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
+  )
+
+df_fao <- loaders$load_fao_vegetation_data()
+```
+
+## Snow Indicators
+
+### Overview
+
+Here we see the monthly distributions of snow indicators `NDSI` & `SWE` based on historical data.
+
+```{r}
+#| label: fig-plot_snow_overview
+
+df_snow |>
+  filter(adm1_name == "Faryab") |>
+  mutate(
+    mo = month(date, label = T, abbr=T)
+  ) |>
+
+  mutate(
+    mo_reorder = factor(mo,levels=month(c(11:12,1:10), label =T, abbr= T))
+  ) |>
+  ggplot(
+    aes(x= mo_reorder, y= value, fill =type)
+  )+
+  geom_boxplot()+
+  facet_wrap(~adm1_name)+
+  theme(
+    axis.text.x = element_text(angle = 90),legend.title = element_blank(),
+    axis.title.x = element_blank()
+  )
+```
+
+```{r}
+
+df_snow_proc <- df_snow |>
+  group_by(
+    parameter,
+    adm1_name,
+    adm1_code,
+    mo = month(date)
+  ) |>
+  mutate(
+    anom = value - mean(value) ,
+    anom_z = anom /sd(value)
+  ) |>
+  group_by(adm1_name,adm1_code) |>
+  arrange(adm1_name,adm1_code,date) |>
+  mutate(
+    value_change= value -lag(value)
+  ) |>
+  ungroup()
+```
+
+### Comparison
+
+sense check that NDSI and SWE are somewhat aligned. They seem reasonably so - giving confidence
+
+```{r plot-scatterSnow}
+#| fig.height: 10
+#| label: fig-plot_ndsi_vs_swe
+
+df_snow_proc_adj <- df_snow_proc |>
+  mutate(
+    yr = year(date),
+    yr_adj = ifelse(mo>5, yr+1, yr)
+  )
+
+# gut check that SWE & NDSI roughly line up
+df_snow_proc_adj |>
+  mutate(
+    type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
+  ) |>
+    pivot_wider(
+    id_cols = c("date","adm1_name","adm1_code"),
+    values_from = value,
+    names_from = type
+  ) |>
+  ggplot(
+    aes(
+      x = NDSI,
+      y= SWE,
+    )
+  )+
+  geom_point(
+    size = pt_size
+  )+
+  facet_wrap(~adm1_name, scales = "free")+
+  labs(
+    title = "NDSI vs SWE"
+  )+
+  theme(
+    strip.text = element_text(size = 10)
+  )
+```
+
+## ASI & VHI
+
+```{r}
+
+
+df_fao_yr_mo <- df_fao |>
+  group_by(
+    type,
+    indicator,
+    adm1_code,
+    province,
+    mo_date = floor_date(date,"month"),
+  ) |>
+  summarise(
+    month_mean = mean(data),
+    last_dekad = last(data)
+  ) |>
+  ungroup()
+
+```
+
+```{r}
+#| eval: false
+#| echo: false
+#| include: false
+#| label: fig-plot_asi_vhi_timeseries
+
+# plot of ASI & VHI by month - could be another chapter
+
+df_fao_yr_mo |>
+  group_by(
+      type,
+    indicator,
+    adm1_code,
+    province,
+    mo = month(mo_date,label =T, abbr= T)
+  ) |>
+  mutate(
+    month_mean = ifelse(type == "asi",month_mean/100,month_mean)
+  ) |>
+  summarise(
+    across(.cols = c("month_mean","last_dekad"),\(x)mean(x,na.rm=T))
+  ) |>
+  ggplot(
+    aes(x= mo, y= month_mean, color = type, group = type)
+  )+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~province)+
+  theme(
+    axis.text.x = element_text(angle =90)
+  )
+
+```
+
+```{r}
+df_fao_yr_mo_anoms <- df_fao_yr_mo |>
+  mutate(
+    yr_date= floor_date(mo_date, "year")
+  ) |>
+  group_by(
+    type,
+    indicator,
+    adm1_code,
+    mo= month(mo_date)
+  ) |>
+  mutate(
+    mo_mean_anom =  month_mean - mean(month_mean),
+    mo_mean_anom_z = mo_mean_anom/sd(month_mean),
+    mo_end_anom = last_dekad - mean(last_dekad),
+    mo_end_anom_z = mo_end_anom/sd(mo_end_anom)
+  ) |>
+  ungroup()
+
+mam_int <- c(3:5)
+mamj_int <- c(3:6)
+
+df_fao_yr <- df_fao_yr_mo_anoms |>
+  group_by(
+    type,
+    indicator,
+    adm1_code,
+    adm1_name = province,
+    yr_date,
+    yr= year(yr_date)
+  ) |>
+  summarise(
+    mam_mean_value = mean(month_mean[mo %in% mam_int]),
+    mamj_mean_value = mean(month_mean[mo %in% mamj_int]),
+    may_last_value = mean(last_dekad[mo==5]),
+    june_last_value = mean(last_dekad[mo==6]),
+    mam_mean_anom = mean(mo_mean_anom[mo %in% mam_int]),
+    mamj_mean_anom = mean(mo_mean_anom[mo %in% mamj_int]),
+    mam_mean_z = mean(mo_mean_anom_z[mo %in% mam_int]),
+    mamj_mean_z = mean(mo_mean_anom_z[mo %in% mamj_int]),
+    may_last_value = mean(last_dekad[mo==5]),
+    june_last_value = mean(last_dekad[mo==6]),
+  )
+```
+
+quick check to make sure VHI and ASI are reasonably aligned. Here is a scatter plot of the two indicators for all provinces. It makes sense
+
+```{r}
+#| label: fig-plot_asi_vhi_scatter
+
+# quick comparison of VHI vs ASI - makes sense
+df_fao_yr |>
+  pivot_wider(
+    id_cols = c("adm1_code","adm1_name","yr_date"),
+    names_from = "type", values_from = "mam_mean_value"
+              ) |>
+  ggplot(
+    aes(x= vhi, y= asi)
+  )+
+  geom_point()+
+  labs(
+    title = "VHI vs ASI (average MAM value)",
+    subtitle = "Afghanistan - All provinces"
+  )
+
+```
+
+## Snow vs Vegetation
+
+```{r}
+#' this section is a bit overly complicated as I wanted to run the correlations for all combinations of engineered features for ASI, VHI, NDSI, SWE.
+# In the end I only show a few of the resulting plots, but I think the rest may be nice to have at some point - there are tons!!!
+
+df_snow_ready <- df_snow_proc_adj |>
+  mutate(
+    mo_label = month(mo,label=T, abbr=T),
+    snow_type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
+  ) |>
+  select(-yr) |>
+  rename(
+  yr= yr_adj
+  )
+
+
+merge_snow_veg <- function(df_snow,snow_param, df_veg,veg_param){
+  snow_filt <- df_snow |>
+    filter(
+      snow_type == snow_param
+    ) |>
+     filter(yr>2000) |>
+      pivot_wider(id_cols = c("adm1_name","adm1_code","yr"), # pivot so 1 row per year
+                      names_from = mo_label,
+                      values_from = c("value","anom","anom_z","value_change"),names_prefix ="snow_"
+          )
+   veg_filt <-  df_veg |>
+    filter(
+      type == veg_param
+    )
+  left_join(snow_filt,veg_filt,by=c("adm1_name", "adm1_code", "yr"))
+
+}
+
+
+corr_all_snow <- function(df_snow=df_snow_ready,
+                          snow_param = "NDSI",
+                          snow_feature="value",
+                          df_veg=df_fao_yr,
+                          veg_param = "asi",
+                          fao_feature ="mam_mean_value"
+                          ){
+  mo_labs <- month(1:12, label = T, abbr= T)
+  mo_rgx <- glue_collapse(mo_labs,sep = "|")
+  p_title = glue("Snow ({snow_param}: {snow_feature}) vs Vegetation ({toupper(veg_param)}: {fao_feature})")
+
+  df_merged <- merge_snow_veg(
+    df_snow =df_snow,
+    snow_param = snow_param,
+    df_veg = df_veg,
+    veg_param = veg_param
+  )
+
+  df_corrs <- df_merged |>
+    group_by(
+      type,
+      adm1_code,
+      adm1_name,
+    ) |>
+    summarise(
+      across(
+        .cols = any_of(ends_with(c("Nov","Dec","Jan","Feb","Mar","Apr"))),
+        .fns = ~cor(.,!!sym(fao_feature))
+      ),.groups="drop"
+    ) |>
+    mutate(
+      fao_feature = {{fao_feature}}
+    )
+   col_rgx <- glue_collapse(glue("^{snow_feature}_snow_{mo_labs}"),sep = "|")
+   df_corrs_long <- df_corrs |>
+     select(
+       all_of(c("type","adm1_code","adm1_name")),matches(col_rgx)
+  ) |>
+  pivot_longer(
+    cols = matches(col_rgx)
+  ) |>
+     mutate(
+       mo = factor(str_extract(name,mo_rgx),levels=c("Nov","Dec","Jan","Feb","Mar","Apr"))
+     )
+   df_corrs_long |>
+     ggplot(
+                aes(x= mo,
+                    y= adm1_name,
+                    fill = value)
+              )+
+              geom_tile()+
+              scale_fill_gradient2(
+                low = hdx_hex("tomato-hdx"),      # Color for negative values
+                mid = "white",    # Color for zero
+                high = hdx_hex("mint-hdx"),   # Color for positive values
+                midpoint = 0      # Set midpoint at zero
+
+              )+
+              geom_tile(
+                data= df_corrs_long |>
+                  filter(adm1_name == "Faryab",
+                         name %in% c("Nov","Dec","Jan","Feb","Mar","Apr")),
+                fill = NA, color ="black", lwd = 1.5
+              )+
+
+              geom_text(
+                aes(label = round(value,2))
+              )+
+              labs(
+                title = p_title,
+                # subtitle = "Afghanistan by Province",
+                y= "Province"
+              )+
+              theme(
+                axis.title.x = element_blank(),
+                legend.title= element_blank(),
+                plot.title = element_text(size = 12),
+                plot.subtitle = element_text(size = 12),
+                legend.text = element_text(angle=90)
+              )
+
+}
+
+
+all_feature_combos <- expand_grid(
+  snow_features = c("value",
+                    "anom",
+                    "anom_z",
+                    "value_change"),
+  fao_features = c( "mam_mean_value",
+                    "mamj_mean_value",
+                    "may_last_value",
+                    "june_last_value",
+                    "mam_mean_anom",
+                    "mamj_mean_anom",
+                    "mam_mean_z",
+                    "mamj_mean_z"
+                    )
+) |>
+  mutate(
+    label = glue ("Snow: {snow_features} vs Vegetation: {fao_features}")
+    )
+
+
+
+
+
+
+
+lps_ndsi_asi <- map(
+  set_names(all_feature_combos$label,all_feature_combos$label),
+  \(feature_combo){
+    df_feature<- all_feature_combos |>
+      filter(label == feature_combo)
+
+    corr_all_snow(
+    df_snow= df_snow_ready,
+    snow_param ="NDSI",
+    snow_feature = df_feature$snow_features,
+    df_veg= df_fao_yr,
+    veg_param ="asi",
+    fao_feature =df_feature$fao_features
+    )
+  }
+)
+
+lps_swe_asi <- map(
+  set_names(all_feature_combos$label,all_feature_combos$label),
+  \(feature_combo){
+    df_feature<- all_feature_combos |>
+      filter(label == feature_combo)
+
+    corr_all_snow(
+    df_snow= df_snow_ready,
+    snow_param ="SWE",
+    snow_feature = df_feature$snow_features,
+    df_veg= df_fao_yr,
+    veg_param ="asi",
+    fao_feature =df_feature$fao_features
+    )
+  }
+)
+```
+
+### NDSI vs ASI
+
+Here we see the correlation between monthly NDSI values and the cumulative `ASI` value for june (3rd dekad)
+
+```{r}
+#| fig.height: 8
+#| label: fig-plot_ndsi_value_june_asi
+
+lps_ndsi_asi$`Snow: value vs Vegetation: june_last_value`
+
+```
+
+Here we see the correlation between monthly NDSI values and the cumulative `ASI` value for May (3rd dekad)
+
+```{r}
+#| fig.height: 8
+#| label: fig-plot_ndsi_value_may_asi
+
+lps_ndsi_asi$`Snow: value vs Vegetation: may_last_value`
+
+```
+
+### SWE vs ASI
+
+We see the same relation ship when we look at SWE
+
+```{r}
+#| fig.height: 8
+#| label: fig-plot_swe_value_june_asi
+
+lps_swe_asi$`Snow: value vs Vegetation: june_last_value`
+
+```
+
+```{r}
+#| fig.height: 8
+#| label: fig-plot_swe_value_may_asi
+
+lps_swe_asi$`Snow: value vs Vegetation: may_last_value`
+
+```
+
+### Snow Discussion
+
+-   Oddly the Dec & Jan snow indicators seem if anything positively correlated with ASI which is the exact opposite of the hypothesis. The charts above show that higher snow fractions/and snow water equivalents are associated with higher end of season agricultural stress (May & June).
+-   There could be a variety of factors that causing this unexpected relationship. A few hypothesized below:
+    -   More Dec & Jan snow associated with later planting season - poor vegetative outcomes
+    -   More Dec & Jan snow associated with colder seasons - less productive harvests
+    -   More Dec & Jan snow associated with warmer springs - earlier snow melt
+    -   More Dec & Jan snow associated with less spring rains
+    -   It does seem like the Feb-Mar the relationship shifts back to the directionality we would expect: More snow:less stress. This could indicate that it's not simply the total snowfall impacting water availability and crop health, but perhaps there is a later season dynamic (snow melt?) that impacts water availability. Perhaps if there is some (x?) amount of snow available, it keeps a consistent supply of water to crops, but if it disappears too early, than the agriculture suffers
