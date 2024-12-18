@@ -22,6 +22,8 @@ jobs:
       DS_AWS_EMAIL_HOST: ${{ secrets.DS_AWS_EMAIL_HOST }}
       DS_AWS_EMAIL_PORT: ${{ secrets.DS_AWS_EMAIL_PORT }}
       DS_AZ_BLOB_PROD_SAS: ${{ secrets.DS_AZ_BLOB_PROD_SAS}}
+      DS_AZ_DB_PROD_PW: ${{ secrets.DS_AZ_DB_PROD_PW}}
+      DS_AZ_DB_PROD_UID: ${{ secrets.DS_AZ_DB_PROD_UID}}
       TEST_EMAIL: ${{ inputs.TEST_EMAIL || 'FALSE' }}
     steps:
       - uses: actions/checkout@v3
