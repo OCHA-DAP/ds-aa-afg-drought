@@ -199,10 +199,12 @@ cython_debug/
 # quarto stuff
 
 *.tex
+*.toc
 *.png
 *.aux
+*.pdf
 book_afg_analysis/_book/*
-
+**/*_files/
 
 dash_explore/*
 outputs/*
