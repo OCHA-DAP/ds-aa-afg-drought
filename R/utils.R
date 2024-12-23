@@ -1,4 +1,15 @@
 
+#' @export
+load_aoi_names <-  function(){
+  c(
+    "Takhar",
+    "Badakhshan",
+    "Badghis",
+    "Sar-e-Pul" ,
+    "Faryab"
+  )
+}
+
 #' Download shapefile and read
 #'
 #' Download shapefile to temp file, unzipping zip files if necessary. Deals with zipped
