@@ -57,7 +57,10 @@ proj_blob_paths <- function(){
     DF_ADM1_CHIRPS = paste0(vector_processed,"chirps_monthly_afg_adm1_historical.csv"),
     DF_ADM1_MODIS_NDVI_CROPS = paste0(vector_processed, "modis_ndvi_crops_adm1.csv"),
     DF_ADM1_MODIS_SNOW = paste0(vector_processed, "modis_snow_frac_monthly_afg_adm1_historical.csv"),
+    DF_ADM1_MODIS_SNOWMELT_M2010 = paste0(vector_processed, "modis_first_day_no_snow_2010_mask.csv"),
+    DF_ADM1_MODIS_SNOWMELT_M2006 = paste0(vector_processed, "modis_first_day_no_snow_m2006_14e_120c.csv"),
     DF_ADM1_SMI = paste0(raw_root, "country_data/Afghanistan Monthly Soil moisture 2018-2024.csv"),
+    DF_ADM1_FLDAS_SWE = paste0(vector_processed,"fldas_snow_SWE_adm1.csv"),
     DF_FARYAB_SEAS5 = paste0(vector_processed, "ecmwf_seas5_faryab.csv"),
     GIF_MODIS_NDVI_CROPS = paste0(processed_root, "modis_ndvi_crops_hirat_animation.gif"),
     DIR_COGS = paste0(raw_root, "cogs/"),
@@ -68,9 +71,9 @@ proj_blob_paths <- function(){
 
 #' Reads file if included in `proj_blob_paths()` by passing in the named list item.
 #' Since files should be stored in the project container on dev, that is where we look.
-#' 
+#'
 #' Pass additional arguments as necessary through `...`. Currently reads CSV and XLSX.
-#' 
+#'
 #' @export
 read_blob_file <- function(blob_name, ...) {
   blob_path <- proj_blob_paths()[[blob_name]]
@@ -80,7 +83,7 @@ read_blob_file <- function(blob_name, ...) {
     src = blob_path,
     dest = tf <- tempfile(fileext = paste0(".", blob_ext))
   )
-  
+
   switch(
     blob_ext,
     csv = readr$read_csv(tf, ...),
@@ -88,5 +91,3 @@ read_blob_file <- function(blob_name, ...) {
     xlsx = readxl$read_xlsx(tf, ...)
   )
 }
-
-
