@@ -47,7 +47,7 @@ df_adm1_labels <- tbl(con,"polygon") |>
 
 df_adm1_labels_aoi <- df_adm1_labels |>
   filter(
-    name %in% aoi_adm1
+    name %in% AOI_ADM1
   ) |>
   rename(
     adm1_name =name
