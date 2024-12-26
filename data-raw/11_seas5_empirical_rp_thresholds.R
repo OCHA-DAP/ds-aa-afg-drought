@@ -14,7 +14,8 @@ box::use(
   purrr[...],
   lubridate[...],
   janitor[clean_names],
-  seas5 = ../R/seas5_utils
+  seas5 = ../R/seas5_utils,
+  ../R/pg
 )
 
 SEASON_OF_INTEREST <- c(3,4,5)
@@ -100,12 +101,15 @@ df_seas5_rp_rv <- df_seas5_rps_historical |>
     rp_type = "Empirical"
   )
 
-cumulus$blob_write(
-  df = df_seas5_rp_rv,
-  name = "ds-aa-afg-drought/processed/vector/afg_SEAS5_thresholds.parquet",
-  stage = "dev",
-  container = "projects"
-)
+if(WRITE_OUTPUT){
+  cumulus$blob_write(
+    df = df_seas5_rp_rv,
+    name = "ds-aa-afg-drought/processed/vector/afg_SEAS5_thresholds.parquet",
+    stage = "dev",
+    container = "projects"
+  )
+}
+
 
 # Now let's do the whole thing again, but this time remove Wakhan from
 # Badkhshan. We think it's a bit of a different ecosystem w/ low population
@@ -138,11 +142,14 @@ df_adm2_pixel_counts <- pg$get_pixel_counts(
   pcode = df_adm2_labels$adm2_pcode,
   ds_name = "seas5"
   )
+
 df_pixel_counts_meta <- df_adm2_pixel_counts |>
   left_join(
     df_adm2_labels,
     by = c("iso3","adm_level","pcode" = "adm2_pcode")
     )
+
+
 
 df_adm2_weights_no_wakhan <- df_pixel_counts_meta |>
   filter(adm2_name != "Wakhan") |>
@@ -152,6 +159,15 @@ df_adm2_weights_no_wakhan <- df_pixel_counts_meta |>
     weights = n_upsampled_pixels/sum(n_upsampled_pixels)
   ) |>
   ungroup()
+
+if(WRITE_OUTPUT){
+  cumulus$blob_write(
+    df = df_adm2_weights_no_wakhan,
+    name = "ds-aa-afg-drought/processed/vector/weights_adm2_no_wakhan.parquet",
+    stage = "dev",
+    container = "projects"
+  )
+}
 
 # Load SEAS 5 Forecast
 pcode_wakhan <- df_adm2_labels |>
@@ -177,7 +193,8 @@ df_seas5_adm2 <- tbl(con, "seas5") |>
 
 df_seas5_with_weights <- df_seas5_adm2 |>
   left_join(
-    df_adm2_weights_no_wakhan, by = c("iso3", "adm_level","pcode")
+    df_adm2_weights_no_wakhan,
+    by = c("iso3", "adm_level","pcode")
   )
 
 
@@ -216,7 +233,7 @@ df_seas5_custom_rps_historical <- df_seas5_custom_mam |>
 
 
 
-df_seas5_rp_rv <- df_seas5_custom_rps_historical |>
+df_seas5_custom_rp_rv <- df_seas5_custom_rps_historical |>
   group_by(iso3, adm1_name,adm1_pcode, pub_mo, leadtime) |>
   reframe(
     rp_func = list(approxfun( rp_emp, mm,rule=2)), #interpolation function
@@ -233,7 +250,7 @@ df_seas5_rp_rv <- df_seas5_custom_rps_historical |>
 
 if(WRITE_OUTPUT){
   cumulus$blob_write(
-    df = df_seas5_rp_rv,
+    df = df_seas5_custom_rp_rv,
     name = "ds-aa-afg-drought/processed/vector/afg_SEAS5_thresholds_wakhan_removed.parquet",
     stage = "dev",
     container = "projects"
@@ -311,14 +328,27 @@ df_adm1_weights_a <- df_adm1_pixel_counts_meta|>
   filter(adm1_name!= "Badghis") |>
   mutate(
     weights = n_upsampled_pixels/sum(n_upsampled_pixels)
+  ) |>
+  mutate(
+    parameter ="adm1 weights (4 admins)"
   )
 
-# scenario B weights
-df_adm1_weights_b <- df_adm1_pixel_counts_meta|>
-  filter(!adm1_name %in% c("Badghis","Badakhshan")) |>
+df_adm1_weights_b <- df_adm1_weights_a |>
+  filter(adm1_name!= "Badakhshan") |>
   mutate(
     weights = n_upsampled_pixels/sum(n_upsampled_pixels)
   )
+
+# if we write out these admin 1 weights we don't have to faff around
+# with accessing so many distinct end points return period notebooks alter
+if(WRITE_OUTPUT){
+  cumulus$blob_write(
+    df = df_adm1_weights_a, # this is actually the only one needed for later
+    name = "ds-aa-afg-drought/processed/vector/weights_adm1_all_admins.parquet",
+    stage = "dev",
+    container = "projects"
+  )
+}
 
 pcode_badghis <-  "AF31"
 pcode_badakhshan <- "AF17"

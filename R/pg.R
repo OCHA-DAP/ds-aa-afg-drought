@@ -1,6 +1,7 @@
 box::use(
   dplyr,
-  cumulus
+  cumulus,
+  rlang
 )
 upsampled_pixel_col <- function(ds_name){
   switch(
@@ -17,8 +18,9 @@ get_pixel_counts <- function(
     conn = NULL,
     adm_level,
     pcode,
-    ds_name
+    ds_name= c("seas5","era5","imerg")
 ){
+  ds_name <- rlang$arg_match(ds_name)
   if(is.null(conn)){
     conn <- cumulus$pg_con()
   }
@@ -29,7 +31,7 @@ get_pixel_counts <- function(
       pcode %in% c({{pcode}})
     ) |>
     dplyr$select(
-      iso3, adm_level,pcode, n_upsampled_pixels = upsampled_pixel_col(ds_name)
+      dplyr$all_of(c("iso3", "adm_level","pcode", n_upsampled_pixels = upsampled_pixel_col(ds_name)))
     ) |>
     dplyr$collect() |>
     dplyr$mutate(

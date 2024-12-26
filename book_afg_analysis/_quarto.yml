@@ -13,6 +13,7 @@ book:
     - 04_snow_ndsi_swe.qmd
     - 05_snow_melt_date.qmd
     - 06_indicator_expansion.qmd
+    - 07_pre_season_allocation_options.qmd
     - summary.qmd
     - references.qmd
 
