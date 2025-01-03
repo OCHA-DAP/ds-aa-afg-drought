@@ -80,9 +80,6 @@ df_fao <- df_env |>
   filter(parameter %in% c("asi","vhi"))
 
 df_snow <- df_env |>
-  filter(parameter %in% c("NDSI_Snow_Cover_mean","SWE_inst","era5_land_snow_cover","era5_land_snow_depth_water_equivalent"))
-
-df_snow <- df_snow |>
   filter(parameter %in% c("NDSI_Snow_Cover_mean","SWE_inst","era5_land_snow_cover","era5_land_snow_depth_water_equivalent")) |>
    mutate(
     type = case_when(
@@ -91,7 +88,6 @@ df_snow <- df_snow |>
       parameter == "era5_land_snow_cover" ~"Snow Cover ERA",
       parameter == "era5_land_snow_depth_water_equivalent" ~"SDWE ERA",
       .default = NA
-
       )
   )
 
@@ -128,25 +124,6 @@ df_snow |>
 ```
 
 ```{r}
-
-
-df_snow_proc <- df_snow |>
-  group_by(
-    parameter,
-    adm1_name,
-    adm1_code,
-    mo = month(date)
-  ) |>
-  mutate(
-    anom = value - mean(value) ,
-    anom_z = anom /sd(value)
-  ) |>
-  group_by(adm1_name,adm1_code) |>
-  arrange(adm1_name,adm1_code,date) |>
-  mutate(
-    value_change= value -lag(value)
-  ) |>
-  ungroup()
 
 df_snow_proc <- df_snow |>
   group_by(
@@ -212,8 +189,6 @@ df_snow_proc_adj |>
 df_fao_yr_mo <- df_fao |>
   group_by(
     type= parameter,
-    # indicator,
-    # adm1_code,
     adm1_name,
     mo_date = floor_date(date,"month"),
   ) |>
@@ -236,7 +211,6 @@ df_fao_yr_mo <- df_fao |>
 df_fao_yr_mo |>
   group_by(
       type,
-
     adm1_name,
     mo = month(mo_date,label =T, abbr= T)
   ) |>
@@ -267,8 +241,6 @@ df_fao_yr_mo_anoms <- df_fao_yr_mo |>
   group_by(
     type,
     adm1_name,
-    # indicator,
-    # adm1_code,
     mo= month(mo_date)
   ) |>
   mutate(
@@ -288,9 +260,7 @@ df_fao_yr_mo_anoms |>
 df_fao_yr <- df_fao_yr_mo_anoms |>
   group_by(
     type,
-    # indicator,
-    # adm1_code,
-    adm1_name,# = province,
+    adm1_name,
     yr_date,
     yr= year(yr_date)
   ) |>
@@ -317,7 +287,6 @@ quick check to make sure VHI and ASI are reasonably aligned. Here is a scatter p
 df_fao_yr |>
   pivot_wider(
     id_cols = c(
-      # "adm1_code",
       "adm1_name","yr_date"),
     names_from = "type", values_from = "mam_mean_value"
               ) |>
@@ -342,7 +311,6 @@ df_fao_yr |>
 df_snow_ready <- df_snow_proc_adj |>
   mutate(
     mo_label = month(mo,label=T, abbr=T),
-    # snow_type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
     snow_type = type
   ) |>
   select(-yr) |>
@@ -373,7 +341,6 @@ merge_snow_veg <- function(
     ) |>
      filter(yr>=start_year, yr<=inclusion_range[2]) |>
       pivot_wider(id_cols = c("adm1_name",
-                              # "adm1_code",
                               "yr"), # pivot so 1 row per year
                       names_from = mo_label,
                       values_from = c("value","anom","anom_z","value_change"),names_prefix ="snow_"
@@ -383,7 +350,6 @@ merge_snow_veg <- function(
       type == veg_param
     )
   left_join(snow_filt,veg_filt,by=c("adm1_name",
-                                    # "adm1_code",
                                     "yr"))
 
 }
@@ -413,7 +379,6 @@ corr_all_snow <- function(df_snow=df_snow_ready,
   df_corrs <- df_merged |>
     group_by(
       type,
-      # adm1_code,
       adm1_name,
     ) |>
     summarise(
@@ -429,7 +394,6 @@ corr_all_snow <- function(df_snow=df_snow_ready,
    df_corrs_long <- df_corrs |>
      select(
        all_of(c("type",
-                # "adm1_code",
                 "adm1_name")),matches(col_rgx)
   ) |>
   pivot_longer(
@@ -674,8 +638,6 @@ lps_era_sdwe_asi$`Snow: value vs Vegetation: may_last_value`
 
 We then run it on the full historical record of ERA5-LAND that overlaps w/ ASI >=1984
 ```{r}
-
-
 lps_era_snow_asi_full <- map(
   set_names(all_feature_combos$label,all_feature_combos$label),
   \(feature_combo){
