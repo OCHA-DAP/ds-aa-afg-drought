@@ -63,6 +63,7 @@ proj_blob_paths <- function(){
     DF_ADM1_SMI = paste0(raw_root, "country_data/Afghanistan Monthly Soil moisture 2018-2024.csv"),
     DF_ADM1_FLDAS_SWE = paste0(vector_processed,"fldas_snow_SWE_adm1.csv"),
     DF_ADM1_ERA5_LAND_MULTIBAND = paste0(vector_processed,"ecmwf_era5_multiband_gte1981.parquet"),
+    DF_ADM1_ERA5_LAND_PRECIP_TEMP = paste0(vector_processed,"era5-land_temp_precip_gte1981.parquet"),
     DF_FARYAB_SEAS5 = paste0(vector_processed, "ecmwf_seas5_faryab.csv"),
     GIF_MODIS_NDVI_CROPS = paste0(processed_root, "modis_ndvi_crops_hirat_animation.gif"),
     DIR_COGS = paste0(raw_root, "cogs/"),

@@ -6,9 +6,12 @@ box::use(
   purrr,
   cumulus,
   lubridate,
+  rlang,
   stringr,
   ../R/blob_connect
 )
+
+bps <- blob_connect$proj_blob_paths()
 
 load_wfp_chirps <- function(){
 
@@ -32,32 +35,210 @@ load_wfp_ndvi <- function(){
 }
 
 
+#' @export
 load_fao_vegetation_data <- function(){
   df_asi <- readr$read_csv("https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_ASI/DATA/ASI_Dekad_Season1_data.csv") |>
     janitor$clean_names() |>
     dplyr$mutate(
-      type = "asi"
+      parameter = "asi"
     )
 
   df_vhi <-  readr$read_csv("https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_NDVI_ANOMALY/DATA/vhi_adm1_dekad_data.csv") |>
     janitor$clean_names() |>
     dplyr$mutate(
-      type = "vhi"
+      parameter = "vhi"
     )
-  dplyr$bind_rows(df_asi, df_vhi)
+  dplyr$bind_rows(df_asi, df_vhi) |>
+    dplyr$rename(
+      value = "data",
+      adm1_name = "province"
+    )
 }
 
 
+
+#' Title
+#'
+#' @return
+#' @export
+#'
+#' @examples
+#' df_env <- load_cleaned_env_vars()
+load_cleaned_env_features <- function(mo=c(1:5), include_cumulative = T){
+  feature_names <- c("era5_land","fao","chirps","ndsi","swe","era5")
+  feature_names <- rlang$set_names(feature_names,feature_names)
+  l_features <- purrr$map(
+    feature_names, \(nm_temp){
+      load_env_features(nm_temp)
+    }
+  )
+
+  ret <- df_monthly_features <- l_features |>
+    purrr$map(
+      \(feature){
+        feature |>
+          wrangle_monthly_features(mo=mo)
+      }
+    ) |>
+    purrr$list_rbind()
+
+  if(include_cumulative){
+    ldf_cumulative_features <-
+      list(
+        "chirps" = l_features$chirps,
+        "era5" = l_features$era5_land |>
+          dplyr$filter(
+            parameter  %in% c("era5_land_total_precipitation_sum","era5_land_temperature_2m")
+          )
+      )
+    df_monthly_cumulative <- ldf_cumulative_features |>
+      purrr$map(
+        \(dft){
+          wrangle_cumulative_features(dft,mo = mo)
+
+        }
+      ) |>
+      purrr$list_rbind()
+   ret <-  dplyr$bind_rows(
+      df_monthly_features,
+      df_monthly_cumulative
+    )
+  }
+
+  ret
+}
+
+#' Title
+#'
+#' @param x
+#'
+#' @return
+#' @export
+#'
+#' @examples
+#' load_env_ds() |>
+#'   wrangle_monthly_generic2()
+load_env_features <-  function(x = c("era5_land","fao","chirps","ndsi","swe","era5")){
+  x <- rlang$arg_match(x)
+  switch(
+    x,
+    "era5_land" = load_era5_land_multiband(),
+    "fao" = load_fao_vegetation_data(),
+    "chirps"=load_chirps(),
+    "ndsi" = load_ndsi(),
+    "swe" = load_swe(),
+    "era5" = load_era5()
+  )
+}
+
+
+#' @export
+wrangle_monthly_features <- function(
+    df,
+    mo=c(1,2,3,4,5,6)
+){
+
+  df |>
+    janitor$clean_names() |>
+    dplyr$mutate(
+      yr_date =lubridate$floor_date(date,"year"),
+      pub_mo_date = lubridate$floor_date(date,"month") + months(1),
+      pub_yr_date = lubridate$floor_date(pub_mo_date,"year")
+    ) |>
+    dplyr$filter(
+      lubridate$month(date)%in% mo
+    ) |>
+    dplyr$select(
+      dplyr$all_of(c("date", "yr_date", "pub_mo_date", "pub_yr_date","adm1_name", "value", "parameter"))
+    )
+}
+
+wrangle_cumulative_features <- function(df, mo=c(1,2,3,4,5) ){
+  df |>
+    janitor$clean_names() |>
+    dplyr$mutate(
+      yr_date =lubridate$floor_date(date,"year"),
+      pub_mo_date = lubridate$floor_date(date,"month") + months(1),
+      pub_yr_date = lubridate$floor_date(pub_mo_date,"year")
+    ) |>
+    dplyr$group_by(
+      parameter, yr_date,adm1_name
+    ) |>
+    dplyr$mutate(
+      value = cumsum(value)
+    ) |>
+    dplyr$filter(
+      lubridate$month(date)%in% mo
+    ) |>
+    dplyr$mutate(
+      parameter = paste0(
+        "cumu_",parameter
+      )
+    ) |>
+    dplyr$select(
+      dplyr$all_of(c("date", "yr_date", "pub_mo_date", "pub_yr_date","adm1_name","value", "parameter"))
+    )
+}
+
+#' @export
 load_era5_land_multiband <- function(){
-  bps <- blob_connect$proj_blob_paths()
-  cumulus$blob_read(
+
+  df_era5_land_main <- cumulus$blob_read(
   name = bps$DF_ADM1_ERA5_LAND_MULTIBAND,
   stage = "dev"
 ) |>
     dplyr$mutate(
       parameter = paste0("era5_land_",parameter)
     )
+  df_era5_land_main_extra <- cumulus$blob_read(
+    name = bps$DF_ADM1_ERA5_LAND_PRECIP_TEMP,
+    stage= "dev"
+  ) |>
+    dplyr$mutate(
+      parameter = paste0("era5_land_",parameter)
+    )
+  dplyr$bind_rows(
+    df_era5_land_main,
+    df_era5_land_main_extra
+  )
 }
+
+
+#' @export
+load_ndsi <-  function(){
+  cumulus$blob_read(
+    bps$DF_ADM1_MODIS_SNOW,
+    stage= "dev"
+  )
+}
+
+#' @export
+load_swe <-  function(){
+   cumulus$blob_read(
+    bps$DF_ADM1_FLDAS_SWE,
+    stage= "dev"
+  )
+}
+
+#' @export
+load_chirps <-  function(){
+  cumulus$blob_read(
+    name = bps$DF_ADM1_CHIRPS,
+    stage= "dev"
+  ) |>
+    dplyr$mutate(
+      parameter = paste0("chirps_",parameter)
+    )
+}
+
+#' @export
+load_era5 <- function(){
+  cumulus$blob_read(
+    name = bps$DF_ADM1_ERA5_TEMP_PRECIP,
+    stage= "dev"
+  )
+}
+
 
 
 wrangle_fao <- function(df){
@@ -69,11 +250,12 @@ wrangle_fao <- function(df){
 
     ) |>
       dplyr$mutate(
+        pub_mo = lubridate$floor_date(lubridate$month,"month")+ lubridate$months(1),
         mo_label  = lubridate$month(date, abbr= T,label =T),
         yr_date =lubridate$floor_date(date, "year")
       ) |>
       dplyr$filter(
-        mo_label %in% c("May","Jun"),
+        mo_label %in% c("April","May","Jun"),
         dekad==3
         ) |>
       dplyr$mutate(
@@ -265,6 +447,10 @@ wrangle_modis_ndvi <- function(df){
     )
 }
 
+
+
+
+
 wrangle_monthly_generic <- function(df,months = c(12,1,2,3,4,5)){
   df |>
     janitor$clean_names() |>
@@ -277,6 +463,7 @@ wrangle_monthly_generic <- function(df,months = c(12,1,2,3,4,5)){
       yr_date = lubridate$floor_date(date, "year")
     ) |>
     dplyr$mutate(
+
       mo_num = lubridate$month(date)
     ) |>
     dplyr$filter(

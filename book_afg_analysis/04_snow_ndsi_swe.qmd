@@ -70,24 +70,31 @@ box::use(
   tidyr[...],
   scales
 )
-
 gghdx()
 
-df_ndsi <- blob_connect$read_blob_file("DF_ADM1_MODIS_SNOW") |>
-  filter(
-    # ADM1_NAME == "Faryab",
-    parameter == "NDSI_Snow_Cover_mean"
-  ) |>
-  clean_names()
 
-df_swe <- blob_connect$read_blob_file("DF_ADM1_FLDAS_SWE")
+df_env <- loaders$load_cleaned_env_features(mo= c(11,12,1,2,3,4,5,6),include_cumulative = F)
 
-df_snow <- bind_rows(df_swe,df_ndsi |> select(all_of(colnames(df_swe)))) |>
-  mutate(
-    type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
+
+df_fao <- df_env |>
+  filter(parameter %in% c("asi","vhi"))
+
+df_snow <- df_env |>
+  filter(parameter %in% c("NDSI_Snow_Cover_mean","SWE_inst","era5_land_snow_cover","era5_land_snow_depth_water_equivalent"))
+
+df_snow <- df_snow |>
+  filter(parameter %in% c("NDSI_Snow_Cover_mean","SWE_inst","era5_land_snow_cover","era5_land_snow_depth_water_equivalent")) |>
+   mutate(
+    type = case_when(
+      parameter == "NDSI_Snow_Cover_mean"~"NDSI",
+      parameter == "SWE_inst"~"SWE",
+      parameter == "era5_land_snow_cover" ~"Snow Cover ERA",
+      parameter == "era5_land_snow_depth_water_equivalent" ~"SDWE ERA",
+      .default = NA
+
+      )
   )
 
-df_fao <- loaders$load_fao_vegetation_data()
 ```
 
 ## Snow Indicators
@@ -100,7 +107,7 @@ Here we see the monthly distributions of snow indicators `NDSI` & `SWE` based on
 #| label: fig-plot_snow_overview
 
 df_snow |>
-  filter(adm1_name == "Faryab") |>
+  filter(adm1_name == "Faryab", type %in% c("NDSI","SWE")) |>
   mutate(
     mo = month(date, label = T, abbr=T)
   ) |>
@@ -117,9 +124,11 @@ df_snow |>
     axis.text.x = element_text(angle = 90),legend.title = element_blank(),
     axis.title.x = element_blank()
   )
+
 ```
 
 ```{r}
+
 
 df_snow_proc <- df_snow |>
   group_by(
@@ -138,6 +147,23 @@ df_snow_proc <- df_snow |>
     value_change= value -lag(value)
   ) |>
   ungroup()
+
+df_snow_proc <- df_snow |>
+  group_by(
+    parameter,
+    adm1_name,
+    mo = month(date)
+  ) |>
+  mutate(
+    anom = value - mean(value) ,
+    anom_z = anom /sd(value)
+  ) |>
+  group_by(adm1_name) |>
+  arrange(adm1_name,date) |>
+  mutate(
+    value_change= value -lag(value)
+  ) |>
+  ungroup()
 ```
 
 ### Comparison
@@ -151,16 +177,13 @@ sense check that NDSI and SWE are somewhat aligned. They seem reasonably so - gi
 df_snow_proc_adj <- df_snow_proc |>
   mutate(
     yr = year(date),
-    yr_adj = ifelse(mo>5, yr+1, yr)
+    yr_adj = ifelse(mo>7, yr+1, yr)
   )
 
 # gut check that SWE & NDSI roughly line up
 df_snow_proc_adj |>
-  mutate(
-    type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
-  ) |>
     pivot_wider(
-    id_cols = c("date","adm1_name","adm1_code"),
+    id_cols = c("date","adm1_name"),
     values_from = value,
     names_from = type
   ) |>
@@ -186,18 +209,17 @@ df_snow_proc_adj |>
 
 ```{r}
 
-
 df_fao_yr_mo <- df_fao |>
   group_by(
-    type,
-    indicator,
-    adm1_code,
-    province,
+    type= parameter,
+    # indicator,
+    # adm1_code,
+    adm1_name,
     mo_date = floor_date(date,"month"),
   ) |>
   summarise(
-    month_mean = mean(data),
-    last_dekad = last(data)
+    month_mean = mean(value),
+    last_dekad = last(value)
   ) |>
   ungroup()
 
@@ -214,9 +236,8 @@ df_fao_yr_mo <- df_fao |>
 df_fao_yr_mo |>
   group_by(
       type,
-    indicator,
-    adm1_code,
-    province,
+
+    adm1_name,
     mo = month(mo_date,label =T, abbr= T)
   ) |>
   mutate(
@@ -230,7 +251,7 @@ df_fao_yr_mo |>
   )+
   geom_point()+
   geom_line()+
-  facet_wrap(~province)+
+  facet_wrap(~adm1_name)+
   theme(
     axis.text.x = element_text(angle =90)
   )
@@ -238,14 +259,16 @@ df_fao_yr_mo |>
 ```
 
 ```{r}
+
 df_fao_yr_mo_anoms <- df_fao_yr_mo |>
   mutate(
     yr_date= floor_date(mo_date, "year")
   ) |>
   group_by(
     type,
-    indicator,
-    adm1_code,
+    adm1_name,
+    # indicator,
+    # adm1_code,
     mo= month(mo_date)
   ) |>
   mutate(
@@ -258,13 +281,16 @@ df_fao_yr_mo_anoms <- df_fao_yr_mo |>
 
 mam_int <- c(3:5)
 mamj_int <- c(3:6)
+df_fao_yr_mo_anoms |> glimpse()
+df_fao_yr_mo_anoms |>
+  filter(is.na(last_dekad))
 
 df_fao_yr <- df_fao_yr_mo_anoms |>
   group_by(
     type,
-    indicator,
-    adm1_code,
-    adm1_name = province,
+    # indicator,
+    # adm1_code,
+    adm1_name,# = province,
     yr_date,
     yr= year(yr_date)
   ) |>
@@ -290,7 +316,9 @@ quick check to make sure VHI and ASI are reasonably aligned. Here is a scatter p
 # quick comparison of VHI vs ASI - makes sense
 df_fao_yr |>
   pivot_wider(
-    id_cols = c("adm1_code","adm1_name","yr_date"),
+    id_cols = c(
+      # "adm1_code",
+      "adm1_name","yr_date"),
     names_from = "type", values_from = "mam_mean_value"
               ) |>
   ggplot(
@@ -310,10 +338,12 @@ df_fao_yr |>
 #' this section is a bit overly complicated as I wanted to run the correlations for all combinations of engineered features for ASI, VHI, NDSI, SWE.
 # In the end I only show a few of the resulting plots, but I think the rest may be nice to have at some point - there are tons!!!
 
+
 df_snow_ready <- df_snow_proc_adj |>
   mutate(
     mo_label = month(mo,label=T, abbr=T),
-    snow_type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
+    # snow_type = ifelse(parameter == "NDSI_Snow_Cover_mean","NDSI","SWE")
+    snow_type = type
   ) |>
   select(-yr) |>
   rename(
@@ -321,13 +351,30 @@ df_snow_ready <- df_snow_proc_adj |>
   )
 
 
-merge_snow_veg <- function(df_snow,snow_param, df_veg,veg_param){
+merge_snow_veg <- function(
+    df_snow,
+    snow_param,
+    df_veg,
+    veg_param,
+    start_year = 2000
+    ){
+
+
+  inclusion_range<- df_veg |>
+    pull(yr) |>
+    range()
+  if(is.null(start_year)){
+    start_year <- inclusion_range[1]
+  }
+
   snow_filt <- df_snow |>
     filter(
       snow_type == snow_param
     ) |>
-     filter(yr>2000) |>
-      pivot_wider(id_cols = c("adm1_name","adm1_code","yr"), # pivot so 1 row per year
+     filter(yr>=start_year, yr<=inclusion_range[2]) |>
+      pivot_wider(id_cols = c("adm1_name",
+                              # "adm1_code",
+                              "yr"), # pivot so 1 row per year
                       names_from = mo_label,
                       values_from = c("value","anom","anom_z","value_change"),names_prefix ="snow_"
           )
@@ -335,7 +382,9 @@ merge_snow_veg <- function(df_snow,snow_param, df_veg,veg_param){
     filter(
       type == veg_param
     )
-  left_join(snow_filt,veg_filt,by=c("adm1_name", "adm1_code", "yr"))
+  left_join(snow_filt,veg_filt,by=c("adm1_name",
+                                    # "adm1_code",
+                                    "yr"))
 
 }
 
@@ -345,7 +394,8 @@ corr_all_snow <- function(df_snow=df_snow_ready,
                           snow_feature="value",
                           df_veg=df_fao_yr,
                           veg_param = "asi",
-                          fao_feature ="mam_mean_value"
+                          fao_feature ="mam_mean_value",
+                          start_year = 2000
                           ){
   mo_labs <- month(1:12, label = T, abbr= T)
   mo_rgx <- glue_collapse(mo_labs,sep = "|")
@@ -355,19 +405,21 @@ corr_all_snow <- function(df_snow=df_snow_ready,
     df_snow =df_snow,
     snow_param = snow_param,
     df_veg = df_veg,
-    veg_param = veg_param
-  )
+    veg_param = veg_param,
+    start_year = start_year
+  ) |>
+    filter(yr<2025)
 
   df_corrs <- df_merged |>
     group_by(
       type,
-      adm1_code,
+      # adm1_code,
       adm1_name,
     ) |>
     summarise(
       across(
         .cols = any_of(ends_with(c("Nov","Dec","Jan","Feb","Mar","Apr"))),
-        .fns = ~cor(.,!!sym(fao_feature))
+        .fns = ~cor(.,!!sym(fao_feature),use= "pairwise.complete.obs")
       ),.groups="drop"
     ) |>
     mutate(
@@ -376,7 +428,9 @@ corr_all_snow <- function(df_snow=df_snow_ready,
    col_rgx <- glue_collapse(glue("^{snow_feature}_snow_{mo_labs}"),sep = "|")
    df_corrs_long <- df_corrs |>
      select(
-       all_of(c("type","adm1_code","adm1_name")),matches(col_rgx)
+       all_of(c("type",
+                # "adm1_code",
+                "adm1_name")),matches(col_rgx)
   ) |>
   pivot_longer(
     cols = matches(col_rgx)
@@ -461,10 +515,13 @@ lps_ndsi_asi <- map(
     snow_feature = df_feature$snow_features,
     df_veg= df_fao_yr,
     veg_param ="asi",
-    fao_feature =df_feature$fao_features
+    fao_feature =df_feature$fao_features,
+    start_year = 2000
     )
   }
 )
+
+
 
 lps_swe_asi <- map(
   set_names(all_feature_combos$label,all_feature_combos$label),
@@ -478,7 +535,8 @@ lps_swe_asi <- map(
     snow_feature = df_feature$snow_features,
     df_veg= df_fao_yr,
     veg_param ="asi",
-    fao_feature =df_feature$fao_features
+    fao_feature =df_feature$fao_features,
+    start_year = 2000
     )
   }
 )
@@ -503,12 +561,11 @@ Here we see the correlation between monthly NDSI values and the cumulative `ASI`
 #| label: fig-plot_ndsi_value_may_asi
 
 lps_ndsi_asi$`Snow: value vs Vegetation: may_last_value`
-
 ```
 
 ### SWE vs ASI
 
-We see the same relation ship when we look at SWE
+We see the same relation ship when we look at SWE - here we have filtered SWE to the same date range as MODIS for comparison (>= 2000)
 
 ```{r}
 #| fig.height: 8
@@ -526,6 +583,31 @@ lps_swe_asi$`Snow: value vs Vegetation: may_last_value`
 
 ```
 
+We then run it on the full historical record of FLDAS SWE that overlaps w/ ASI >=1984
+```{r}
+
+lps_swe_asi_full <- map(
+  set_names(all_feature_combos$label,all_feature_combos$label),
+  \(feature_combo){
+    df_feature<- all_feature_combos |>
+      filter(label == feature_combo)
+
+    corr_all_snow(
+    df_snow= df_snow_ready,
+    snow_param ="SWE",
+    snow_feature = df_feature$snow_features,
+    df_veg= df_fao_yr,
+    veg_param ="asi",
+    fao_feature =df_feature$fao_features,
+    start_year = NULL
+    )
+  }
+)
+
+lps_swe_asi_full$`Snow: value vs Vegetation: may_last_value`
+```
+
+
 ### Snow Discussion
 
 -   Oddly the Dec & Jan snow indicators seem if anything positively correlated with ASI which is the exact opposite of the hypothesis. The charts above show that higher snow fractions/and snow water equivalents are associated with higher end of season agricultural stress (May & June).
@@ -535,3 +617,103 @@ lps_swe_asi$`Snow: value vs Vegetation: may_last_value`
     -   More Dec & Jan snow associated with warmer springs - earlier snow melt
     -   More Dec & Jan snow associated with less spring rains
     -   It does seem like the Feb-Mar the relationship shifts back to the directionality we would expect: More snow:less stress. This could indicate that it's not simply the total snowfall impacting water availability and crop health, but perhaps there is a later season dynamic (snow melt?) that impacts water availability. Perhaps if there is some (x?) amount of snow available, it keeps a consistent supply of water to crops, but if it disappears too early, than the agriculture suffers
+
+### Update
+
+When working on the later included `indicator-expansion` chapter, some snow related indicators/bands from ERA5-LAND image collection were extracted.These include 2 bands  specifically:
+
+- snow_cover
+- snow_depth_water_equivalent
+
+The correlations for these two bands from the ERA5-LAND sensor image collection are shown below just for the 5 provinces under initial consideration (data only extracted to these provinces)
+
+We see that the counter-intuitive relationship observed above is less obvious and that many of the provinces have a mild negative relationship
+
+```{r}
+lps_era_snow_asi <- map(
+  set_names(all_feature_combos$label,all_feature_combos$label),
+  \(feature_combo){
+    df_feature<- all_feature_combos |>
+      filter(label == feature_combo)
+
+    corr_all_snow(
+    df_snow= df_snow_ready,
+    snow_param ="Snow Cover ERA",
+    snow_feature = df_feature$snow_features,
+    df_veg= df_fao_yr,
+    veg_param ="asi",
+    fao_feature =df_feature$fao_features,
+    start_year = 2000
+    )
+  }
+)
+
+lps_era_sdwe_asi <- map(
+  set_names(all_feature_combos$label,all_feature_combos$label),
+  \(feature_combo){
+    df_feature<- all_feature_combos |>
+      filter(label == feature_combo)
+
+    corr_all_snow(
+    df_snow= df_snow_ready,
+    snow_param ="SDWE ERA",
+    snow_feature = df_feature$snow_features,
+    df_veg= df_fao_yr,
+    veg_param ="asi",
+    fao_feature =df_feature$fao_features,
+    start_year = 2000
+    )
+  }
+)
+lps_era_snow_asi$`Snow: value vs Vegetation: may_last_value`
+```
+
+```{r}
+lps_era_sdwe_asi$`Snow: value vs Vegetation: may_last_value`
+```
+
+We then run it on the full historical record of ERA5-LAND that overlaps w/ ASI >=1984
+```{r}
+
+
+lps_era_snow_asi_full <- map(
+  set_names(all_feature_combos$label,all_feature_combos$label),
+  \(feature_combo){
+    df_feature<- all_feature_combos |>
+      filter(label == feature_combo)
+
+    corr_all_snow(
+    df_snow= df_snow_ready,
+    snow_param ="Snow Cover ERA",
+    snow_feature = df_feature$snow_features,
+    df_veg= df_fao_yr,
+    veg_param ="asi",
+    fao_feature =df_feature$fao_features,
+    start_year = NULL
+    )
+  }
+)
+
+lps_era_sdwe_asi_full <- map(
+  set_names(all_feature_combos$label,all_feature_combos$label),
+  \(feature_combo){
+    df_feature<- all_feature_combos |>
+      filter(label == feature_combo)
+
+    corr_all_snow(
+    df_snow= df_snow_ready,
+    snow_param ="SDWE ERA",
+    snow_feature = df_feature$snow_features,
+    df_veg= df_fao_yr,
+    veg_param ="asi",
+    fao_feature =df_feature$fao_features,
+    start_year = NULL
+    )
+  }
+)
+lps_era_snow_asi_full$`Snow: value vs Vegetation: may_last_value`
+```
+
+```{r}
+lps_era_sdwe_asi_full$`Snow: value vs Vegetation: may_last_value`
+```
