@@ -1,0 +1,144 @@
+---
+title-block-banner: "#00ad78ff"
+title-block-banner-color: "#ffffff"
+title: Adhoc Request SEAS5 Outlook All Provinces
+subtitle: Current Predictions & Trigger Likelihoods
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+
+## Background:
+
+ - Adhoc request from OCHA AFG for SEAS5 outlook for all provinces in AFG for the MAM Season
+ - Wanted for HCT meeting w/ relevance to AA frameworks
+
+
+```{r}
+
+aoi_adm1 <-  c(
+  "Takhar",
+  "Badakhshan",
+  "Faryab",
+  "Sar-e-Pul"
+)
+box::use(
+  cumulus,
+  lubridate[...],
+  dplyr[...],
+  gghdx[...],
+  seas5 = ../R/seas5_utils
+         )
+gghdx()
+```
+
+```{r}
+
+# quick wrangling to create lookup table from admin_lookup.parquet
+df_labels <- cumulus$blob_read(
+  name = "admin_lookup.parquet",
+  stage = "dev",
+  container = "polygon"
+) |>
+  clean_names()
+
+df_adm1_lookup <- df_labels |>
+  filter(adm0_name == "Afghanistan") |>
+  distinct(adm1_name,adm1_pcode) |>
+  filter(!is.na(adm1_name))
+
+```
+
+
+```{r}
+# connect to prod db and grab SEAS forecast of interest
+con <- cumulus$pg_con()
+df <- tbl(con, "seas5") |>
+  filter(
+    iso3 == "AFG",
+    adm_level ==1,
+    # set up query so Jan/Feb will be included as they become available
+    month(issued_date) %in% c(12,1,2),
+    month(valid_date) %in% c(3:5) # MAM season
+  ) |>
+  collect() |>
+  mutate(
+    precipitation = mean * days_in_month(valid_date)
+  )
+```
+
+```{r}
+# aggregate to MAM season
+df_agg <- seas5$aggregate_forecast(df = df, valid_months = c(3:5),by = c("iso3","pcode","issued_date"))
+
+df_rps_latest <- df_agg |>
+  # join admin labels
+  left_join(df_adm1_lookup, by = c("pcode" = "adm1_pcode")) |>
+  group_by(
+    iso3,
+    pcode,
+    leadtime
+    ) |>
+  # calcualte emprical RP values
+  arrange(
+    mm
+  ) |>
+  mutate(
+    rank = row_number(),
+    q_rank = rank/(max(rank)+1),
+    rp_emp = 1/q_rank
+  ) |>
+  group_by(
+    iso3,
+    pcode
+  ) |>
+  filter(
+    issued_date == max(issued_date)
+  ) |>
+  ungroup() |>
+  # grab latest publication
+  # create a column that indicates whether admin is in our AOI
+  mutate(
+    aoi = adm1_name %in% aoi_adm1
+  )
+
+
+df_rps_latest |>
+  # plot
+  ggplot(
+    aes(x= as_factor(1),y= rp_emp, color = aoi)
+  )+
+  geom_jitter(position = position_jitter(seed = 1,width = 0.15)) +
+  geom_text(aes(label = adm1_name),position = position_jitter(seed = 1, width =0.2))+
+  scale_color_manual(
+    values = c("TRUE"= hdx_hex("tomato-hdx"), "FALSE"= hdx_hex("sapphire-hdx"))
+  )+
+  labs(
+    title = "SEAS5 Forecast - MAM 2025: predicted rainfall deficit return period",
+    subtitle = "Forecast published in December 2024",
+    y= "Return Period"
+  )+
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none"
+  )
+```
