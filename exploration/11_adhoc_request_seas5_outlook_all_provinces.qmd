@@ -25,12 +25,10 @@ project:
   execute-dir: project
 ---
 
-
 ## Background:
 
- - Adhoc request from OCHA AFG for SEAS5 outlook for all provinces in AFG for the MAM Season
- - Wanted for HCT meeting w/ relevance to AA frameworks
-
+-   Adhoc request from OCHA AFG for SEAS5 outlook for all provinces in AFG for the MAM Season
+-   Wanted for HCT meeting w/ relevance to AA frameworks
 
 ```{r}
 
@@ -45,7 +43,8 @@ box::use(
   lubridate[...],
   dplyr[...],
   gghdx[...],
-  seas5 = ../R/seas5_utils
+  seas5 = ../R/seas5_utils,
+  ggrepel
          )
 gghdx()
 ```
@@ -67,7 +66,6 @@ df_adm1_lookup <- df_labels |>
 
 ```
 
-
 ```{r}
 # connect to prod db and grab SEAS forecast of interest
 con <- cumulus$pg_con()
@@ -86,8 +84,10 @@ df <- tbl(con, "seas5") |>
 ```
 
 ```{r}
+df$issued_date |> range()
 # aggregate to MAM season
 df_agg <- seas5$aggregate_forecast(df = df, valid_months = c(3:5),by = c("iso3","pcode","issued_date"))
+
 
 df_rps_latest <- df_agg |>
   # join admin labels
@@ -95,7 +95,9 @@ df_rps_latest <- df_agg |>
   group_by(
     iso3,
     pcode,
+    pub_mo = month(issued_date, abbr=T),
     leadtime
+
     ) |>
   # calcualte emprical RP values
   arrange(
@@ -110,9 +112,6 @@ df_rps_latest <- df_agg |>
     iso3,
     pcode
   ) |>
-  filter(
-    issued_date == max(issued_date)
-  ) |>
   ungroup() |>
   # grab latest publication
   # create a column that indicates whether admin is in our AOI
@@ -120,11 +119,51 @@ df_rps_latest <- df_agg |>
     aoi = adm1_name %in% aoi_adm1
   )
 
+df_rps_latest <- df_rps_latest |>
+  group_by(
+    iso3,
+    pcode
+  ) |>
+  slice_max(
+    issued_date,n=2
+  )
+```
 
+```{r}
 df_rps_latest |>
   # plot
   ggplot(
     aes(x= as_factor(1),y= rp_emp, color = aoi)
+  )+
+  geom_jitter(position = position_jitter(seed = 1,width = 0.15)) +
+  geom_text_repel(aes(label = adm1_name),position = position_jitter(seed = 1, width =0.2))+
+  scale_color_manual(
+    values = c("TRUE"= hdx_hex("tomato-hdx"), "FALSE"= hdx_hex("sapphire-hdx"))
+  )+
+  labs(
+    title = "SEAS5 Forecast - MAM 2025: predicted rainfall deficit return period",
+    subtitle = "By forecast publication date",
+    y= "Return Period"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none"
+  )+
+  facet_wrap(
+    ~format(issued_date,"%B %Y")
+  )
+```
+
+actual forecast mm values for AOI
+
+```{r}
+df_rps_latest |>
+  filter(
+    aoi
+  ) |>
+   ggplot(
+    aes(x= as_factor(1),y= mm)
   )+
   geom_jitter(position = position_jitter(seed = 1,width = 0.15)) +
   geom_text(aes(label = adm1_name),position = position_jitter(seed = 1, width =0.2))+
@@ -133,12 +172,16 @@ df_rps_latest |>
   )+
   labs(
     title = "SEAS5 Forecast - MAM 2025: predicted rainfall deficit return period",
-    subtitle = "Forecast published in December 2024",
+    subtitle = "Forecast published in January 2025",
     y= "Return Period"
-  )+
+  ) +
   theme(
     axis.title.x = element_blank(),
     axis.text.x = element_blank(),
     legend.position = "none"
+  )+
+  facet_wrap(
+    ~format(issued_date,"%B %Y")
   )
+
 ```
