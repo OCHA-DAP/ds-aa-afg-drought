@@ -45,7 +45,13 @@ box::use(
   gghdx[...],
   seas5 = ../R/seas5_utils,
   ggrepel[...],
+  forcats[...],
+  gt[...],
+  ggplot2[...],
+  tidyr[...],
+  janitor[...]
          )
+
 gghdx()
 ```
 
@@ -68,13 +74,14 @@ df_adm1_lookup <- df_labels |>
 
 ```{r}
 # connect to prod db and grab SEAS forecast of interest
-con <- cumulus$pg_con()
+con <- cumulus$pg_con(stage ="prod")
+
 df <- tbl(con, "seas5") |>
   filter(
     iso3 == "AFG",
     adm_level ==1,
     # set up query so Jan/Feb will be included as they become available
-    month(issued_date) %in% c(12,1,2),
+    month(issued_date) %in% c(11,12,1,2),
     month(valid_date) %in% c(3:5) # MAM season
   ) |>
   collect() |>
@@ -83,13 +90,19 @@ df <- tbl(con, "seas5") |>
   )
 ```
 
+
+
+
 ```{r}
-df$issued_date |> range()
+
 # aggregate to MAM season
-df_agg <- seas5$aggregate_forecast(df = df, valid_months = c(3:5),by = c("iso3","pcode","issued_date"))
+df_agg <- seas5$aggregate_forecast(
+  df = df, valid_months = c(3:5),
+  by = c("iso3","pcode","issued_date")
+  )
 
 
-df_rps_latest <- df_agg |>
+df_agg_formatted <- df_agg |>
   # join admin labels
   left_join(df_adm1_lookup, by = c("pcode" = "adm1_pcode")) |>
   group_by(
@@ -97,9 +110,8 @@ df_rps_latest <- df_agg |>
     pcode,
     pub_mo = month(issued_date, abbr=T),
     leadtime
-
     ) |>
-  # calcualte emprical RP values
+  # calculate emprical RP values
   arrange(
     mm
   ) |>
@@ -119,14 +131,23 @@ df_rps_latest <- df_agg |>
     aoi = adm1_name %in% aoi_adm1
   )
 
-df_rps_latest <- df_rps_latest |>
+df_rps_latest <- df_agg_formatted |>
   group_by(
     iso3,
     pcode
   ) |>
   slice_max(
-    issued_date,n=2
-  )
+    issued_date,n=3
+  ) |>
+    mutate(
+      # reorder factors
+    pub_date_facet = fct_relevel(
+      format(issued_date,"%B %Y"),
+      "November 2024",
+      "December 2024",
+      "January 2025"
+    )
+    )
 ```
 
 ```{r}
@@ -151,7 +172,7 @@ df_rps_latest |>
     legend.position = "none"
   )+
   facet_wrap(
-    ~format(issued_date,"%B %Y")
+    ~pub_date_facet
   )
 ```
 
@@ -160,19 +181,22 @@ actual forecast mm values for AOI
 ```{r}
 df_rps_latest |>
   filter(
-    aoi
+    # aoi
   ) |>
    ggplot(
-    aes(x= as_factor(1),y= mm)
+    aes(x= as_factor(1),y= mm, color = aoi)
   )+
-  geom_jitter(position = position_jitter(seed = 1,width = 0.15)) +
-  geom_text(aes(label = adm1_name),position = position_jitter(seed = 1, width =0.2))+
+  geom_jitter(position = position_jitter(seed = 1,width = 0.15))+
+    geom_text_repel(aes(label = adm1_name),position =position_jitter(seed = 1, width =0.2)
+                    )+
+
+  # geom_text(aes(label = adm1_name),position = position_jitter(seed = 1, width =0.2))+
   scale_color_manual(
     values = c("TRUE"= hdx_hex("tomato-hdx"), "FALSE"= hdx_hex("sapphire-hdx"))
   )+
   labs(
-    title = "SEAS5 Forecast - MAM 2025: predicted rainfall deficit return period",
-    subtitle = "Forecast published in January 2025",
+    title = "SEAS5 Forecast - MAM 2025: predicted rainfall (mm)",
+    subtitle = "By forecast publication date",
     y= "Return Period"
   ) +
   theme(
@@ -181,7 +205,111 @@ df_rps_latest |>
     legend.position = "none"
   )+
   facet_wrap(
-    ~format(issued_date,"%B %Y")
+    ~pub_date_facet
   )
 
+```
+
+Some additional plots/tables
+```{r}
+df_rps_latest |>
+  ggplot(
+    aes(x= pub_date_facet , y= mm, group = adm1_name, color = aoi)
+  )+
+  geom_point(alpha=0.3)+
+  geom_line()+
+   scale_color_manual(
+    values = c("TRUE"= hdx_hex("tomato-hdx"), "FALSE"=hdx_hex("sapphire-hdx"))
+  )+
+  theme(
+    legend.position ="none",
+    axis.title.x=element_blank()
+    )
+
+```
+
+```{r}
+df_agg_formatted |>
+  mutate(
+    pub_mo = fct_relevel(month(issued_date, abbr=T,label=T),"Nov","Dec","Jan","Feb")
+  ) |>
+  ggplot(
+    aes(
+      x= pub_mo,
+      y= mm, group= pub_mo
+    )
+  )+
+  geom_boxplot() +
+  geom_jitter( alpha =0.2)
+
+df_agg_formatted |>
+  filter(
+    aoi
+  ) |>
+  mutate(
+    pub_mo = fct_relevel(month(issued_date, abbr=T,label=T),"Nov","Dec","Jan","Feb")
+  ) |>
+  ggplot(
+    aes(
+      x= pub_mo,
+      y= mm,
+      group= pub_mo
+    )
+  )+
+  geom_boxplot() +
+  geom_jitter( alpha =0.2)+
+  facet_wrap(~adm1_name, scales="free")
+```
+
+
+```{r}
+df_rps_latest |>
+  mutate(
+    pub_mo_label = month(issued_date, label = T, abbr= T)
+  ) |>
+  select(adm1_name,mm, rp_emp,pub_mo_label,aoi) |>
+  filter(aoi) |>
+  pivot_wider(
+    names_from = pub_mo_label, values_from = c("mm","rp_emp")
+  ) |>
+  ungroup() |>
+  select(
+    adm1_name,mm_Nov, mm_Dec, mm_Jan,everything()
+  ) |>
+  gt() |>
+  fmt_number(decimals= 1) |>
+    cols_merge(
+    columns = c("mm_Nov","rp_emp_Nov"), pattern = "{1} ({2})"
+  ) |>
+  cols_merge(
+    columns = c("mm_Dec","rp_emp_Dec"), pattern = "{1} ({2})"
+  ) |>
+  cols_merge(
+    columns = c("mm_Jan","rp_emp_Jan"), pattern = "{1} ({2})"
+  ) |>
+  cols_label (
+    mm_Jan = "Jan",
+    mm_Dec = "Dec",
+    mm_Nov= "Nov"
+  ) |>
+  cols_hide(
+    columns = c("iso3","pcode","aoi")
+  )
+```
+
+
+
+```{r}
+df_rps_latest |>
+  filter(
+    issued_date =="2025-01-01"
+  ) |>
+  ggplot(
+    aes(x= adm1_name, y= rp_emp, color = aoi, fill = aoi)
+  )+
+  geom_bar(stat= "identity")+
+  theme(
+    axis.text = element_text(angle =090),
+    axis.title.x = element_blank()
+  )
 ```
