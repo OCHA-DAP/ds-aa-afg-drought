@@ -36,6 +36,52 @@ aggregate_forecast <-  function(df,valid_months=c(3,4,5), by = c("iso3", "pcode"
     )
 }
 
+#' @export
+seas5_rp <- function(df,value,last_baseline_year){
+  df |>
+    # rename(
+    #   mm = mean,
+    #   pub_mo_date = issued_date
+    # ) |>
+    dplyr$filter(lubridate$year(issued_date)<=last_baseline_year) |>
+    dplyr$mutate(
+      pub_mo_label = lubridate$month(issued_date,label =T, abbr=T)
+    ) |>
+    dplyr$group_by(iso3, pcode, pub_mo_label, leadtime) |>
+    dplyr$arrange(
+      pcode,pub_mo_label,!!rlang$sym(value)
+    ) |>
+    dplyr$mutate(
+      rank = dplyr$row_number(),
+      q_rank = rank/(max(rank)+1),
+      rp_emp = 1/q_rank,
+
+    ) |>
+    dplyr$arrange(pcode,pub_mo_label,!!rlang$sym(value)) |>
+    dplyr$ungroup()
+}
+
+#' @export
+prep_seas5_historical <- function(df,aoi){
+  df |>
+  dplyr$mutate(
+    yr_season = lubridate$floor_date(issued_date+months(leadtime),"year"),
+    parameter = "SEAS5-MAM"
+  ) |>
+  dplyr$rename(
+    rp_relevant_direction = rp_emp,
+    value = mean,
+    adm1_name = name
+  ) |>
+  dplyr$filter(
+    adm1_name %in% aoi
+  ) |>
+  dplyr$select(
+    yr_season, adm1_name, pub_mo_date =issued_date,pub_mo_label, rp_relevant_direction, value,parameter
+  )
+}
+
+
 load_weight_tables <- function(weight_set=c("WT_ADM2","WT_ADM1")){
   weight_set <- rlang$arg_match(weight_set)
   root_path <- "ds-aa-afg-drought/processed/vector/"

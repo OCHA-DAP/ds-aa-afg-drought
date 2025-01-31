@@ -24,361 +24,395 @@ project:
 ---
 
 ## Intro
-
 ```{r}
 
 aoi_adm1 <- c(
   "Takhar",
-  "Badakhshan",
-  "Badghis",
+  # "Badakhshan",
+  # "Badghis",
   "Sar-e-Pul" ,
   "Faryab"
   )
-```
-
-```{r}
-SEASON_OF_INTEREST <- c(3,4,5)
-LATEST_SEASON_PREDICTABLE <-  c(3,4)
 
 box::use(
   ../R/blob_connect,
-  ../R/utils[download_fieldmaps_sf],
+  ../R/utils,
+  seas5 = ../R/seas5_utils,
   loaders = ../R/load_funcs
 )
-box::reload(loaders)
-box::use(
-  dplyr[...],
-  forcats[...],
-  ggplot2[...],
-  gt[...],
-  stringr[...],
-  tidyr[...],
-  lubridate[...],
-  purrr[...],
-  ggiraph[...],
-  gghdx[...],
-  ggh4x[...],
-  glue[...],
-  DBI,
-  RPostgres,
-  janitor[clean_names],
 
-  readr,
-  scales,
-  stats
+# not using box as it doesn't play nice w/ meta pacakges like `{tidymodels}`
+# in refactoring I should probably just laod this specific packages necessary
+# for tidymodels and ultimately move all the heavy tidymodels work to a new
+# notebook
 
-)
+library(tidyverse)
+library(cumulus)
+library(gt)
+library(gghdx)
+library(glue)
+library(janitor)
+library(ggiraph)
+library(ggh4x)
+library(ggrepel)
+library(sf)
+library(tidymodels)
+library(vip)
 gghdx()
 ```
 
+
 ```{r}
-con <- DBI$dbConnect(
-  drv = RPostgres$Postgres(),
-  user = Sys.getenv("AZURE_DB_USER_ADMIN"),
-  host = Sys.getenv("AZURE_PROD_DB_HOST"),
-  password = Sys.getenv("AZURE_PROD_DB_PW"),
-  port = 5432,
-  dbname = "postgres"
-)
 
-df_adm1_labels <- tbl(con,"polygon") |>
-  filter(
-    iso3 == "AFG",
-    adm_level == 1
-  ) |>
-  select(
-    iso3, pcode, name
-  ) |>
-  collect()
-
-aoi_pcodes <- df_adm1_labels |>
-  filter(
-    name %in% aoi_adm1
-  ) |>
-  pull(pcode)
-
-df_seas5 <- tbl(con, "seas5") |>
-  filter(
-    iso3 == "AFG",
-    adm_level ==1,
-    pcode %in% aoi_pcodes
-  ) |>
-  collect() |>
-  mutate(
-    precipitation = mean *days_in_month(valid_date)
-  )
-
-
-
-df_seas5_filt <- df_seas5 |>
-  filter(
-    issued_date>= "1981-06-01"
-  )
-
-aggregate_forecast <-  function(df,valid_months){
+label_parameters <- function(df){
   df |>
-    group_by(iso3, pcode,issued_date) |>
-     # group_by(issued_date) %>%
-    filter(
-      # all(valid_months %in% month(valid_date))&
-      month(valid_date) %in% valid_months,
-      all(valid_months %in% month(valid_date))
+    mutate(
+     parameter_label = case_when(
+      str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
+      str_detect(parameter,"NDSI")~"NDSI",
+      str_detect(parameter,"asi")~"ASI",
+      str_detect(parameter,"vhi")~"VHI",
 
-    ) |>
-    summarise(
-      mm = sum(precipitation),
-      # **min() - BECAUSE**  for MJJA (5,6,7,8) at each pub_date we have a set of leadtimes
-      # for EXAMPLE in March we have the following leadtimes 2
-      # 2 : March + 2 = May,
-      # 3 : March + 3 = June,
-      # 4 : March + 4 = July
-      # 5:  March + 5 = Aug
-      # Therefore when we sum those leadtime precip values we take min() of lt integer so we get the leadtime to first month being aggregated
-      leadtime = min(leadtime),
-      .groups = "drop"
-    ) |>
-    arrange(issued_date)
+      str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
+      str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
+      str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
+      str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
+      str_detect(parameter,"mean_2m_air_temperature")~"Temp (ERA)",
+      str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
+      str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
+      str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
+
+      str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
+      str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
+      str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
+
+
+      .default = parameter
+    )
+    )
 }
 
-df_seas5_mam <- aggregate_forecast(
-  df_seas5_filt,
-  valid_months = SEASON_OF_INTEREST
-  )
 
-df_seas5_rps_historical <- df_seas5_mam |>
-  mutate(
-    pub_mo = month(issued_date,label =T, abbr=T)
-  ) |>
-  group_by(iso3, pcode, pub_mo, leadtime) |>
-  arrange(
-    pcode,pub_mo,mm
-  ) |>
-  mutate(
-    rank = row_number(),
-    q_rank = rank/(max(rank)+1),
-    rp_emp = 1/q_rank,
 
-  ) |>
-  arrange(pcode,pub_mo,mm)
-
-```
-
-```{r}
-#| eval: true
-#| echo: true
-#| warnings: false
-#| message: false
-
-df_environmental <- loaders$load_all_environmental_data()
-
-df_environmental <- df_environmental |>
-  mutate(
-    yr_date = case_when(
-      str_detect(parameter,"Dec|Nov")~yr_date + years(1),
-      .default = yr_date
+filter_to_validation_range <- function(df,df_valid){
+  df |>
+    filter(
+      yr_season >= min(df_valid$yr_season),
+      yr_season <= max(df_valid$yr_season)
     )
+}
+
+load_aggregated_forecast <- function(aoi_adm1,valid_months=c(3,4,5)){
+   valid_months_chr <- lubridate::month(valid_months,abbr=T,label=T)
+   parameter_label <- glue::glue("SEAS5-{glue::glue_collapse(str_sub(valid_months_chr,1,1),sep='')}")
+
+
+   df_seas5 <- cumulus::pg_load_seas5_historical(
+    iso3 ="AFG",
+    adm_level = 1,
+    adm_name = aoi_adm1,
+    convert_units = T
   )
 
-df_valid_range <- df_environmental |>
-  filter(
-    str_detect(parameter,"^asi|^vhi")
-  ) |>
-  pull(yr_date) |>
-  range()
+  df_agg <- cumulus::seas5_aggregate_forecast(
+    df_seas5,
+    valid_months = valid_months,
+    value= "mean",
+    by = c("iso3","pcode","name","issued_date")
+  )
+
+  df_agg |>
+    mutate(
+        yr_season = lubridate::floor_date(issued_date+months(leadtime),"year"),
+        parameter = parameter_label
+      )  |>
+    select(
+       yr_season, adm1_name=name, pub_mo_date =issued_date, value=mean,parameter
+    )
 
 
 
-df_env_filt <- df_environmental |>
-  filter(
-    yr_date >= df_valid_range[1],
-    yr_date <= df_valid_range[2],
-    adm1_name %in% aoi_adm1
-    # adm1_name == "Faryab"
-  ) |>
-  group_by(
-    adm1_code,
-    adm1_name,
-    parameter
-  ) |>
-  arrange(
-    desc(value),
-    .by_group = TRUE
-  ) |>
-  mutate(
-    rank = row_number(),
-    q_rank = rank/(max(rank)+1),
-    rp_max_direction = 1/q_rank
-  ) |>
-  arrange(
-    value,.by_group = TRUE
-  ) |>
-  mutate(
-    rank = row_number(),
-    q_rank = rank/(max(rank)+1),
-    rp_min_direction = 1/q_rank,
+}
 
-  ) |>
-  ungroup() |>
-  mutate(
-    rp_relevant_direction  = case_when(
+load_compiled_indicators <- function(aoi_adm1) {
+  df_observational <- loaders$load_cleaned_env_features(mo = c(11,12,1:6))
+  df_obs_clean <- loaders$prep_observational_data(df= df_observational)
+  df_validation_set <- df_obs_clean |>
+    filter(parameter == "asi")
+
+  df_seas5_forecast <- load_aggregated_forecast(aoi_adm1 = aoi_adm1,valid_months  = c(3,4,5))
+
+  df_obs_pred <- bind_rows(
+    df_obs_clean,
+    df_seas5_forecast
+    )
+
+
+  df_obs_pred |>
+    filter_to_validation_range(df_valid = df_validation_set) |>
+    filter(adm1_name %in% aoi_adm1) |>
+    group_by(adm1_name, parameter, pub_mo_label = month(pub_mo_date,label = T, abbr = T)) |>
+    arrange(desc(value), .by_group = TRUE) |>
+    mutate(rank = row_number(), q_rank = rank/(max(rank)+1), rp_max_direction = 1/q_rank) |>
+    arrange(value, .by_group = TRUE) |>
+    mutate(rank = row_number(), q_rank = rank/(max(rank)+1), rp_min_direction = 1/q_rank) |>
+    ungroup() |>
+    mutate(rp_relevant_direction  = case_when(
       str_detect(parameter,"asi|temp")~ rp_max_direction,
-      .default = rp_min_direction,
+      .default = rp_min_direction
+    ))
 
-    )
-  )
+}
 
 
-df_seas5_ready <- df_seas5_rps_historical |>
-  mutate(
-    yr_date = floor_date(issued_date+months(leadtime),"year"),
-    parameter = paste0("seas5_mam_pub_",pub_mo)
-  ) |>
-  left_join(
-    df_adm1_labels
-  ) |>
-  rename(
-    rp_relevant_direction = rp_emp,
-    value = mm,
-    adm1_name = name
-  ) |>
-  filter(
-    adm1_name %in% aoi_adm1
-    # adm1_name =="Faryab"
-    )
 ```
 
+
+
+
+
+
+
+
+
+
 ```{r}
-df_env_filt_flag <- bind_rows(
-  df_env_filt ,
-  df_seas5_ready |> ungroup()
-  ) |>
-  group_by(
-    adm1_name,parameter
-  ) |>
+
+df_compiled_indicators <- load_compiled_indicators(aoi_adm1 = aoi_adm1)
+
+df_indicators_flagged <- df_compiled_indicators |>
   mutate(
-    flag = rp_relevant_direction>=5
+    flag = rp_relevant_direction>=3
   )
 
-
-df_valid_flag <- df_env_filt_flag |>
+# get validation set flagged w/ RP breaches
+df_valid_flag <-
+  df_indicators_flagged |>
   filter(
-    str_detect(parameter,"asi_May")
+    # May ASI has been used as our validation data set
+    month(pub_mo_date) ==6 &
+    str_detect(parameter,"asi")
   ) |>
   rename(
     valid_flag = flag
+  ) |>
+  select(
+   yr_season,adm1_name,valid_flag
   )
 
+df_valid_flag |>
+  arrange(
+    adm1_name,yr_season
+  ) |>
+  print(n=100)
 
-df_env_compare <- df_env_filt_flag |>
+
+df_env_compare <- df_indicators_flagged |>
   left_join(
-    df_valid_flag |>
-      ungroup() |>
-      select(
-        yr_date,
-        # adm1_code,
-        adm1_name,
-        valid_flag)
+    df_valid_flag,
+    by = c("yr_season","adm1_name")
   ) |>
-  mutate(
-    prediction = (flag &valid_flag)|(!flag & !valid_flag)
+  filter_to_validation_range(df_valid = df_validation_set)
+
+df_env_model <-
+  df_env_compare |>
+    select(
+    date,
+    yr_season,
+    pub_mo_date,
+    pub_mo_label,
+    adm1_name,
+    parameter,
+    value
+    ) |>
+  filter(
+    !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","era5_land_runoff_max"),
+    !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d"),
+
+    # already have these from ERA land up to 2024 rather than 2020
+    !(parameter %in% c("total_precipitation","mean_2m_air_temperature"))
+
   )
 
 
-df_pct_correct <- df_env_compare |>
-  filter(
-    yr_date >= df_valid_range[1],
-    yr_date <= df_valid_range[2],
-  ) |>
 
+
+df_perf_metrics <- df_env_compare |>
+  mutate(
+    TP = flag & valid_flag,
+    TN = !flag & !valid_flag,
+    FP = flag & !valid_flag,
+    FN = !flag & valid_flag
+  ) |>
   group_by(
-    adm1_name, parameter
+    adm1_name, pub_mo_label = month(pub_mo_date,label=T,abbr=T),parameter
   ) |>
   summarise(
-    precision = sum(flag & valid_flag)/ sum(flag),
-    recall = sum(flag & valid_flag)/ sum(valid_flag),
-    accuracy = mean(prediction),
+    precision = sum(TP)/(sum(TP)+sum(FP)),
+    recall = sum(TP)/(sum(TP)+sum(FN)),
+    accuracy = (sum(TP)+sum(TN))/(sum(TP)+sum(TN)+sum(FP)+sum(FN)),
     .groups="drop_last"
   ) |>
   mutate(
+    f1 = (2 * precision * recall) / (precision + recall),
+    # when precision & recall are 0 we get NaN - replace w/ 0 for easier interpretation
+    f1 = ifelse(precision==0&recall==0,0,f1),
     rank_correct= dense_rank(accuracy)
+  ) |>
+    mutate(
+    parameter_simplified = case_when(
+      # str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
+      str_detect(parameter,"NDSI")~"NDSI",
+      str_detect(parameter,"asi")~"ASI",
+      str_detect(parameter,"vhi")~"VHI",
+
+      str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
+      str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
+      str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
+      str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
+      str_detect(parameter,"era5_land_temperature_2m")~"Temp (ERA)",
+      str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
+      str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
+      str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
+      str_detect(parameter,"cumu_era5_land_temperature_2m")~"Temp cumu (ERA5)",
+
+      str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
+      str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
+      str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
+      .default = parameter
+    )
+  ) |>
+  ungroup()
+
+
+```
+
+```{r}
+aoi_adm1 <- set_names(aoi_adm1,aoi_adm1)
+
+p_metrics_seasonal <-
+  aoi_adm1 |>
+  map(\(adm_tmp){
+
+    df_perf_metrics |>
+      ungroup() |>
+      filter(
+        adm1_name == adm_tmp
+      ) |>
+      mutate(
+        trigger_type = factor(case_when(
+          pub_mo_label %in% c("Jan","Feb","Mar")~"Pre-Season",
+          pub_mo_label %in% c("Mar","Apr","May")~"Mid-Season",
+          pub_mo_label %in% c("Jun","Jul")~"Post-Season"
+        ), levels = c("Pre-Season","Mid-Season","Post-Season")
+        )
+      ) |>
+      pivot_longer(cols = precision:accuracy) |>
+      filter(pub_mo_label %in% c("Jan","Feb","Mar","Apr","May","Jun","Jul")) |>
+      ggplot(
+        aes(
+          y = reorder(parameter,value),
+          x= value,
+          color = name
+        )
+      )+
+      geom_point_interactive(
+        aes(tooltip= glue(
+          "parameter: {parameter},
+      metric: {name}
+      value: {scales::label_percent(accuracy = 1)(value)}")
+        ),alpha=0.4
+      )+
+      facet_nested(
+        rows=vars(trigger_type, pub_mo_label),
+        # nest_line = element_line(colour = "red"),
+        scales="free")+
+
+      scale_x_continuous(labels =scales::label_percent())+
+      scale_y_discrete(expand= c(.05,.05))+
+      labs(
+        title =  "How well do RS parameters (thresholded - 5 year RP) predict cumulative May ASI breaching 5 year RP",
+        subtitle =glue("{adm_tmp} Province")
+
+      )+
+      theme(
+        # strip.text = element_text(angle=90),
+        ggh4x.axis.nestline = element_line(linetype = 2),
+        panel.border = element_rect(fill=NA, color ="grey"),
+        legend.title = element_blank(),
+        axis.text.y= element_text(size=6),
+        axis.title.x= element_blank(),
+        axis.title.y= element_blank(),
+        plot.title = element_text(size =9),
+        plot.subtitle = element_text(size =8),strip.background = element_rect(fill="lightgrey")
+      )
+  }
   )
 ```
 
 ```{r}
 aoi_adm1 <- set_names(aoi_adm1,aoi_adm1)
-mo_rgx <- glue_collapse(glue("{month(1:12,abbr=T,label=T)}$"),sep = "|")
 
-p_metrics_seasonal <-
-   aoi_adm1 |>
+lp_tile_metrics_seasonal <-
+  aoi_adm1 |>
   map(\(adm_tmp){
-  df_pct_correct |>
-  ungroup() |>
+
+    df_temp <- df_perf_metrics |>
+      ungroup() |>
       filter(
         adm1_name == adm_tmp
       ) |>
-  filter(!(parameter%in% c("chirps_cumuDec"))) |>
-  mutate(
-    mo_monitored_chr = case_when(
-      str_detect(parameter, "mam$|mam_sum$|mam_mean$")~"May",
-      .default = str_extract(parameter,pattern= mo_rgx)
-    ),
-    mo_monitored = factor(mo_monitored_chr, levels = month.abb, ordered = TRUE),
-    mo_monitored_dummy = as_date(glue("2000-{mo_monitored}-01")),
+      mutate(
+        trigger_type = factor(case_when(
+          pub_mo_label %in% c("Jan","Feb","Mar")~"Pre-Season",
+          pub_mo_label %in% c("Mar","Apr","May")~"Mid-Season",
+          pub_mo_label %in% c("Jun","Jul")~"Post-Season"
+        ), levels = c("Pre-Season","Mid-Season","Post-Season")
+        )
+      ) |>
+      filter(pub_mo_label %in% c("Jan","Feb","Mar","Apr","May","Jun","Jul"))
 
-    mo_pub = case_when(
-      str_detect(parameter, "seas5")~ mo_monitored,
-      .default = month(mo_monitored_dummy + months(1),label = T, abbr= T)
-    ),
-    trigger_type = factor(case_when(
-      mo_pub %in% c("Jan","Feb","Mar")~"Pre-Season",
-      mo_pub %in% c("Mar","Apr","May")~"Mid-Season",
-      mo_pub %in% c("Jun","Jul")~"Post-Season"
-      ), levels = c("Pre-Season","Mid-Season","Post-Season")
-    )
-  ) |>
-  # filter(str_detect(parameter,"seas5"))
-   pivot_longer(cols = precision:accuracy) |>
-  filter(
-    !(mo_monitored %in% c("Nov","Oct","Sep","Aug","Jul")),
-    !(mo_pub %in%c("Dec"))
-  ) |>
-  ggplot(
-    aes(
-       y = reorder(parameter,value),
-      x= value,
-      color = name
+    df_temp |>
+      ggplot(
+        aes(
+          x= pub_mo_label,
+          y = parameter,
+          fill = f1
+        )
+      )+
+      geom_tile_interactive(
+        aes(tooltip= glue(
+          "parameter: {parameter},
+      metric: {f1}
+      value: {scales::label_percent(accuracy = 1)(f1)}")
+        ),alpha=1
+      )+
+        geom_tile(
+    data = df_temp|>
+      filter(f1>=0.7),
+      # group_by(pub_mo_label) |>
+      # slice_max(
+      #   f1, n= 3
+      # ),
+      fill = NA, color = "red", linewidth = 1
+  )+
+      labs(
+        title =  "How well do RS parameters (thresholded - 5 year RP) predict cumulative May ASI breaching 5 year RP",
+        subtitle =glue("{adm_tmp} Province")
+
+      )+
+      theme(
+        # strip.text = element_text(angle=90),
+        # ggh4x.axis.nestline = element_line(linetype = 2),
+        panel.border = element_rect(fill=NA, color ="grey"),
+        legend.title = element_blank(),
+        axis.text.y= element_text(size=6),
+        axis.title.x= element_blank(),
+        axis.title.y= element_blank(),
+        plot.title = element_text(size =9),
+        plot.subtitle = element_text(size =8),
+        strip.background = element_rect(fill="lightgrey")
       )
-  )+
-  geom_point_interactive(
-    aes(tooltip= glue(
-      "parameter: {parameter},
-      metric: {name}
-      value: {scales::label_percent(accuracy = 1)(value)}")
-    ),alpha=0.4
-  )+
-  facet_nested(
-    rows=vars(trigger_type, mo_pub),
-    # nest_line = element_line(colour = "red"),
-    scales="free")+
-
-  scale_x_continuous(labels =scales::label_percent())+
-      scale_y_discrete(expand= c(.05,.05))+
-  labs(
-    title =  "How well do RS parameters (thresholded - 5 year RP) predict cumulative May ASI breaching 5 year RP",
-    subtitle =glue("{adm_tmp} Province")
-
-    )+
-    theme(
-      # strip.text = element_text(angle=90),
-      ggh4x.axis.nestline = element_line(linetype = 2),
-      panel.border = element_rect(fill=NA, color ="grey"),
-    legend.title = element_blank(),
-    axis.text.y= element_text(size=6),
-    axis.title.x= element_blank(),
-    axis.title.y= element_blank(),
-    plot.title = element_text(size =9),
-    plot.subtitle = element_text(size =8),strip.background = element_rect(fill="lightgrey")
-  )
   }
   )
 ```
@@ -404,22 +438,293 @@ p_metrics_seasonal <-
 
 ### Interpreting plots:
 
-TBD - explain why accuracy is less important than it sounds/looks due to class imbalance
+Below the performance metrics are given for each parameter and admin unit. The following metrics are calculated:
 
 -   Accuracy
 -   Precision
 -   Recall
 
-```{r}
-#| fig.height: 9
+As we are predicting relatively rare events the accuracy metric should be supported by interpretation of precision and recall.
 
-girafe(ggobj= p_metrics_seasonal$Faryab)
+Below we show all trigger moment/months and there `f1 score` (harmonic mean of precision and recall) for predicting end of season ASI (dekad 3 may).
+
+```{r}
+gdf_adm1 <- cumulus::download_fieldmaps_sf(iso3= "afg",layer= "afg_adm1")
+
+df_pin <- cumulus::blob_read(
+  name= "ds-aa-afg-drought/raw/vector/HNRP_2025_PiN_Targets_Severity.xlsx",
+  container = "projects"
+)
+
+df_pin_wts <- df_pin |>
+  clean_names() |>
+  filter(province %in% aoi_adm1) |>
+  group_by(province) |>
+  summarise(
+    fsc_pin_wt = sum(pin_fsc)
+  ) |>
+  rename(
+    adm1_name = "province"
+  )
+
+df_area_wt_table <- gdf_adm1$afg_adm1 |>
+  clean_names() |>
+  filter(adm1_en %in% aoi_adm1) %>%
+  mutate(
+    area_wt = as.numeric(st_area(.))
+  ) |>
+  st_drop_geometry() |>
+  select(adm1_name = adm1_en,adm1_pcode,area_wt) |>
+  left_join(
+    df_pin_wts
+  ) |>
+  mutate(
+    area_x_fsc_wt =area_wt * fsc_pin_wt
+  )
+
+
+generalize_f1 <- function(df, aoi, weight=NULL){
+  df_agg <- df |>
+    filter(
+      adm1_name %in% aoi
+    ) |>
+    group_by(
+      pub_mo_label, parameter,parameter_simplified
+    )
+  if(is.null(weight)){
+    ret <-  df_agg |>
+    summarise(
+      across(
+        .cols = c("f1","precision","recall"), \(x) mean(x,na.rm=T)
+      ),
+      .groups="drop"
+      # f1 = mean(f1, na.rm = TRUE),
+      # precision = mean(precision, na.rm = TRUE),
+      # recall = mean(precision, na.rm = TRUE),.groups="drop"
+    )
+  }
+  if(!is.null(weight)){
+    ret <- df_agg |>
+      summarise(
+        across(
+         .cols = c("f1","precision","recall"), \(x) weighted.mean(x,,w =!!sym(weight),na.rm=T)
+        ),
+
+         .groups="drop"
+        # f1 = weighted.mean(f1,w=!!sym(weight),na.rm=T),
+      )
+  }
+  ret
+}
+
+wt_set <- list(NO_WT = NULL, AREA_WT = "area_wt", AREA_FSC_PIN_WT = "area_x_fsc_wt")
+df_perf_metrics_w_wt <- df_perf_metrics |>
+  left_join(df_area_wt_table)
+
+df_perf_metrics_w_wt |> count(parameter) |> print(n=23)
+
+df_perf_metrics_w_wt_filt <- df_perf_metrics_w_wt |>
+        filter(
+          !parameter %in% c("NDSI_Snow_Cover_min",
+                            "NDSI_Snow_Cover_max",
+                            "era5_land_runoff_max"),
+          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+        )
+
+perf_param <- c("precision","recall","f1")[3]
+
+lp_f1_combined <- imap(
+  wt_set,
+  \(wt_temp,nmt){
+    dft <- generalize_f1(
+      df= df_perf_metrics_w_wt_filt,
+      aoi =  c("Takhar","Sar-e-Pul","Faryab"),
+      weight=wt_temp
+    )
+    dft_filt <-  dft |>
+      filter(
+        pub_mo_label %in% c("Feb","Mar","Apr","May","Jun")
+      ) |>
+      mutate(
+        f1_gte_0.5 = !!sym(perf_param)>=0.5
+      )
+
+    subtitle_tmp <- switch(nmt,
+            "NO_WT"= "Unweighted",
+            "AREA_WT"= "Weighted by province area",
+            "AREA_FSC_PIN_WT"= "Weighted by province area & FSC PiN"
+    )
+
+    dft_filt |>
+      ggplot(
+        aes(
+          x= pub_mo_label,
+          y = parameter_simplified,
+          fill = !!sym(perf_param)
+        )
+      )+
+      geom_tile_interactive(
+        aes(tooltip= glue(
+          "parameter: {parameter},
+      F1 score: {scales::label_percent(accuracy = 1)(f1)}"
+      )
+        ),alpha=1
+      )+
+      labs(
+        title =  subtitle_tmp
+
+      )+
+      geom_tile(
+        data = dft_filt |>
+          group_by(pub_mo_label) |>
+          slice_max(
+            !!sym(perf_param),
+            n= 5
+          ),
+        aes(color = f1_gte_0.5),
+        fill = NA, show.legend=F,
+        # color = "red",
+        linewidth = 1
+      )+
+      scale_fill_viridis_c()+
+      scale_color_manual(
+        values = c(
+          "TRUE"= hdx_hex("tomato-hdx"),
+          "FALSE"="grey"
+          )
+      )+
+      theme(
+        # ggh4x.axis.nestline = element_line(linetype = 2),
+        panel.border = element_rect(fill=NA, color ="grey"),
+        legend.title = element_blank(),
+        axis.text.y= element_text(size=10),
+        axis.title.x= element_blank(),
+        axis.title.y= element_blank(),
+
+        strip.background = element_rect(fill="lightgrey")
+      )
+
+  }
+
+)
+lp_f1_combined$AREA_WT
+lp_f1_combined$NO_WT
+
+
+ldf_f1_combined <- imap(
+  wt_set,
+  \(wt_temp,nmt){
+     wt_label <- switch(nmt,
+            "NO_WT"= "Unweighted",
+            "AREA_WT"= "Weighted by province area",
+            "AREA_FSC_PIN_WT"= "Weighted by province area & FSC PiN"
+    )
+    dft <- generalize_f1(
+      df= df_perf_metrics_w_wt |>
+        filter(
+          !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max"),
+          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+        ),
+      aoi =  c("Takhar","Sar-e-Pul","Faryab"),
+      weight=wt_temp
+    )
+    dft |>
+      filter(
+        pub_mo_label %in% c("Feb","Mar","Apr","May","Jun")
+      ) |>
+      mutate(
+        f1_gte_0.5 = f1>=0.4,
+        weight_type = wt_label
+      )
+  }) |>
+  list_rbind()
+ldf_f1_combined
+
+lp_ndsi_params <- map(
+  wt_set,
+  \(wt_temp){
+    dft <- generalize_f1(
+      df= df_perf_metrics_w_wt |>
+        filter(
+          parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_mean","NDSI_Snow_Cover_max")
+        ),
+      aoi =  c("Takhar","Sar-e-Pul","Faryab"),
+      weight=wt_temp
+    )
+    dft_filt <-  dft |>
+      filter(
+        pub_mo_label %in% c("Feb","Mar","Apr","May","Jun")
+      ) |>
+      mutate(
+        f1_gte_0.5 = f1>=0.4
+      )
+
+    dft_filt |>
+      ggplot(
+        aes(
+          x= parameter,
+          y = f1
+        )
+      )+
+      geom_point()+
+      coord_flip()+
+      facet_wrap(~pub_mo_label)+
+      theme(
+        # strip.text = element_text(angle=90),
+        ggh4x.axis.nestline = element_line(linetype = 2),
+        panel.border = element_rect(fill=NA, color ="grey"),
+        legend.title = element_blank(),
+        axis.text.y= element_text(size=10),
+        axis.title.x= element_blank(),
+        axis.title.y= element_blank(),
+        # plot.title = element_text(size =9),
+        # plot.subtitle = element_text(size =8),
+        strip.background = element_rect(fill="lightgrey")
+      )
+
+  }
+
+)
+
+lp_ndsi_params$NO_WT
+library(patchwork)
+lp_f1_combined$NO_WT +
+  lp_f1_combined$AREA_WT +
+  lp_f1_combined$AREA_FSC_PIN_WT + plot_layout(nrow = 1)+
+  plot_annotation(title= "Average F1 Score Across Provinces")
+
+girafe(ggobj =lp_f1_combined$AREA_FSC_PIN_WT)
+
 ```
 
 ```{r}
 #| fig.height: 9
 
-girafe(ggobj= p_metrics_seasonal$Badghis)
+lp_tile_metrics_seasonal$`Sar-e-Pul`
+```
+
+```{r}
+#| fig.height: 9
+
+lp_tile_metrics_seasonal$Takhar
+```
+
+```{r}
+#| fig.height: 9
+
+lp_tile_metrics_seasonal$Faryab
+```
+
+```{r}
+#| eval: false
+#| fig.height: 9
+
+# no longer in AOI
+# lp_tile_metrics_seasonal$Badakhshan
+```
+
+```{r}
+girafe(ggobj= p_metrics_seasonal$Faryab)
 ```
 
 ```{r}
@@ -435,17 +740,11 @@ girafe(ggobj= p_metrics_seasonal$Takhar)
 ```
 
 ```{r}
-#| fig.height: 9
-
-girafe(ggobj= p_metrics_seasonal$Badakhshan)
-```
-
-```{r}
 lp_metric <-
   aoi_adm1 |>
   map(\(adm_tmp){
 
-    df_pct_correct |>
+    df_perf_metrics |>
       filter(adm1_name == adm_tmp) |>
       pivot_longer(cols = precision:accuracy
       ) |>
@@ -480,7 +779,3317 @@ lp_metric <-
   }
   )
 
-girafe(ggobj = lp_metric$Badghis)
+
+girafe(ggobj = lp_metric$Takhar)
+```
+
+Here we can see how closer to the end of season our performance metrics improve.
+
+```{r}
+
+df_metrics_simple <- df_perf_metrics |>
+  filter(adm1_name!="Badghis",adm1_name!="Badakhshan") |>
+    filter(
+          pub_mo_label %in% c("Feb","Mar","Apr","May","Jun"),
+          !str_detect(parameter,"runoff_max"),
+
+           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","total_precipitation"),
+          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+        ) |>
+  # filter(!is.nan(f1)) |>
+  label_parameters()
+
+
+
+
+
+df_metrics_filt <-  df_metrics_simple |>
+        filter(
+          pub_mo_label %in% c("Feb","Mar","Apr","May","Jun"),
+          !str_detect(parameter,"runoff_max"),
+
+           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","total_precipitation"),
+          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+        )
+
+df_top_metrics_label <- df_metrics_filt |>
+  mutate(
+    f1_lgl = f1>0.5
+  ) |>
+  group_by(adm1_name, pub_mo_label) |>
+  mutate(
+    num_gte = sum(f1_lgl)
+  ) |>
+  arrange(
+   adm1_name, pub_mo_label, desc(f1)
+  ) |>
+  mutate(
+    include = row_number()
+  ) |>
+  print(n=25) |>
+  filter(include%in% c(1:3) & f1_lgl) |>
+  ungroup()
+
+df_top_metrics_label |>
+  filter(adm1_name == "Sar-e-Pul")
+
+df_metrics_top3 <- df_metrics_filt |>
+        group_by(adm1_name, pub_mo_label) |>
+        slice_max(f1, n= 3, with_ties = T)
+
+
+viridis_colors <- viridisLite::viridis(15, option = "A")
+length(c25)
+c25 <- c(
+
+  "green4",
+  "#E31A1C",
+  "dodgerblue2",
+  "#6A3D9A", # ndsi purple
+  "#FF7F00", # orange
+  "skyblue2",
+  "gold1",
+  "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70",
+  "khaki2",
+  "maroon",
+  "orchid1",
+  "deeppink1",
+  "blue1", # soil mositure
+  "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+
+
+
+
+
+p_ts_f1 <- df_metrics_top3 |>
+  ggplot(
+    aes(
+      x= pub_mo_label, y= f1
+    )
+  )+
+  geom_point(
+    data = df_metrics_filt,
+    alpha=0.5, color = "darkgrey"
+  )+
+  geom_point(
+    aes(color =parameter_simplified)
+  )+
+  geom_label_repel(
+    data = df_metrics_top3,
+    aes(
+      label = parameter_simplified,
+      fill = parameter_simplified
+    ),
+    max.overlaps = 20,
+    color = "black"
+    )+
+  # scale_fill_brewer(palette = "Set3")+
+  scale_fill_manual(values = c25) +
+  labs(
+    # title = "F1 Scores: How well do indicators predict worst end of season ASI values",
+    title = "F1 Scores: By Province & Trigger Moment",
+    subtitle = "Only Top indicators labelled"
+  )+
+  scale_color_manual(values = c25) +
+  facet_wrap(~adm1_name)+
+  theme(
+    panel.grid.major.x = element_line(color = "black"),
+    legend.position = "none"
+
+  )
+
+# whta if we just show values > 0.5
+# p_ts_f1_gte0.5 <- df_metrics_filt |>
+#    filter(
+#           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max"),
+#           !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+#         ) |>
+#   filter(f1>=0.5) |>
+#   filter(
+#     adm1_name != "Badkhshan"
+#   # ) |>
+
+
+
+ggplot(
+  df_metrics_filt,
+  aes(
+    x= pub_mo_label, y= f1
+  )
+)+
+  geom_point(
+    alpha=0.5,
+    color = "darkgrey"
+  )+
+
+  geom_point(
+    data= df_top_metrics_label,
+    aes(color =parameter_simplified)
+  )+
+  geom_label_repel(
+    data =  df_top_metrics_label ,
+    aes(
+      label = parameter_simplified,
+      fill = parameter_simplified
+    ),
+    max.overlaps = 20,
+    color = "black"
+    )+
+  # scale_fill_brewer(palette = "Set3")+
+  scale_fill_manual(values = c25) +
+  scale_color_manual(values = c25)+
+  labs(
+    # title = "F1 Scores: How well do indicators predict worst end of season ASI values",
+    title = "Predictiveness of Indicators by Province and Trigger Timing (F1 Score)",
+    subtitle = "Only Top 3 Indicators Labelled Per Publication Month and Province"
+  )+
+  facet_wrap(~adm1_name,ncol=1)+
+  theme(
+    panel.grid.major.x = element_line(color = "black"),
+    legend.position = "none"
+
+  )
+
+p_ts_f1_gte0.5
+library(patchwork)
+# box::use(patchwork[...])
+
+p_ts_f1 +
+  p_perf_tile_combined+
+
+  plot_layout(widths = c(2,1))+
+  plot_annotation(
+    title = "How well do RS indicators predict worst end of season ASI values?"
+  )
+```
+
+
+
+### Heuristic Weighting
+
+Based on the above let's select some indicators and make a weighting
+
+```{r}
+library(tidymodels)
+library(usemodels)
+library(vip)
+
+df_env_model <-
+  df_env_compare |>
+    select(
+    date,
+    yr_season,
+    pub_mo_date,
+    pub_mo_label,
+    adm1_name,
+    parameter,
+    value
+    ) |>
+  filter(
+    !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","era5_land_runoff_max"),
+    !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d"),
+
+    # already have these from ERA land up to 2024 rather than 2020
+    !(parameter %in% c("total_precipitation","mean_2m_air_temperature"))
+
+  )
+
+# just some manual inspectino stuff here
+df_env_model |>
+  filter(str_detect(parameter,"^asi|^vhi")) |>
+  group_by(parameter, pub_mo_label) |>
+  count() |>
+  pivot_wider(names_from=pub_mo_label, values_from = n)
+
+date_ranges <- df_env_model |>
+  group_by(parameter) |>
+  summarise(
+    start = min(pub_mo_date),
+    end = max(pub_mo_date)
+  )
+
+
+# df_jun_asi <- df_env_model |>
+#   filter(parameter == "asi",month(pub_mo_date)==6) |>
+#   select(
+#     yr_season,adm1_name, value
+#   ) |>
+#   rename(
+#     asi_Jun = value
+#   )
+
+
+
+
+
+
+#' create_weight_grid
+#' @description
+#' function to create valid weight sets in long data.frame that can be
+#' iterated through
+#' @param x
+#' @param wt_vals
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+#' params_set_gte_1984 <- c(
+#'   "era5_land_soil_moisture_1m",
+#'   "cumu_era5_land_total_precipitation_sum",
+#'   "vhi",
+#'   "era5_land_snow_cover", # toying w/ adding this or not
+#'   "asi"
+#'   )
+#' weight_combos <- create_weight_grid(params_set_gte_1984,wt_vals = c(0,seq(0.1, 1, by = 0.1)))
+
+create_weight_grid <- function(x,wt_vals){
+
+  df <- map(x,\(xt){
+    tibble(
+      !!sym(xt) :=wt_vals
+    )
+  }
+  )|>
+    list_cbind()
+
+  df_expanded <- expand_grid(!!!df)
+
+  df_valid_combinations <- df_expanded[rowSums(df_expanded) == 1, ]
+
+    df_valid_combinations |>
+      mutate(
+        wt_id = row_number()
+      ) |>
+      pivot_longer(
+        -wt_id, names_to = "parameter", values_to ="weight"
+      )
+}
+
+
+
+#' Title
+#'
+#' @param df
+#' @param params_included
+#' @param earliest_year
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+#' df_env_model |>
+#'   normalize_to_z(params_included = l_params$gte1984,earliest_year = 1984)
+
+normalize_to_z <- function(df,params_included, earliest_year){
+      df |>
+        filter(
+          year(yr_season)>=earliest_year
+        ) |>
+        mutate(
+        pub_mo_label = as.character(pub_mo_label)
+      ) |>
+      filter(
+        parameter %in% params_included,
+        pub_mo_label %in% c(month.abb[4:6])
+      ) |>
+      group_by(
+        pub_mo_label, adm1_name, parameter
+      ) |>
+      mutate(
+        zscore = scale(value,center=T,scale=T)[,1],
+        zscore = ifelse(parameter != "asi",zscore*-1,zscore)
+      )  |>
+      ungroup()
+}
+
+#' Title
+#'
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+#' df_env_model |>
+#'   normalize_to_z(params_included = l_params$gte2000,earliest_year = 2001) |>
+#'   extract_truth_set()
+
+extract_truth_set <- function(df){
+  df |>
+    filter(
+      month(pub_mo_date)==6,
+      parameter == "asi"
+    ) |>
+    select(
+      yr_season, adm1_name, value,zscore_asi_Jun=zscore
+    ) |>
+    distinct()
+}
+
+#' Title
+#'
+#' @param df
+#' @param params_included
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+summarise_z <- function(
+    df,
+    params_included
+    ){
+
+  df_weight_grid <- create_weight_grid(x = params_included, wt_vals = c(0,seq(0.1, 1, by = 0.1)))
+
+  df_filt <- df |>
+    filter(
+      parameter %in% params_included
+    )
+  split(df_filt,df_filt$pub_mo_label) |>
+    map(\(dft){
+
+      split(
+        df_weight_grid,
+        df_weight_grid$wt_id
+      ) |>
+        map(
+          \(dft_w){
+
+            dft_weighted <- dft |>
+              left_join(
+                dft_w, by = "parameter"
+              )
+            dft_summarised <- dft_weighted |>
+              group_by(
+                yr_season ,
+                pub_mo_label,
+                adm1_name,
+                pub_mo_date,wt_id
+              ) |>
+              summarise(
+                zscore = weighted.mean(zscore,w=weight,na.rm=T)
+                ,.groups="drop"
+              ) |>
+              mutate(
+                wt_set = list(dft_w)
+              )
+          }
+        ) |>
+        list_rbind()
+    }
+    ) |>
+    list_rbind()
+
+}
+
+
+
+#' Title
+#'
+#' @param df
+#' @param params_included
+#' @param earliest_year
+#' @param rp
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+weighted_classify <- function(df,
+                              params_included,
+                              earliest_year,
+                              rp=3 ){
+  df_normalized <- df |>
+    normalize_to_z(
+      params_included = params_included,
+      earliest_year = earliest_year
+    )
+
+  df_truth <- df_normalized |>
+    extract_truth_set()
+
+  df_z_weighted <- df_normalized |>
+    summarise_z(params_included = params_included)
+
+   df_z_weighted |>
+      left_join(
+        df_truth |>
+          select(-value)
+      ) |>
+      utils$threshold_var(
+        var= "zscore",
+        by = c("pub_mo_label","adm1_name","wt_id"),
+        rp_threshold = rp
+      ) |>
+      utils$threshold_var(
+        var= "zscore_asi_Jun",
+        by = c("pub_mo_label","adm1_name","wt_id"),
+        rp_threshold = rp
+      ) |>
+      arrange(adm1_name, yr_season,wt_id) |>
+      ungroup()
+
+}
+
+single_indicator_performance <- function(df, parameter,earliest_year,rp){
+  df_normalized <- df |>
+    normalize_to_z(
+      params_included = parameter,
+      earliest_year = earliest_year
+    )
+
+  df_truth <- df_normalized |>
+    extract_truth_set()
+
+
+
+  df_classified <- df_normalized |>
+    left_join(
+      df_truth |>
+        select(-value)
+    ) |>
+    utils$threshold_var(
+      var= "zscore",
+      by = c("pub_mo_label","adm1_name"),
+      rp_threshold = rp
+    ) |>
+    utils$threshold_var(
+      var= "zscore_asi_Jun",
+      by = c("pub_mo_label","adm1_name"),
+      rp_threshold = rp
+    ) |>
+    arrange(adm1_name, yr_season) |>
+    ungroup()
+  summarise_performance(df_classified,by = c("pub_mo_label","adm1_name"))
+}
+#' Title
+#'
+#' @param df
+#' @param by
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+summarise_performance <-  function(
+    df,
+    by=c("pub_mo_label","adm1_name","wt_id","wt_set"),
+    parameter_subset = NULL
+    ){
+  if(!is.null(parameter_subset)){
+    df |>
+      filter(
+        df_all_weights_flagged
+      )
+  }
+  df |>
+    mutate(
+      across(ends_with("_flag"),\(x) factor(x,levels = c("TRUE","FALSE")))
+    ) |>
+    group_by(
+      across({{by}})
+    ) |>
+    f_meas(zscore_asi_Jun_flag, zscore_flag, estimator= "binary",event_level = "first") |>
+    ungroup()
+
+}
+
+#' Title
+#'
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+top_performance_per_moment <- function(df,n=1){
+  # df=  ldf_perf_all_models$gte1984,n=1
+  df_max <- df |>
+    group_by(pub_mo_label, wt_id) |>
+    summarise(
+      avg_estimate = mean(.estimate)
+    ) |>
+    slice_max(
+      order_by = avg_estimate,
+      n= n
+    )|>
+    ungroup()
+
+  inner_join(
+    df_max,
+    select(df,
+           any_of(c("adm1_name","pub_mo_label", "wt_id", "wt_set",".estimate","asi_f1"))
+           ),
+    by = c("pub_mo_label","wt_id")
+  )
+}
+
+#' Title
+#'
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+plot_optimal_compositions <-  function(df, label_plot = F){
+
+  df_labelled <- df|>
+    select(
+      pub_mo_label,adm1_name,wt_set,avg_estimate,.estimate
+    ) |>
+    unnest(wt_set) |>
+    label_parameters() |>
+    mutate(
+      p_label = glue(
+      "id: {wt_id}
+      f1: {scales::label_number(accuracy =0.001)(.estimate)}
+      avg f1: {scales::label_number(accuracy =0.001)(avg_estimate)}"
+      ),
+      weight_pct_label = scales::percent(weight,accuracy = 1, trim = FALSE),
+    )
+
+  p <- df_labelled |>
+    group_by(pub_mo_label, adm1_name) |>
+    mutate(
+      pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+      id = dense_rank(wt_id)
+    ) |>
+    ungroup() |>
+    ggplot(
+      aes(x= id, y= weight,fill = parameter_label)
+    )+
+    geom_bar(
+      stat= "identity", color = "black"
+    )+
+
+    scale_fill_manual(values=rand_pal)+
+    facet_grid(cols= vars(pub_mo_facet),
+               rows = vars(adm1_name)
+               ,scales="free")+
+    labs(
+      x = "Different indicator weightings"
+
+    )+
+    scale_y_continuous(labels=scales::label_percent())+
+    theme(
+      legend.title = element_blank(),
+      axis.text.x = element_blank()
+    )
+  if(label_plot){
+    # df <- ldf_tops2$gte1984
+    df |>
+      mutate(
+        p_label = glue("{wt_id}: {scales::label_number(accuracy =0.01)(avg_estimate)}")
+      )
+    p <- p +
+      # composition plot
+      geom_text(
+        aes(x= id, y= weight, label = weight_pct_label),
+        position = position_stack(vjust = 0.5), color ="black"
+      )+
+      # wt plot
+      geom_label(aes(x= id, y= 1.1, label = p_label), color ="black",fill="beige",alpha=0.4)+
+      # theme(
+      #   panel.spacing.y = unit(4, "lines")
+      # )+
+      expand_limits(y = 1.2)
+  }
+  p
+}
+
+
+
+#' Title
+#' helper func to find weight ids that are simple and optimal
+#' not a perfect solution, but gets us 90% there.
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+plot_low_var_optimal <-  function(df){
+  dfp <- df|>
+  select(
+    pub_mo_label, wt_set
+  ) |>
+  unnest(wt_set) |>
+    group_by(
+      pub_mo_label,wt_id
+    ) |>
+    mutate(
+      sd = sd(weight)
+
+    ) |>
+    group_by(pub_mo_label) |>
+  slice_min(sd) |>
+  group_by(pub_mo_label) |>
+  mutate(
+    pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+    id = dense_rank(wt_id)
+  ) |>
+  ungroup() |>
+  label_parameters()
+
+  dfp |>
+  distinct() |>
+  mutate(
+    weight_pct_label = scales::percent(weight,accuracy = 1, trim = FALSE),
+    weight_id_label = glue("weight id: {wt_id}")
+
+  ) |>
+  filter(pub_mo_label!= "Jun") |>
+  ggplot(
+    aes(x= id, y= weight,fill = parameter_label), position = position_stack(vjust = 0.5)
+  )+
+  geom_bar(
+    stat= "identity"
+  )+
+  geom_text(aes(x= id, y= weight, label = weight_pct_label),
+            position = position_stack(vjust = 0.5), color ="white")+
+  geom_text(aes(x= id, y= 1.01, label = weight_id_label), color ="black")+
+  scale_fill_manual(values=rand_pal)+
+  facet_grid(cols= vars(pub_mo_facet)
+             ,scales="free")+
+  labs(
+    # title = "May publication weight combos that give avg 0.90 f1"
+  )
+}
+
+
+#' Title
+#'
+#' @param df
+#' @param param_simple
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+get_simple_weight_id <- function(df,param_simple){
+    df |>
+    select(wt_set) |>
+    unnest(wt_set) |>
+    distinct() |>
+    filter(
+      parameter == param_simple ,
+      weight == 1
+    ) |>
+    pull(wt_id) |>
+    unique()
+
+}
+#' Title
+#'
+#' @param df
+#' @param wt_id_apr
+#' @param wt_id_may
+#' @param param_simple
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+compare_to_simple_model <- function(df,wt_id_apr, wt_id_may,param_simple){
+  simple_model_id <-get_simple_weight_id(df= df, param_simple = param_simple)
+
+    df_chosen <- df |>
+      summarise_performance() |>
+      filter(
+        (pub_mo_label == "Apr" & wt_id==wt_id_apr)|
+        (pub_mo_label == "May" & wt_id==wt_id_may)|
+        wt_id == simple_model_id
+
+      ) |>
+      filter(pub_mo_label != "Jun")
+
+    df_simple <- df_chosen |>
+      filter(
+        wt_id == simple_model_id
+      )
+    anti_join(df_chosen,df_simple) |>
+      left_join(
+        df_simple |>
+          select(
+            pub_mo_label,adm1_name,
+            estimate_simple =.estimate),
+        by = c("pub_mo_label","adm1_name")
+      )
+
+}
+
+# setup as many sets of parameters as we want... currently we have 2
+# One that is limited from data gte 2000 because of MODIS
+params_set_gte_2001 <- c(
+  "era5_land_soil_moisture_1m",
+  "cumu_era5_land_total_precipitation_sum",
+  "NDSI_Snow_Cover_mean",
+  "vhi",
+  "asi"
+)
+
+# and one that takes data going back to 1984
+params_set_gte_1984 <- c(
+  "era5_land_soil_moisture_1m",
+  "cumu_era5_land_total_precipitation_sum",
+  "vhi",
+  "era5_land_snow_cover", # toying w/ adding this or not
+  "asi"
+)
+params_set_gte_1984_no_snow <- c(
+  "era5_land_soil_moisture_1m",
+  "cumu_era5_land_total_precipitation_sum",
+  "vhi",
+    # "era5_land_snow_cover", # toying w/ adding this or not
+  "asi"
+)
+
+l_params <- list(
+  "gte2001"= params_set_gte_2001,
+  "gte1984" = params_set_gte_1984,
+  "gte_1984_no_snow" = params_set_gte_1984_no_snow
+)
+
+df_parameter_configs <- tibble(
+  param_set_id = names(l_params),
+  parameter_sets = l_params,
+  earliest_year =parse_number(param_set_id)
+)
+
+box::reload(utils)
+box::use(yardstick[...])
+
+ldf_perf <- pmap(
+  list(
+    df_parameter_configs$param_set_id,
+    df_parameter_configs$parameter_sets,
+    df_parameter_configs$earliest_year
+    ),
+  \(id,params, start_yr){
+
+    # cat("reclassifying\n")
+    df_all_weights_flagged <- weighted_classify(
+      df = df_env_model,
+      earliest_year = start_yr,
+      params_included = unlist(params),
+      rp=3
+    )
+
+    df_asi_perf <-  single_indicator_performance(
+      df_env_model,
+      parameter = "asi",
+      earliest_year = start_yr,
+      rp=3
+    )
+
+
+    df_perf <- df_all_weights_flagged |>
+      summarise_performance() |>
+       left_join(
+        df_asi_perf |>
+          rename(asi_f1 = .estimate)
+        )
+
+
+    df_top_perf <- df_perf |>
+      top_performance_per_moment()
+      # left_join(
+      #   df_asi_perf |>
+      #     rename(asi_f1 = .estimate)
+      #   )
+
+    list(
+      ALL_MODELS = df_perf,
+      TOP_MODELS = df_top_perf,
+      HISTORICAL_WEIGHTED = df_all_weights_flagged
+    )
+
+  }
+)
+
+ldf_perf_all_models <- ldf_perf |>
+  map("ALL_MODELS") |>
+   set_names(
+    df_parameter_configs$param_set_id
+  )
+
+
+ldf_top3 <- ldf_perf |>
+  map("ALL_MODELS") |>
+  map(\ (dft){
+    dft |>
+      top_performance_per_moment(n=3)
+  }) |>
+  set_names(
+    df_parameter_configs$param_set_id
+  )
+
+ldf_historical <-  ldf_perf |>
+  map("HISTORICAL_WEIGHTED") |>
+   set_names(
+    df_parameter_configs$param_set_id
+  )
+
+
+ldf_top3$gte1984 |>
+  filter(pub_mo_label!="Jun") |>
+  group_by(pub_mo_label, adm1_name) |>
+  slice_max(avg_estimate,with_ties = F) |>
+  # left_join(df_asi_performance |> rename(asi_f1 = .estimate)) |>
+  pivot_longer (cols = c(".estimate","asi_f1")) |>
+  mutate(
+    indicator_label = ifelse(name == ".estimate", "Combined Indicator","Simple Indicator (ASI)" )
+  ) |>
+  ggplot(
+    aes(x = adm1_name, y =value, fill = indicator_label)
+  )+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Indicator (ASI)"=hdx_hex("sapphire-light"))
+  )+
+  facet_wrap(~pub_mo_label)+
+  scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: Composite Indicator vs ASI Only",
+    subtitle= "Analysis 1984-present (including ERA5 snow)",
+    caption= "Composite indicator contains optimal weighted aggregations of Snow Cover (ERA5), Soil Moisture (ERA5), ASI (FAO), VHI (FAO), and cumulative precipitation (ERA 5)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+plot_low_var_optimal(
+  ldf_top3$gte1984
+)
+
+plot_optimal_compositions(
+  ldf_top3$gte1984  |>
+    filter(pub_mo_label != "Jun"),label_plot = T
+  ) +
+  labs(
+      title ="Indicator weighting options that result in max performance"
+    )
+
+
+df_compare <- compare_to_simple_model(
+  ldf_historical$gte1984,
+  wt_id_apr = 379, #14 is optimal
+  wt_id_may = 142, #142 & 84 are optimal for May, but dont include soil moisture
+  param_simple = "asi"
+  )
+
+df_compare |>
+  pivot_longer(cols = c(".estimate","estimate_simple")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","Simple Model (ASI ONLY)")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge", color = "lightgrey") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Model (ASI ONLY)"=hdx_hex("sapphire-light"))
+  )+
+  labs(
+    title = "F1 Score Comparison: May Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  facet_wrap(~pub_mo_label)+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+
+
+
+ldf_top3$gte1984 |>
+  group_by(pub_mo_label,adm1_name) |>
+  slice_max(avg_estimate, n=1)
+
+plot_optimal_compositions(
+  ldf_top3$gte1984  |>
+    filter(pub_mo_label != "Jun") |>
+    group_by(pub_mo_label,adm1_name) |>
+  slice_max(avg_estimate, n=2)
+
+
+  ,
+
+
+  label_plot = T
+  ) +
+  labs(
+      title ="Indicator weighting options that result in max performance"
+    )
+
+plot_optimal_compositions(
+  ldf_top3$gte1984  |>
+    filter(
+      pub_mo_label != "Jun",
+      (pub_mo_label == "May"&wt_id%in%c(142,84))|(pub_mo_label=="Apr"& wt_id==14)
+      ),label_plot = T
+  ) +
+  labs(
+      title ="Indicator weighting options that result in max performance"
+    )
+
+simple_model_id <- get_simple_weight_id(
+  df= ldf_historical$gte1984,
+  param_simple = "asi"
+  )
+
+
+optimal_model_wt_id <-  c(14,379)[1]
+df_simple_historical <- ldf_historical$gte1984 |>
+  select(
+    yr_season,wt_id,wt_set, pub_mo_label, adm1_name,ends_with("flag")
+
+  ) |>
+  pivot_longer(cols = ends_with("flag")) |>
+  filter(wt_id ==simple_model_id,name== "zscore_flag") |>
+  mutate(
+    weight_type = "Simple (ASI only)"
+  )
+
+df_historical_weights_sel <- ldf_historical$gte1984 |>
+  select(
+    yr_season,wt_id,wt_set, pub_mo_label, adm1_name,ends_with("flag")
+
+  ) |>
+  pivot_longer(cols = ends_with("flag")) |>
+  filter(
+    wt_id == optimal_model_wt_id & pub_mo_label=="Apr"
+  ) |>
+  mutate(
+    weight_type =ifelse(name == "zscore_flag","Combined","EOS ASI\n'Truth'")
+  )
+
+
+bind_rows(
+  df_historical_weights_sel,
+  df_simple_historical
+) |>
+  filter(adm1_name == "Takhar") |>
+  mutate(
+    yr = year(yr_season),
+    weight_type = factor(weight_type, c("Simple (ASI only)","Combined","EOS ASI\n'Truth'"))
+  ) |>
+  ggplot()+
+  geom_tile(
+    aes(x = weight_type,y= yr,  fill = value), color = "white",linewidth = 0.7
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"=hdx_hex("tomato-hdx"), "FALSE"="grey")
+  )+
+  scale_y_reverse(breaks= 1984:2024,
+                  expand= c(0,0)
+                  # limits = c(2024,1984)
+                  )+
+  scale_x_discrete(expand =c(0,0))+
+  labs(
+    title = "Historical analyses of indicators",
+    subtitle = "April - Takhar Province",
+    caption = glue("optimal model id: {optimal_model_wt_id}")
+  )+
+  facet_wrap(~adm1_name)+
+  theme(
+    axis.title = element_blank(),
+    legend.position = "none"
+  )
+
+df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_allocations.xlsx") |>
+  clean_names() |>
+  mutate(
+    allocation_date = as_date(allocation_date)
+  )
+df_cerf_yr <-  df_cerf |>
+  group_by(yr = year(allocation_date)) |>
+  summarise(
+    n=n()
+  ) |>
+  complete(
+    yr = 2006:2024,
+    fill = list(n=0)
+  )
+
+
+rp_compare <- 3
+df_eos_asi_flagged <- ldf_historical$gte1984 |>
+  select(yr_season,
+         strata= adm1_name,
+         zscore_asi_Jun,
+         ) |>
+  # select(yr_season, strata= adm1_name,value= zscore_asi_Jun_flag) |>
+  distinct() |>
+  utils$threshold_var(
+    var="zscore_asi_Jun",
+    by= c("strata"),
+    rp_threshold = rp_compare
+  ) |>
+    mutate(
+    yr = year(yr_season)
+  ) |>
+  rename(value=zscore_asi_Jun_flag)
+
+
+
+bind_rows(
+df_eos_asi_flagged,
+  df_cerf_yr |>
+    mutate(
+      strata = "CERF Allocations",
+      value = n>0
+    )
+) |>
+  mutate(
+    value_fill = case_when(
+      value==F ~ "no activations",
+      value == T & strata != "CERF Allocations"~"activation",
+      value == T  & strata == "CERF Allocations" & n ==1~ "1 activation",
+      value == T & strata == "CERF Allocations" & n ==2~ "2 activations",
+      .default = "?"
+
+    ),
+    strata = factor(strata, c("Faryab","Sar-e-Pul","Takhar","CERF Allocations")),
+  ) |>
+  ggplot(
+    aes(x= strata, y= yr, fill = value_fill)
+  )+
+  geom_tile(color = "white") +
+  scale_fill_manual(
+    values = c("no activations"=hdx_hex("grey-medium"),
+               "activation" = hdx_hex("tomato-light"),
+               "1 activation"=hdx_hex("tomato-hdx"),
+               "2 activations"= hdx_hex("tomato-dark"))
+  )+
+  scale_y_reverse(expand= c(0,0), breaks= 1984:2024)+
+  scale_x_discrete(expand= c(0,0))+
+  theme(
+    axis.title = element_blank(),
+    legend.position = "none"
+  )+
+  labs(
+    title = glue("End of Season ASI - Thresholded at {rp_compare} year RP and Historical CERF Activations")
+  )
+
+
+ldf_top3$gte2001 |>
+  filter(pub_mo_label!="Jun") |>
+    group_by(pub_mo_label, adm1_name) |>
+  slice_max(avg_estimate,with_ties = F) |>
+  # left_join(df_asi_performance |> rename(asi_f1 = .estimate)) |>
+  pivot_longer (cols = c(".estimate","asi_f1")) |>
+  mutate(
+    indicator_label = ifelse(name == ".estimate", "Combined Indicator","Simple Indicator (ASI)" )
+  ) |>
+  ggplot(
+    aes(x = adm1_name, y =value, fill = indicator_label)
+  )+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Indicator (ASI)"=hdx_hex("sapphire-light"))
+  )+
+  facet_wrap(~pub_mo_label)+
+  scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: Composite Indicator vs ASI Only",
+    subtitle= "Analysis 2001-present (including MODIS Snow -NDSI)",
+    caption= "Composite indicator contains optimal weighted aggregations of NDSI Snow Cover (MODIS), Soil Moisture (ERA5), ASI (FAO), VHI (FAO), and cumulative precipitation (ERA 5)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+ldf_top3$gte_1984_no_snow |>
+  filter(pub_mo_label!="Jun") |>
+    group_by(pub_mo_label, adm1_name) |>
+  slice_max(avg_estimate,with_ties = F) |>
+  # left_join(df_asi_performance |> rename(asi_f1 = .estimate)) |>
+  pivot_longer (cols = c(".estimate","asi_f1")) |>
+  mutate(
+    indicator_label = ifelse(name == ".estimate", "Combined Indicator","Simple Indicator (ASI)" )
+  ) |>
+  ggplot(
+    aes(x = adm1_name, y =value, fill = indicator_label)
+  )+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Indicator (ASI)"=hdx_hex("sapphire-light"))
+  )+
+  facet_wrap(~pub_mo_label)+
+  scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: Composite Indicator vs ASI Only",
+    subtitle= "Analysis 1984-Present (No Snow included)",
+    caption= "Composite indicator contains optimal weighted aggregations of  Soil Moisture, ASI, VHI, and cumulative precipitation",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+ldf_historical$gte1984 |>
+  group_by(
+    adm1_name,
+    #yr_season,
+    pub_mo_label,
+    wt_id,
+    wt_set,
+  ) |>
+  summarise(
+    activation_rate_wt = mean(zscore_flag),
+    activation_rate_truth = mean(zscore_asi_Jun_flag)
+  )
+ldf_historical$gte2001 |>
+  group_by(
+    adm1_name,
+    #yr_season,
+    pub_mo_label,
+    wt_id,
+    wt_set,
+  ) |>
+  summarise(
+    activation_rate_wt = mean(zscore_flag),
+    activation_rate_truth = mean(zscore_asi_Jun_flag)
+  )
+
+ldf_historical$gte_1984_no_snow |>
+  group_by(
+    adm1_name,
+    #yr_season,
+    pub_mo_label,
+    wt_id,
+    wt_set,
+  ) |>
+  summarise(
+    activation_rate_wt = mean(zscore_flag),
+    activation_rate_truth = mean(zscore_asi_Jun_flag)
+  )
+
+
+
+
+
+df_truth_joint <- df_all_weights_flagged |>
+  distinct(
+    yr_season,adm1_name, zscore_asi_Jun_flag
+  ) |>
+  group_by(
+    yr = year(yr_season)
+  ) |>
+  summarise(
+    flag = any(zscore_asi_Jun_flag)
+  ) |>
+  mutate(
+    indicator_type = "Truth"
+  )
+
+ df_apr_joint <- df_all_weights_flagged |>
+  filter(
+    (pub_mo_label == "Apr" &
+    wt_id %in% c(1,684)
+    )) |>
+    mutate(
+      yr= year(yr_season),
+    indicator_type = case_when(
+      wt_id == 1 ~ "Simple (ASI only)",
+      # name== "zscore_asi_Jun_flag"~"Truth",
+      .default= "Composite",
+      # .default = "combined"
+
+  )
+    ) |>
+   select(yr,indicator_type, pub_mo_label, adm1_name,zscore_flag) |>
+   group_by(
+     yr, indicator_type, pub_mo_label
+   ) |>
+   summarise(
+     flag = any(zscore_flag)
+   )
+df_apr_joint |>
+  bind_rows(
+    df_truth_joint
+  ) |>
+  group_by(
+    indicator_type
+  ) |>
+  summarise(
+    flag = mean(flag)
+  )
+df_apr_joint |>
+  bind_rows(
+    df_truth_joint
+  ) |>
+  ggplot()+
+  geom_tile(
+    aes(x = indicator_type,y= yr,  fill = flag), color = "white"
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"=hdx_hex("tomato-hdx"), "FALSE"="grey")
+  )+
+  labs(
+    title = "April Joint"
+  )
+
+df_historical_joint_admins <- df_all_weights_flagged |>
+  filter(
+    (pub_mo_label == "Apr" &
+    wt_id %in% c(1,684)
+    )|
+      (pub_mo_label =="May" &
+         wt_id %in% c(1, 678))
+  ) |>
+  mutate(
+    yr= year(yr_season)
+  ) |>
+  group_by(wt_id,yr, pub_mo_label) |>
+  summarise(
+    zscore_flag= any(zscore_flag)
+  ) |>
+  # pivot_longer(
+  #   cols = c("zscore_flag","zscore_asi_Jun_flag")
+  # ) |>
+  mutate(
+    indicator_type = case_when(
+      wt_id == 1 ~ "Simple (ASI only)",
+      # name== "zscore_asi_Jun_flag"~"Truth",
+      .default= "Combined",
+      # .default = "combined"
+
+  ),
+  adm1_name = "all_admins"
+  )
+left_join(df_historical_joint_admins,df_truth_joint, by ="yr") |>
+  pivot_longer(cols = c("zscore_flag","truth_flag")) |>
+   ggplot()+
+  geom_tile(
+    aes(x = name,y= yr,  fill = value), color = "white"
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"=hdx_hex("tomato-hdx"), "FALSE"="grey")
+  )+
+  facet_wrap(~pub_mo_label)
+
+bind_rows(df_historical_joint_admins,df_truth_joint) |>
+  ggplot()+
+  geom_tile(
+    aes(x = name,y= yr,  fill = zscore_flag), color = "white"
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"=hdx_hex("tomato-hdx"), "FALSE"="grey")
+  )+
+  facet_grid(
+    cols = vars(adm1_name),
+    # rows = vars(pub_mo_label)
+  )
+
+df_all_weights_flagged |>
+  filter(
+    (pub_mo_label == "Apr" &
+    wt_id %in% c(1,684)
+    )|
+      (pub_mo_label =="May" &
+         wt_id %in% c(1, 678))
+  ) |>
+  mutate(
+    yr= year(yr_season)
+  ) |>
+  select(yr,pub_mo_label,adm1_name,wt_id,zscore_flag,zscore_asi_Jun_flag ) |>
+  pivot_wider(names_from = wt_id, values_from=zscore_flag) |>
+  pivot_longer(zscore_asi_Jun_flag:`684`,values_drop_na = TRUE) |>
+  mutate(
+    name = case_when(
+      name == "1" ~ "Simple (ASI only)",
+      name== "zscore_asi_Jun_flag"~"Truth",
+      .default= "Combined",
+      # .default = "combined"
+      ),
+
+    # yr= year(yr_season)
+  ) |>
+  bind_rows(
+    df_historical_joint_admins
+  )
+  mutate(
+        name = factor(name,c("Simple (ASI only)","Combined","Truth" ))
+  )
+  ggplot()+
+  geom_tile(
+    aes(x = name,y= yr,  fill = value), color = "white"
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"=hdx_hex("tomato-hdx"), "FALSE"="grey")
+  )+
+  facet_grid(
+    cols = vars(adm1_name),
+    rows = vars(pub_mo_label)
+  )
+
+
+
+```
+
+
+
+```{r}
+# okay -- above we get best weights per adm and month.
+# can we instead test each set of weights against all provinces and get the highest f1 score
+# that works per weight
+
+l_top_wt_sets_per_mo <- ldf_conf_metrics  |>
+  map(
+    \(dft){
+      dft |>
+        group_by(pub_mo_label, wt_id) |>
+        summarise(
+          avg_estimate = mean(.estimate)
+        ) |>
+        slice_max(
+          order_by = avg_estimate,
+          n= 1
+        )
+
+    }
+
+  )
+
+ldf_best_metrics_overall<- map2(ldf_conf_metrics,l_top_wt_sets_per_mo,
+  \(dft_conf,dft_top){
+          dft_conf |>
+        inner_join(
+          dft_top, by = c("pub_mo_label","wt_id")
+          )
+  }
+)
+ldf_best_metrics_overall<- map(named_weight_sets,
+  \(nmt){
+    dft_conf <- ldf_conf_metrics[[nmt]]
+    dft_top <- l_top_wt_sets_per_mo[[nmt]]
+    dft_conf |>
+        inner_join(
+          dft_top, by = c("pub_mo_label","wt_id")
+          )
+  }
+)
+rand_pal <- c("ASI"="green4",
+  "VHI"="#CAB2D6",
+  "NDSI"= "#6A3D9A",
+  "Precip cumu (ERA)"= "skyblue2",
+  "era5_land_soil_moisture_1m"= "dodgerblue2",
+  "Snow Cover (ERA5)"= "white"
+)
+
+ldf_top_weights_nested <-  map2(l_top_wt_sets_per_mo,l_weight_combos,
+     \(df_top,df_wt_set){
+     df_top_wt_vals <- df_top |>
+         inner_join(
+           df_wt_set |>
+             group_by(wt_id) |>
+             nest()
+           # by = "wt_id"
+           # wt_id %in% df_top$wt_id
+         )
+         # label_parameters()
+     }
+ )
+
+
+ldf_best_metrics_overall$gte1984 |> select(wt_set) |> unnest(wt_set) |> count(parameter)
+
+
+
+lp_optimal_weight_composition <- map(ldf_best_metrics_overall,
+     \(dft){
+
+       dft <- dft|>
+         select(
+           pub_mo_label,adm1_name,wt_set,avg_estimate,.estimate
+         ) |>
+         unnest(wt_set) |>
+         label_parameters()
+
+       dft |>
+         group_by(pub_mo_label, adm1_name) |>
+         mutate(
+           pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+           id = dense_rank(wt_id)
+         ) |>
+         ungroup() |>
+         ggplot(
+           aes(x= id, y= weight,fill = parameter_label)
+         )+
+         geom_bar(
+           stat= "identity", color = "grey"
+         )+
+
+         scale_fill_manual(values=rand_pal)+
+         facet_grid(cols= vars(pub_mo_facet),
+                    rows = vars(adm1_name)
+                    ,scales="free")+
+         labs(
+           # title = "May publication weight combos that give avg 0.90 f1"
+         )
+
+
+     }
+)
+lp_optimal_weight_composition$gte2000
+lp_optimal_weight_composition$gte1984
+
+lp_weight_performance_per_adm <- map(
+  ldf_best_metrics_overall,\(dft){
+
+         dft <- dft |>
+           mutate(
+             pub_mo_facet = factor(pub_mo_label, levels = c("Apr","May","Jun"))
+           )
+
+         dft |>
+           ggplot(
+             aes(
+               x= adm1_name,
+               y= .estimate,
+               group = wt_id
+               # color =as_factor(wt_id)
+             )
+           )+
+           geom_point(alpha=0.3,size=4)+
+           geom_line(alpha=0.3)+
+           facet_wrap(~pub_mo_facet)+
+           geom_hline(
+             data = dft |>
+               select(
+                 pub_mo_facet,
+                 adm1_name,
+                 avg_estimate
+                 ) |> distinct(),
+             aes(yintercept = avg_estimate),
+             linetype = "dashed",
+             color = hdx_hex("tomato-hdx")
+           )+
+           labs(
+             y= "F1 Performance"
+           )+
+           theme(
+             panel.border = element_rect(fill=NA, color = "grey")
+           )
+
+     }
+)
+
+
+lp_weight_performance_per_adm$gte2000
+lp_weight_performance_per_adm$gte1984
+
+
+
+# i like these, but problem is faryab actually performs worse
+dft_low_sd_f1 <- ldf_best_metrics_overall$gte2000 |>
+  select(
+    pub_mo_label, wt_set
+  ) |>
+  unnest(wt_set) |>
+  group_by(
+    pub_mo_label,wt_id
+  ) |>
+  mutate(
+    sd = sd(weight)
+  ) |>
+  group_by(pub_mo_label) |>
+  slice_min(sd) |>
+  group_by(pub_mo_label) |>
+  mutate(
+    pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+    id = dense_rank(wt_id)
+  ) |>
+  ungroup() |>
+  label_parameters()
+
+dft_low_sd_f1 |>
+  distinct() |>
+  mutate(
+    weight_pct_label = scales::percent(weight,accuracy = 1, trim = FALSE),
+    weight_id_label = glue("weight id: {wt_id}")
+
+  ) |>
+  filter(pub_mo_label!= "Jun") |>
+  ggplot(
+    aes(x= id, y= weight,fill = parameter_label), position = position_stack(vjust = 0.5)
+  )+
+  geom_bar(
+    stat= "identity"
+  )+
+  geom_text(aes(x= id, y= weight, label = weight_pct_label),
+            position = position_stack(vjust = 0.5), color ="white")+
+  geom_text(aes(x= id, y= 1.01, label = weight_id_label), color ="black")+
+  scale_fill_manual(values=rand_pal)+
+  facet_grid(cols= vars(pub_mo_facet)
+             ,scales="free")+
+  labs(
+    # title = "May publication weight combos that give avg 0.90 f1"
+  )
+
+
+ldf_best_metrics_overall$gte2000 |>
+  filter(
+    pub_mo_label == "Apr",
+         wt_id ==684 # if filtering to >20000
+         ) |>
+  left_join(
+      ldf_conf_metrics$gte2000 |>
+      filter(wt_id ==1) |>
+      # select(-wt_id) |>
+      rename(
+        asi_only_f1 = .estimate
+        ) |>
+        select(pub_mo_label,adm1_name, asi_only_f1)
+   , by = c("pub_mo_label","adm1_name")
+  ) |>
+  pivot_longer(cols = c(".estimate","asi_only_f1")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: April Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+ldf_best_metrics_overall$gte2000 |>
+  filter(
+    pub_mo_label == "May",
+         wt_id ==524 # if filtering to >20000
+         ) |>
+  left_join(
+
+      ldf_conf_metrics$gte2000 |>
+      filter(wt_id ==1) |>
+      # select(-wt_id) |>
+      rename(
+        asi_only_f1 = .estimate
+        ) |>
+        select(pub_mo_label,adm1_name, asi_only_f1)
+   , by = c("pub_mo_label","adm1_name")
+  ) |>
+  pivot_longer(cols = c(".estimate","asi_only_f1")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: May Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+
+
+
+
+
+
+
+
+
+
+
+df_best_wt_sets_w_metrics |>
+  print(n=100) |>
+  filter(pub_mo_label=="May") |>
+  select(wt_set,avg_estimate) |>
+  # pull(avg_estimate) |>
+  unnest(wt_set) |>
+  distinct() |>
+  mutate(
+    id = dense_rank(wt_id)
+  ) |>
+  ggplot(
+    aes(x= id, y= weight,fill = parameter)
+  )+
+  geom_bar(
+    stat= "identity"
+  )+
+  labs(
+    title = "May publication weight combos that give avg 0.90 f1"
+  )
+
+
+
+
+top_wt_sets_per_mo <- df_conf_metrics  |>
+  group_by(pub_mo_label, wt_id) |>
+  summarise(
+    avg_estimate = mean(.estimate)
+  ) |>
+  slice_max(
+    order_by = avg_estimate,n= 1
+  )
+df_best_metrics_overall <- df_conf_metrics |>
+  inner_join(
+    top_wt_sets_per_mo, by = c("pub_mo_label","wt_id")
+  )
+df_best_wt_sets_w_metrics <- df_best_metrics_overall |>
+  left_join(
+    df_all_weights_flagged |>
+      distinct(wt_id,wt_set)
+    ) |>
+  left_join(
+      df_conf_metrics |>
+      filter(wt_id ==1) |>
+      # select(-wt_id) |>
+      rename(
+        asi_only_f1 = .estimate
+        ) |>
+        select(pub_mo_label,adm1_name, asi_only_f1)
+   , by = c("pub_mo_label","adm1_name")
+  )
+
+df_best_wt_sets_w_metrics |>
+  select(-wt_id) |>
+  unnest(wt_set)
+
+
+df_best_wt_sets_w_metrics |>
+  filter(
+    pub_mo_label == "Apr",
+         wt_id ==346 # if filtering to >20000
+         ) |>
+  pivot_longer(cols = c(".estimate","asi_only_f1")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: April Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+df_wt_combos_long |>
+  filter(wt_id  ==346)
+```
+
+
+Look at equal weigts
+
+```{r}
+df_conf_metrics |>
+  filter(pub_mo_label == "Apr") |>
+  filter(
+    wt_id %in% c(1,equal_wts_id)
+  ) |>
+    mutate(
+    name = ifelse(wt_id == equal_wts_id, "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= .estimate, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: April Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+)
+
+```
+
+```{r}
+df_all_weights_flagged
+df_weighted_historical_sample <- df_all_weights_flagged |>
+  filter(pub_mo_label == "Apr",adm1_name == "Takhar")
+
+df_end_of_season_valid <- df_weighted_historical_sample |>
+  select(yr_season,zscore_asi_Jun_flag) |>
+  distinct() |>
+  mutate(
+    name = "ASI\nEnd of Season\n('truth')"
+  ) |>
+  rename(zscore_flag = zscore_asi_Jun_flag)
+
+bind_rows(
+  df_weighted_historical_sample ,
+  df_end_of_season_valid
+)
+
+df_weighted_historical_sample |>
+filter(
+    wt_id %in% c(1,equal_wts_id,38)
+  ) |>
+  bind_rows(
+    df_end_of_season_valid |>
+      rename()
+  ) |>
+  mutate(
+    yr = year(yr_season),
+    name = case_when(
+      wt_id == 1~"ASI only",
+      wt_id == equal_wts_id~"Combined (equal)",
+      wt_id == 38 ~"Combnied (optimal)",
+      .default = name
+      )
+  ) |>
+  ggplot()+
+  geom_tile(
+    aes(x = name,y= yr,  fill = zscore_flag), color = "white"
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"="red", "FALSE"="grey")
+  )
+```
+
+```{r}
+
+df_best_wt_sets_w_metrics |>
+  filter(
+    wt_id == 39
+  ) |>
+  select(-wt_id) |>
+  unnest(wt_set)
+
+df_best_wt_sets_w_metrics |>
+  print(n=100) |>
+  filter(pub_mo_label=="May") |>
+  select(wt_set,avg_estimate) |>
+  # pull(avg_estimate) |>
+  unnest(wt_set) |>
+  distinct() |>
+  mutate(
+    id = dense_rank(wt_id)
+  ) |>
+  ggplot(
+    aes(x= id, y= weight,fill = parameter)
+  )+
+  geom_bar(
+    stat= "identity"
+  )+
+  labs(
+    title = "May publication weight combos that give avg 0.90 f1"
+  )
+
+
+
+df_conf_metrics |>
+  filter(
+    wt_id ==38 & pub_mo_label=="Apr"
+  )
+
+
+
+
+### Simlarity Metrics #######
+xck_nest <- df_wt_combos_long |>
+  group_by(wt_id) |>
+  nest()
+
+df_max_f1_apr  |>
+  left_join(ck_nest) |>
+  unnest(data)
+
+
+
+ck <- df_max_f1_apr  |>
+  left_join(ck_nest) |>
+  unnest(data)
+
+
+
+aligned_weights <- ck %>%
+  group_by(adm1_name, wt_id, parameter) %>%
+  summarise(weight = sum(weight), .groups = "drop") %>% # Aggregate weights if duplicates
+  pivot_wider(names_from = parameter, values_from = weight, values_fill = 0) |>
+  mutate(
+    row_id = row_number()
+  )
+
+pairwise_comparisons <- aligned_weights %>%
+  # mutate(row_id = row_number()) %>% # Add a unique ID to each row for pairing
+  cross_join(aligned_weights, suffix = c("_x", "_y")) %>% # Generate all pairs
+  filter(row_id_x < row_id_y) # Avoid duplicate comparisons and self-comparisons
+
+pairwise_comparisons |>
+  glimpse()
+# Step 3: Compute similarity metrics
+similarity_results |>
+  glimpse()
+
+similarity_results <- pairwise_comparisons %>%
+  rowwise() %>%
+  mutate(
+    # Extract weight vectors using regex pattern
+    weight_vector_x = list(c_across(matches("^(cumu.*_x|era5_land.*_x|NDSI.*_x|vhi_x|asi_x)$"))),
+    weight_vector_y = list(c_across(matches("^(cumu.*_y|era5_land.*_y|NDSI.*_y|vhi_y|asi_y)$")))
+  )
+
+similarity_results <- similarity_results %>%
+  rowwise() %>%
+  mutate(
+    # Calculate Euclidean distance
+    manhattan_distance = sum(abs(unlist(weight_vector_x) - unlist(weight_vector_y)), na.rm = TRUE)
+    # euclidean_distance = sqrt(sum((unlist(weight_vector_x) - unlist(weight_vector_y))^2, na.rm = TRUE)),
+    # # Calculate Cosine similarity
+    # cosine_similarity = sum(unlist(weight_vector_x) * unlist(weight_vector_y), na.rm = TRUE) /
+    #   (sqrt(sum(unlist(weight_vector_x)^2, na.rm = TRUE)) * sqrt(sum(unlist(weight_vector_y)^2, na.rm = TRUE)))
+  )
+
+most_similar_weight_set <- similarity_results %>%
+  group_by(wt_id_x) %>%
+   summarise(
+    # avg_jsd_distance = mean(jsd_distance, na.rm = TRUE),  # For JSD
+    avg_manhattan_distance = mean(manhattan_distance, na.rm = TRUE)  # For Manhattan
+  ) %>%
+  # Rank by lowest JSD or Manhattan distance (lower is better)
+  arrange(avg_manhattan_distance) %>%
+  slice(1)
+
+df_agg_all_weight_combos
+df_wt_combos_long |>
+  filter(wt_id == 883)
+
+# Step 4: Select relevant columns for clarity
+final_results <- similarity_results %>%
+  select(
+    adm1_name_x, wt_id_x,
+    adm1_name_y, wt_id_y,
+    euclidean_distance, cosine_similarity
+  )
+
+# View results
+final_results |>
+  ungroup() |>
+  filter(adm1_name_x!= adm1_name_y)
+############
+
+
+id_simple_asi_model <- df_wt_combos_long |>
+  filter(
+    parameter == "asi",
+    weight ==1
+  ) |>
+  pull(
+    wt_id
+  )
+
+df_simple_asi_weight_set <- df_wt_combos_long |>
+  filter(wt_id %in% id_simple_asi_model) |>
+  group_by(wt_id) |>
+  nest()
+
+
+
+
+df_weight_sets_nested <- df_wt_combos_long |>
+  group_by(wt_id) |>
+  nest()
+
+
+
+df_max_f1 |>
+  group_by(
+    pub_mo_label, wt_id
+  ) |>
+  mutate(
+    num_wt_sets = n()
+  ) |>
+  filter(num_wt_sets>1)
+
+df_max_f1_co_occur <- df_max_f1  |>
+  group_by(
+    pub_mo_label, wt_id
+  ) |>
+  mutate(
+    num_wt_sets = n()
+  ) |>
+  ungroup() |>
+  filter(num_wt_sets>1) |>
+  left_join(df_weight_sets_nested, by ="wt_id") |>
+  group_by(adm1_name,pub_mo_label) |>
+  unnest(data)
+
+# we have 3 clear options for June - def easiest to just go w/ ASI and/or VHI
+df_max_f1_co_occur |>
+  ungroup() |>
+  filter(num_wt_sets>2) |>
+  print(n=45) |>
+  distinct(pub_mo_label,wt_id, parameter,weight)
+
+df_max_f1_co_occur |>
+  print(n=45) |>
+  distinct(pub_mo_label,wt_id, parameter,weight)
+
+df_max_f1_shared <- df_max_f1  |>
+  # group_by(
+  #   pub_mo_label, wt_id
+  # ) |>
+  # mutate(
+  #   num_wt_sets = n()
+  # ) |>
+  # ungroup() |>
+  # filter(num_wt_sets>1) |>
+  left_join(df_weight_sets_nested, by ="wt_id") |>
+  group_by(adm1_name,pub_mo_label) |>
+  unnest(data) |>
+  mutate(
+    wt_id_dense = dense_rank(wt_id)
+  ) |>
+  ungroup() |>
+  mutate(
+    pub_mo_label = fct_relevel(pub_mo_label, "Apr","May","Jun")
+  )
+
+
+df_f1_labels <- df_max_f1_shared |>
+  distinct(pub_mo_label, adm1_name,.estimate) |>
+    left_join(
+    df_conf_metrics |>
+      filter(wt_id ==1) |>
+      group_by(pub_mo_label,adm1_name) |>
+      transmute(
+        simple_estimate = scales::label_number(accuracy = 0.01)(.estimate)
+  ), by = c("pub_mo_label","adm1_name")
+  ) |>
+      mutate(
+    pub_mo_label = fct_relevel(pub_mo_label, "Apr","May","Jun")
+  )
+
+
+df_max_f1_shared |>
+    mutate(
+    pub_mo_label = fct_relevel(pub_mo_label, "Apr","May","Jun")
+  ) |>
+# filter(pub_mo_label %in% c("May","Jun"), adm1_name == "Sar-e-Pul") |>
+  ggplot(
+  )+
+  geom_bar(stat="identity", aes(x= wt_id_dense, y= weight, fill = parameter))+
+  # geom_text(size = 3, position = position_stack(vjust = 0.5))
+  # geom_text(
+  #   aes(
+  #     label = scales::label_percent(accuracy=1)(weight)
+  #     ),
+  #   position = position_stack(vjust = 0.5), color ="white"
+  # )+
+  geom_label(
+    data= df_f1_labels,
+    x= 50, y= 0.5,color="red",alpha = 0.6,
+    aes(
+        label = glue(
+          "Max F1: {scales::label_number(accuracy=0.01)(.estimate)}\nASI Only F1: {simple_estimate}"
+
+          )
+    )
+  )+
+  facet_grid(
+    cols = vars(adm1_name),
+    rows = vars(pub_mo_label),
+    # labeller = labeller(adm1_name=~facet_label),
+    scales = "free_x")+
+  labs(
+    title = "Weight combinations for optimal F1 scores by data publication date and province",
+    subtitle = "Optimal F1 Score & F1 Score of simple model (ASI only shown)"
+  )+
+  theme(
+    axis.title.x =element_blank(),
+    axis.text.x =element_blank(),
+    # strip.switch.pad.grid = unit(1, "in")
+  )
+
+
+dft_sel <- dft |>
+  pivot_longer(
+    cols = -c("yr_season","pub_mo_label","adm1_name","pub_mo_date"),
+    names_to = "parameter"
+  ) |>
+  filter(
+    parameter %in% c("era5_land_soil_moisture_1m","cumu_era5_land_total_precipitation_sum","NDSI_Snow_Cover_mean","vhi","asi")
+  ) |>
+  group_by(
+    across(-c("value","yr_season","pub_mo_date"))
+  )
+dft_sel |>
+  distinct(parameter)
+scale(dft_sel$value )[,1]
+dft_scaled <- dft_sel |>
+  mutate(
+    value_centered = scale(value, center= T,scale=F)[,1],
+    zscore = scale(value,center=T,scale=T)[,1],
+    across(
+      c("value_centered","zscore"),~ifelse(parameter != "asi",.x*-1,.x)
+    )
+  )
+
+dft_scaled |>
+  # filter(parameter == "asi") |>
+  arrange(parameter)
+
+# unweighted
+dft_z_agg_unweighted <- dft_scaled |>
+  group_by(
+   yr_season ,
+   pub_mo_label,
+   adm1_name,
+   pub_mo_date
+  ) |>
+  summarise(
+    across(
+      .cols = c("zscore","value_centered"),
+      .fns = \(x) mean(x,na.rm=T)
+    ),.groups="drop"
+  )
+
+
+dft_unweighted_pred <- dft_z_agg_unweighted |>
+  left_join(
+    df_jun_asi_scaled_short
+  ) |>
+  threshold_var(
+    var= "zscore",
+    by = c("pub_mo_label","adm1_name"),
+    rp_threshold = 3
+  ) |>
+  threshold_var(
+    var= "zscore_asi_Jun",
+    by = c("pub_mo_label","adm1_name"),
+    rp_threshold = 3
+  ) |>
+  arrange(adm1_name, yr_season) |>
+  mutate(
+    across(ends_with("_flag"),~as_factor(.x))
+  ) |>
+  ungroup()
+
+recall(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag,event_level ="second")
+precision(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag,event_level ="second")
+f_meas(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag,event_level ="second")
+metrics(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag)
+
+```
+
+## Experimental
+
+### Tidymodels
+
+```{r}
+# silge random forest
+# box::use(tidymodels[...])
+df_env_compare <- df_env_compare_ck
+
+
+AOI_SUBSET = c("Takhar","Sar-e-Pul","Faryab")
+
+df_env_model <- #df_env_filt |>
+  df_env_compare |>
+  filter(
+    !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","era5_land_runoff_max"),
+    !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+    # pub_mo_date<="2024-04-01" # last date of CHIRPS for now -- at some points we can update
+  )
+
+df_env_model |> count(parameter)
+# df_env_filt <- df_environmental_yr_adj2 |>
+#   filter(
+#     pub_mo_date<="2024-04-01" # last date of CHIRPS for now -- at some points we can update
+#   )
+
+df_env_long <- df_env_model |>
+  select(
+    date,
+    yr_season,
+    pub_mo_date,
+    adm1_name,
+    parameter,
+    value
+    ) |>
+  mutate(
+    pub_mo_label = month(pub_mo_date,abbr=T, label =T)
+  ) |>
+  # count(parameter)
+  # group_by(
+  # pub_mo_date,
+  #   adm1_name,
+  #   parameter
+  # ) |>
+  # filter(date == max(date)) |>
+  # ungroup() |>
+  filter(
+    # already have these from ERA land up to 2024 rather than 2020
+    !(parameter %in% c("total_precipitation","mean_2m_air_temperature")),
+    adm1_name %in% AOI_SUBSET
+  )
+
+# df_env_long |> count(parameter)
+# df_params_long <- df_env_long |>
+#   bind_rows(df_seas5_ready |>
+#               select(any_of(colnames(df_env_long))) |>
+#               filter(adm1_name%in% AOI_SUBSET))
+#
+# df_params_long |>
+#   count(parameter)
+
+df_env_long |>
+  filter(str_detect(parameter,"^asi|^vhi")) |>
+  group_by(parameter, pub_mo_label) |>
+  count() |>
+  pivot_wider(names_from=pub_mo_label, values_from = n)
+date_ranges <- df_env_long |>
+  group_by(parameter) |>
+  summarise(
+    start = min(pub_mo_date),
+    end = max(pub_mo_date)
+  )
+
+# date_ranges |>
+#   print(n= 100)
+# date_ranges2 <- df_params_long |>
+#   group_by(parameter) |>
+#   summarise(
+#     start = min(yr_season),
+#     end = max(yr_season)
+#   )
+
+
+df_env_long |> count(parameter)
+df_lh <- df_env_long#df_params_long #|>
+  # filter(
+  #   yr_season>= date_ranges[date_ranges$parameter=="asi",]$start,
+  #   yr_season<= date_ranges[date_ranges$parameter=="asi",]$end
+  # )
+df_jun_asi <- df_lh |>
+  filter(parameter == "asi",month(pub_mo_date)==6) |>
+  select(
+    yr_season,adm1_name, value
+  ) |>
+  rename(
+    asi_Jun = value
+  )
+
+ldf_lh <- split(df_lh,df_lh$pub_mo_label) |>
+    map(
+      \(dft){
+        dft |>
+          pivot_wider(
+            id_cols = c("yr_season","pub_mo_label","adm1_name","pub_mo_date"),
+            names_from = parameter,
+            values_from = value
+          ) |>
+          left_join(
+            df_jun_asi,by = c("adm1_name","yr_season")
+          )
+      }
+    )
+ldf_lh |>
+  map(
+    ~colnames(.x)
+  )
+
+# why 3 missing asi_Jun, chirps_precipitiation_sum
+ldf_lh |>
+  map(\(dft){
+    dft |>
+  summarise(
+    across(
+      everything(),\(x) sum(is.na(x))
+    )
+  ) |>
+  t()
+  })
+ldf_lh$Mar$vhi
+ldf_lh$Mar |>
+  filter(is.na(vhi)) |>
+  glimpse()
+
+
+ldf_model_full <- ldf_lh |>
+  map(
+    \(dft){
+      dft  |>
+        select(-starts_with("NDSI"))
+    }
+  )
+
+ldf_model_short <- ldf_lh |>
+  map(
+    \(dft){
+      dft |>
+        filter(
+          year(yr_season)>=2000
+          # if_all(starts_with("NDSI"),\(x){!is.na(x)})
+        )
+    }
+  )
+
+ldf_model_short |>
+  map(
+    ~colnames(.x)
+  )
+```
+
+#### Pre-Processing
+
+```{r}
+# month_prediction <- "May"
+
+# ranger_mode <-  "classification"
+
+ranger_pred <-  function(
+    list_df,
+    pub_mo,
+    mode,
+    rp_threshold=3,
+    empirical = TRUE
+){
+  dft <- list_df[[pub_mo]]
+
+  if(mode=="regression"){
+    dft <- dft |>
+      mutate(
+        asi_outcome = log10(asi_Jun+0.1)
+      )  |>
+      select(-asi_Jun)
+  }
+  if(mode== "classification"){
+    dft <- dft |>
+      utils$threshold_var(var = "asi_Jun", by = c("pub_mo_label"),rp_threshold=rp_threshold) |>
+      mutate(
+        asi_Jun_flag = ifelse(asi_Jun_flag,"flag","no_flag")
+      ) |>
+      rename(
+        asi_outcome ="asi_Jun_flag"
+      )
+  }
+
+  if(!empirical){
+     ranger_spec <-
+    rand_forest(
+      mtry = tune(),
+      min_n = tune(),
+      trees = 1000) %>%
+    set_mode(mode) %>%
+    set_engine("ranger")
+
+    df_split <-   initial_split(
+      dft ,
+      prop = 7/10,
+      strata = asi_outcome
+    )
+    df_train <-   training(df_split)
+    df_test <- testing(df_split)
+    df_resamples <- bootstraps(df_train,strata= asi_outcome,times= 25)
+
+    ranger_recipe <-
+      recipe(
+        formula = asi_outcome ~ .,
+        data = df_train # this is where training data should go, but just messing around
+      ) |>
+      step_rm(
+        yr_season,
+        pub_mo_date,
+        pub_mo_label,
+        asi_Jun
+      )
+    ranger_spec <-
+      rand_forest(
+        mtry = tune(),
+        min_n = tune(),
+        trees = 1000) %>%
+      set_mode(mode) %>%
+      set_engine("ranger")
+  }
+
+  if(empirical){
+    ranger_spec  <-
+      rand_forest(trees= 10000,mtry=11) |>
+      set_mode(mode) |>
+      set_engine("ranger")
+
+    ranger_recipe <-
+      recipe(
+        formula = asi_outcome ~  .,
+        data = dft
+      ) |>
+      step_rm(
+        yr_season,
+        pub_mo_date,
+        pub_mo_label,
+        asi_Jun
+
+      )
+  }
+
+  rf_model_workflow <-
+    workflow() %>%
+    add_recipe(ranger_recipe) %>%
+    add_model(ranger_spec)
+  prediction_pred <- ifelse(mode=="classification",".pred_class",".pred")
+
+  if(!empirical){
+    ranger_tune <-
+      tune_grid(rf_model_workflow, resamples = df_resamples, grid = 11)
+
+    final_rf <- rf_model_workflow |>
+      finalize_workflow(select_best(ranger_tune))
+
+    df_fit <- last_fit(final_rf,df_split)
+
+    df_ret <- collect_predictions(df_fit) |>
+      rename(
+        .pred_rf = prediction_pred
+      )
+
+    df_ret |>
+    ggplot(
+        aes(x=.pred_rf, y= asi_outcome )
+      ) +
+      geom_point()+
+      geom_abline()
+
+    df_pred_pre_metrics <- metrics(df_ret, asi_outcome, .pred_rf)
+
+    imp_spec <-  ranger_spec |>
+      finalize_model(select_best(ranger_tune)) |>
+      set_engine("ranger",importance ="permutation")
+
+    vip_plot <- workflow() |>
+      add_recipe(ranger_recipe) |>
+      add_model(imp_spec) |>
+      fit(df_train) |>
+      pull_workflow_fit() |>
+      vip(aesthetics = list(alpha=0.8))
+  }
+  if(empirical){
+    rf_fit <- fit(rf_model_workflow,data = dft)
+    prediction_pred <- ifelse(mode=="classification",".pred_class",".pred")
+
+    df_ret <- dft |>
+      ungroup() |>
+      mutate(
+        .pred_rf = predict(rf_fit,new_data= dft)[[prediction_pred]]
+      )
+
+    df_pred_pre_metrics <- metrics(
+      df_ret |>
+      transmute(
+        asi_outcome= factor(asi_outcome),
+        .pred_rf= factor(.pred_rf)
+      ),
+      asi_outcome, .pred_rf
+      )
+
+    imp_spec <-  ranger_spec |>
+      set_engine("ranger",importance ="permutation")
+    vip_plot <- workflow() |>
+      add_recipe(ranger_recipe) |>
+      add_model(imp_spec) |>
+      fit(dft) |>
+      pull_workflow_fit() |>
+      vip(aesthetics = list(alpha=0.8),num_features = 20)
+  }
+
+  accuracy <- df_pred_pre_metrics|>
+    filter(.metric == "accuracy") |>
+    pull(.estimate)
+
+  vip_title <- ifelse(mode=="classification","Best {pub_mo} predictors of end of season ASI {rp_threshold} year return period activation","Best {pub_mo} predictors of end of season ASI {rp_threshold} values")
+  vip_subtitle <-  "Model Accuracy: {scales::label_percent(accuracy = 1)(accuracy)}"
+
+  vip_plot <- vip_plot  +
+    labs(
+      title = glue(vip_title),
+      subtitle = glue(vip_subtitle)
+    )
+  list(
+    df= df_ret, plot = vip_plot
+  )
+}
+# debugonce(ranger_pred)
+months_iter <-  set_names(month.abb[2:5],month.abb[2:5])
+
+mo_temp <- months_iter[1]
+mod_res <- map(months_iter,\(mo_temp){
+  ranger_pred(
+  list_df = ldf_model_short,# ldf_model_short
+  pub_mo = mo_temp,
+  mode = 'classification',
+  empirical = T
+  )
+}
+)
+mod_res$Feb$plot
+mod_res$Mar$plot
+mod_res$Apr$plot
+mod_res$May$plot
+
+set.seed(100)
+mod_res_pred <- map(months_iter,\(mo_temp){
+  ranger_pred(
+  list_df = ldf_model_full,
+  pub_mo = mo_temp,
+  mode = 'classification',
+  empirical = F
+  )
+}
+)
+
+mod_res_pred$Feb
+mod_res_pred$Mar
+mod_res_pred$Apr
+mod_res_pred$May
+```
+
+#### Model Full dataset
+
+```{r}
+# trying on full data
+df_temp |> count(adm1_name)
+month_prediction <- "May"
+
+df_temp <- ldf_model_full[[month_prediction]] |>
+  mutate(
+    asi_Jun_trans = log10(asi_Jun+0.1)
+  )
+
+
+
+# df_temp <- split(df_temp,df_temp$adm1_name)
+# df_temp<- df_temp$Takhar
+
+
+df_temp |> colnames()
+
+
+dummy_recipe <-
+  recipe(
+    formula = asi_Jun_trans ~  .,
+    data = df_temp
+    ) |>
+  step_rm(
+    yr_season,
+    pub_mo_date,
+    asi_Jun
+    )
+
+
+
+# so without all the tuning because that requires the data folds
+rf_model_spec  <-
+  rand_forest(trees= 10000,mtry=1) |>
+  set_mode("regression") |>
+  set_engine("ranger")
+
+dtree_model_spec  <-
+  decision_tree() |>
+  set_mode("regression") |>
+  set_engine("rpart")
+
+rf_model_workflow <-
+  workflow() |>
+  add_recipe(dummy_recipe) |>
+  add_model(rf_model_spec)
+
+dtree_model_workflow <-
+  workflow() |>
+  add_recipe(dummy_recipe) |>
+  add_model(dtree_model_spec)
+
+set.seed(123)
+
+rf_fit <- fit(rf_model_workflow,data = df_temp)
+dtree_fit <- fit(dtree_model_workflow,data = df_temp)
+
+df_temp_w_pred <- df_temp |>
+  mutate(
+    .pred_rf = predict(rf_fit,new_data= df_temp)$.pred,
+    .pred_dtree = predict(dtree_fit, new_data= df_temp)$.pred
+  )
+
+p_pred120 <- df_temp_w_pred |>
+  select(asi_Jun_trans,starts_with(".pred")) |>
+  pivot_longer(
+    # id_cols = "asi_Jun_trans",
+    cols = starts_with(".pred")
+  ) |>
+  ggplot(
+    aes(asi_Jun_trans,value, color= name)
+  )+
+  geom_point()+
+  geom_abline()
+
+
+df_temp_w_pred |>
+  select(asi_Jun_trans,starts_with(".pred")) |>
+  ggplot(
+    aes(asi_Jun_trans,.pred_rf)
+  )+
+  geom_point()+
+  geom_abline()+
+  labs(
+    title = glue("RF: {month_prediction}")
+  )
+
+
+
+
+# if decisoin _tree
+tree_fit <- fit_ck %>%
+  pull_workflow_fit()
+
+library(rpart.plot)
+rpart.plot(tree_fit$fit, roundint= FALSE)
+p_pred120
+p_pred
+
+imp_spec <-  rf_model_spec |>
+  set_engine("ranger",importance ="permutation")
+
+workflow() |>
+  add_recipe(dummy_recipe) |>
+  add_model(imp_spec) |>
+  fit(df_temp) |>
+  pull_workflow_fit() |>
+  vip(aesthetics = list(alpha=0.8))+
+  labs(title= glue("RF: {month_prediction}"))
+```
+
+```{r}
+
+df_temp <- ldf_model_short$Jun
+
+all(df_temp$asi == df_temp$asi_Jun)
+#> [1] TRUE
+
+dummy_recipe <-
+  recipe(
+    formula = asi_Jun ~  .,
+    data = df_temp
+    ) |>
+  step_rm(
+    yr_season,
+    pub_mo_date
+    )
+
+
+
+# so without all the tuning because that requires the data folds
+model_spec  <-
+  rand_forest(trees= 10000,mtry=1) |>
+  set_mode("regression") |>
+  set_engine("ranger")
+
+
+model_workflow <-
+  workflow() |>
+  add_recipe(dummy_recipe) |>
+  add_model(model_spec)
+
+set.seed(123)
+fit_ck <- fit(model_workflow,df_temp)
+
+
+
+df_temp_w_pred <- df_temp |>
+  mutate(
+    .pred = predict(fit_ck,new_data= df_temp)$.pred
+  )
+
+df_temp_w_pred |>
+  select(asi_Jun_trans,.pred)
+
+
+
+
+df_temp_w_pred |>
+  ggplot(
+    aes(.pred,asi_Jun_trans)
+  )+
+  geom_point()+
+  geom_abline()
+
+fit_ck_simple <- rand_forest(
+  trees = 1,
+  mtry = 1,
+  min_n=1
+  ) |>
+  set_mode("regression") |>
+  set_engine("ranger") |>
+  fit(asi_Jun ~ asi, data = df_temp)
+
+df_temp_w_pred_simple <- df_temp |>
+  mutate(
+    .pred = predict(fit_ck_simple, new_data = df_temp)$.pred
+  )
+
+df_temp_w_pred_simple |>
+  select(asi_Jun, .pred) |>
+  print(n=20)
+
+# A tibble: 72 × 2
+#    asi_Jun  .pred
+#      <dbl>  <dbl>
+#  1  10.6   10.6
+#  2   6.31   8.66
+#  3   0.902  0.875
+#  4  99.9   92.4
+#  5   0      0
+#  6   0      0
+#  7  30.9   33.3
+#  8   0      0
+#  9  72.3   72.3
+# 10   0      0
+# 11   0      0
+# 12  18.6   18.0
+# 13   0      0
+# 14  52.2   52.2
+# 15   0.037  0.037
+# 16   0      0
+# 17   3.09   3.09
+# 18   0      0
+# 19  33.3   33.3
+# 20  62.6   62.6
+
+ranger_model <- ranger::ranger(
+  asi_Jun ~ asi,
+  data = df_temp,
+  num.trees = 1,
+  mtry = 1,
+  min.node.size = 1
+)
+tree_info <- ranger::treeInfo(ranger_model)
+print(tree_info)
+
+library(randomForest)
+
+df_temp2 <- df_temp |>
+  mutate(
+    asi = asi_Jun
+  )
+rf_model <- randomForest(asi_Jun ~ asi, data = df_temp2, ntree = 1)
+predict(rf_model, df_temp)
+
+identical(predictions, df_temp2$asi_Jun)
+
+library(rpart)
+all(df_temp2$asi==df_temp2$asi_Jun)
+# TRUE
+tree_model <- rpart(asi_Jun ~ asi, data = df_temp2)
+tree_predictions <- predict(tree_model, df_temp2)
+
+identical(tree_predictions, df_temp2$asi_Jun)
+#> FALSE
+
+print(tree_model)  # Examine tree structure
+# n= 72
+#
+# node), split, n, deviance, yval
+#       * denotes terminal node
+#
+# 1) root 72 56472.0800 18.961030
+#   2) asi< 32.0665 53  3000.9780  3.993943
+#     4) asi< 11.7045 46   248.5315  1.297196 *
+#     5) asi>=11.7045 7   219.5563 21.715430 *
+#   3) asi>=32.0665 19  8479.7370 60.711320 *
+all.equal(tree_predictions, df_temp2$asi_Jun, tolerance = 1e-8)
+#> "names for target but not for current" "Mean relative difference: 0.3331601"
+
+
+lm_model <- lm(asi_Jun ~ asi, data = df_temp2)
+lm_predictions <- predict(lm_model, df_temp2)
+identical(lm_predictions, df_temp2$asi_Jun)
+#> FALSE
+all.equal(lm_predictions, df_temp2$asi_Jun, tolerance = 1e-8)
+#> "names for target but not for current"
+
+```
+
+```{r}
+
+ldf_model_short$Feb |>
+  threshold_var(var = "asi_Jun", rp_threshold=3) |>
+  glimpse()
+
+collect_predictions(df_fit) |>
+  ggplot(
+    aes(x=asi_Jun_trans, y= .pred )
+  ) +
+  geom_point()+
+  geom_abline()
+
+sum(ldf_model_full$Feb$asi_Jun==0)/length(ldf_model_full$Feb$asi_Jun)
+log10(ldf_model_full$Feb$asi_Jun)
+
+
+```
+
+```{r}
+df_wide_scaled |>
+  filter(!is.nan(asi_Jun)) |> count(adm1_name)
+df_model_clean <- df_wide_scaled |>
+  ungroup() |>
+   filter(!is.na(asi_Jun),
+          adm1_name!="Badghis",
+          adm1_name == "Faryab",
+          pub_mo_date>= "1984-02-01",
+          pub_mo_label != "Jan"
+          ) |>
+  ungroup()
+
+df_model_clean_timestep <- df_model_clean |>
+  filter(pub_mo_label=="Feb")
+
+prob_vars <- which(df_model_clean_timestep |>
+  summarise(
+    across(everything(), ~sum(is.na(.)))
+  ) |>
+  t()!=0)
+
+df_model_clean2 <- df_model_clean_timestep[,-prob_vars] |>
+  mutate(
+    # strata = paste0(adm1_name,"_",pub_mo_label)
+    strata = adm1_name
+  ) |>
+  select(-pub_mo_date, -pub_mo_label, - adm1_name,-pub_yr_date)
+
+
+
+df_split <-   initial_split(
+  df_model_clean2,
+  # strata= strata
+  )
+df_train <-   training(df_split)
+df_test <- testing(df_split)
+# df_folds <- vfold_cv(df_train, strata= strata,v= nrow(df_))
+# df_folds <- vfold_cv(df_model_clean2, strata= strata,v= nrow(df_model_clean2))
+df_folds <- bootstraps(df_train, strata= asi_Jun)
+
+# usemodels::use_ranger(asi_Jun~., data= df_train)
+
+ranger_recipe <-
+  recipe(formula = asi_Jun ~ ., data = df_train) %>%
+  step_string2factor(one_of(NA_character_))
+
+ranger_spec <-
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>%
+  set_mode("regression") %>%
+  set_engine("ranger")
+
+ranger_workflow <-
+  workflow() %>%
+  add_recipe(ranger_recipe) %>%
+  add_model(ranger_spec)
+
+
+# set.seed(1681)
+ranger_tune <-
+  tune_grid(
+    ranger_workflow,
+    resamples = df_folds,
+    grid = 11
+  )
+
+show_best(ranger_tune, metric="rmse")
+# show_best(ranger_tune, metric="rsq")
+autoplot(ranger_tune)
+
+final_rf <- ranger_workflow |>
+  finalize_workflow(select_best(ranger_tune))
+df_fit <- last_fit(final_rf,df_split)
+df_fit <- last_fit(final_rf,initial_split(df_model_clean2,0.03))
+
+
+
+collect_metrics(df_fit)
+collect_predictions(df_fit) |>
+  ggplot(
+    aes(x=asi_Jun, y= .pred )
+  ) +
+  geom_point()+
+  geom_abline()
+
+
+df_fit <- final_rf %>%
+  fit(data = df_model_clean2)
+
+# feature importance
+
+imp_spec <-  ranger_spec |>
+  finalize_model(select_best(ranger_tune)) |>
+  set_engine("ranger",importance ="permutation")
+
+workflow() |>
+  add_recipe(ranger_recipe) |>
+  add_model(imp_spec) |>
+  fit(df_train) |>
+  pull_workflow_fit() |>
+  vip(aesthetics = list(alpha=0.8))
+```
+
+```{r}
+library(tidymodels)
+library(vip)  # For variable importance plots
+
+mode <-  c("regression","classification")[2]
+df_model_clean <- df_wide_scaled |>
+  ungroup() |>
+   filter(!is.na(asi_Jun),
+          adm1_name!="Badghis",
+          # adm1_name == "Faryab",
+          pub_mo_date>= "1984-02-01"
+          # pub_mo_label != "Jan"
+          ) |>
+  ungroup()
+
+df_model_clean_timestep <- df_model_clean |>
+  filter(pub_mo_label=="Feb")
+
+df_model_clean_timestep |>
+  select(adm1_name,era5_land_snow_cover,asi_Jun) |>
+  ggplot(aes(
+    x= era5_land_snow_cover, y= asi_Jun
+  ))+
+  geom_point()+
+  facet_wrap(~adm1_name)
+
+df_model_clean_timestep |>
+  mutate(
+    asi_lgl = asi_Jun>=3
+  ) |>
+  ggplot(aes(
+    x= asi_lgl, y= era5_land_snow_cover
+  ))+
+  geom_boxplot()+
+  geom_jitter()+
+  facet_wrap(~adm1_name)
+
+df_model_clean_timestep |>
+  select(pub_mo_date, adm1_name, asi_Jun, era5_land_snow_cover) |>
+  group_by(adm1_name) |>
+  mutate(
+    r_asi_jun =rank(asi_Jun),
+    r_snow = rank(era5_land_snow_cover)
+  ) |>
+  summarise(
+    cor(r_asi_jun, r_snow, use="complete.obs")
+  )
+  arrange(adm1_name)
+  ggplot(aes(
+    x= asi_lgl, y= era5_land_snow_cover
+  ))+
+  geom_boxplot()+
+  geom_jitter()+
+  facet_wrap(~adm1_name)
+
+df_model_clean_timestep |>
+  group_by(adm1_name)  |>
+  summarise(
+    cor(era5_land_snow_cover, asi_Jun, use="complete.obs")
+  )
+
+
+prob_vars <- which(df_model_clean_timestep |>
+  summarise(
+    across(everything(), ~sum(is.na(.)))
+  ) |>
+  t()!=0)
+
+df_model_clean2 <- df_model_clean_timestep[,-prob_vars] |>
+  select(-pub_mo_date,
+         -pub_mo_label,
+         # - adm1_name,
+         -pub_yr_date)
+
+
+
+df_model_clean2$asi_Jun
+if(mode == "classification"){
+df_model_clean2 <- df_model_clean2 |>
+  mutate(
+    asi_Jun = ifelse(asi_Jun>=3,"high","low")
+  )
+df_folds <- mc_cv(df_model_clean2, prop = 7/10, times = 20,strata = asi_Jun)
+
+}
+df_model_clean2$asi_Jun
+
+# Prepare the data
+
+# Define the recipe (skip unnecessary steps)
+ranger_recipe <-
+  recipe(formula = asi_Jun ~ ., data = df_model_clean2)
+
+# Define the model specification (fixed hyperparameters)
+ranger_spec <-
+  rand_forest(mtry = 3, min_n = 5, trees = 1000) %>%  # Adjust these as needed
+  set_mode(
+    mode
+    ) %>%
+  set_engine("ranger", importance = "permutation")  # Enable feature importance
+
+ranger_spec |>
+  fit_resamples(asi_Jun~.,resamples = df_folds)
+# Define the workflow
+ranger_workflow <-
+  workflow() %>%
+  add_recipe(ranger_recipe) %>%
+  add_model(ranger_spec) #|>
+  fit_resamples(resamples = df_folds)
+
+# Fit the model on the full dataset
+final_fit <- fit(ranger_workflow, data = df_model_clean2)
+
+# Extract feature importance
+final_fit %>%
+  pull_workflow_fit() %>%
+  vip(aesthetics = list(alpha = 0.8)) +
+  labs(title = "Feature Importance")
+
+# Evaluate model performance (optional, using predictions on the same data)
+df_model_clean2 %>%
+  mutate(
+    .pred = predict(final_fit, new_data = df_model_clean2) %>% pull(.pred_class)
+  ) %>%
+  ggplot(aes(x = asi_Jun, y = .pred)) +
+  geom_point() +
+  geom_abline() +
+  labs(title = "Model Predictions vs Actuals", x = "Actual asi_Jun", y = "Predicted asi_Jun")
+
+bind_cols(
+  df_model_clean2 |>
+    select(yr_date,asi_Jun),predict(final_fit,new_data = df_model_clean2)
+  ) |>
+  print(n=40)
+```
+
+```{r}
+
+df_model_clean <- df_wide_scaled |>
+  ungroup() |>
+   filter(!is.na(asi_Jun),
+          adm1_name!="Badghis",
+          # adm1_name == "Takhar",
+          pub_mo_date>= "1984-02-01"
+          # pub_mo_label != "Jan"
+          ) |>
+  ungroup()
+
+df_model_clean_timestep <- df_model_clean |>
+  filter(pub_mo_label=="Feb")
+
+prob_vars <- which(df_model_clean_timestep |>
+  summarise(
+    across(everything(), ~sum(is.na(.)))
+  ) |>
+  t()!=0)
+
+df_model_clean2 <- df_model_clean_timestep[,-prob_vars] |>
+  # mutate(
+  #   # strata = paste0(adm1_name,"_",pub_mo_label)
+  #   strata = adm1_name
+  # ) |>
+  select(-pub_mo_date, -pub_mo_label,
+         # - adm1_name,
+         -pub_yr_date)
+
+
+
+df_model_clean2$asi_Jun
+if(mode == "classification"){
+df_model_clean2 <- df_model_clean2 |>
+  mutate(
+    asi_Jun = as_factor(ifelse(asi_Jun>=3,"high","low"))
+  )
+# df_model_clean2 <- df_model_clean2 |>
+#   mutate(
+#     asi_Jun = ifelse(asi_Jun>=3,"high","low")
+#   )
+df_folds <- mc_cv(df_model_clean2, prop = 7/10, times = 20,strata = asi_Jun)
+
+}
+
+df_recipe <-
+  recipe(
+    formula = asi_Jun ~ .,
+    # data = NULL# df_model_clean2
+    data =  df_model_clean2
+    ) #|>
+  step_rm(adm1_name)
+
+
+
+#building model
+tree <- decision_tree() %>%
+   set_engine("rpart") %>%
+   set_mode("classification")
+
+tree_wf <- workflow() %>%
+   add_recipe(df_recipe) %>%
+   add_model(tree) %>%
+    fit(df_model_clean2) #
+
+
+
+ tree_fit <- tree_wf %>%
+  pull_workflow_fit()
+
+
+rpart.plot(tree_fit$fit, roundint= FALSE)
+#workflow
+
+models_by_group <-
+  df_model_clean2 %>%
+  group_by(adm1_name) %>%
+  nest() |>
+  mutate(
+    fits = map(data,\(dft){
+      fit(tree_wf,data = dft)
+      }
+      )
+  )
+      # model_fit = map(data, ~ tree_wf %>% fit(data = .))
+    # model_fit = map(data, ~ tree_wf %>% fit(.))
+
+
+
+
+
+
+```
+
+```{r}
+# reate LOOCV folds
+df_folds <- loo_cv(df_model_clean2)
+
+# Define the recipe (unchanged)
+ranger_recipe <-
+  recipe(formula = asi_Jun ~ ., data = df_model_clean2) %>%
+  step_string2factor(one_of(NA_character_))
+
+# Define the model specification (with hyperparameters to tune)
+ranger_spec <-
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>%
+  set_mode("regression") %>%
+  set_engine("ranger")
+
+# Define the workflow
+ranger_workflow <-
+  workflow() %>%
+  add_recipe(ranger_recipe) %>%
+  add_model(ranger_spec)
+
+# Tune with LOOCV
+ranger_tune <-
+  tune_grid(
+    ranger_workflow,
+    resamples = df_folds, # Use LOOCV folds
+    grid = 11
+  )
+loocv_results <- map_df(1:nrow(df_model_clean2), function(i) {
+  # Split the data: Leave one observation out
+  test_data <- df_model_clean2[i, ]
+  train_data <- df_model_clean2[-i, ]
+
+  # Tune hyperparameters on the training data
+  tune_res <- tune_grid(
+    ranger_workflow,
+    resamples = vfold_cv(train_data, v = 5),  # Use 5-fold CV for tuning within training set
+    grid = 11
+  )
+
+  # Select the best parameters
+  best_params <- select_best(tune_res, metric = "rmse")
+
+  # Finalize the model
+  final_workflow <- finalize_workflow(ranger_workflow, best_params)
+
+  # Fit the finalized model to the training data
+  final_model <- fit(final_workflow, data = train_data)
+
+  # Predict on the test data
+  preds <- predict(final_model, new_data = test_data) %>%
+    bind_cols(test_data)
+
+  return(preds)
+})
+
+loocv_results |>
+  ggplot(aes(x = asi_Jun, y = .pred)) +
+  geom_point() +
+  geom_abline() +
+  labs(title = "LOOCV Predictions vs. Actuals", x = "Actual", y = "Predicted")
+# Review results
+show_best(ranger_tune, metric = "rmse")
+show_best(ranger_tune, metric = "rsq")
+autoplot(ranger_tune)
+
+# Finalize the model
+final_rf <- ranger_workflow |>
+  finalize_workflow(select_best(ranger_tune))
+
+# Fit the final model on the full dataset
+final_fit <- fit(final_rf, data = df_model_clean2)
+
+# Evaluate predictions
+predictions <- predict(final_fit, new_data = df_model_clean2) |>
+  bind_cols(df_model_clean2)
+
+# Visualize results
+predictions |>
+  ggplot(aes(x = asi_Jun, y = .pred)) +
+  geom_point() +
+  geom_abline()
+```
+
+```{r}
+#' experimental
+#'
+df_env_compare$parameter |> unique()
+
+df_environmental |>
+  group_by(parameter) |>
+  summarise(
+    min = min(yr_date),
+    max = max(yr_date)
+  ) |>
+  print(n=73)
+
+
+df_env_scaled <- df_env_compare |>
+  ungroup() |>
+  mutate(
+    mo_mon = extract_month(parameter),
+    mo_pub = extract_month_pub(parameter)
+  ) |>
+  select(
+    yr_date, yr_season, mo_mon,,mo_pub,everything()
+  ) |>
+  group_by(
+    mo_pub,adm1_name,parameter
+  ) |>
+  mutate(
+    value_scaled = scale(value, center= T)[,1],
+    .after=value
+  ) |>
+  ungroup()
+
+ldf_env_wide <- split(df_env_scaled,df_env_scaled$mo_pub) |>
+  map(
+    \(dft){
+      dft |>
+        pivot_wider(
+          id_cols = c("adm1_name","yr_season","mo_pub"),
+          names_from = "parameter",
+          values_from = "value_scaled"
+        ) |>
+        select(yr_season,adm1_name,any_of(unique(df_env_scaled$parameter)))
+    }
+  )
+
+lpca_modis <- split(ldf_env_wide$Mar,ldf_env_wide$Mar$adm1_name) |>
+  map(
+    \(dft){
+      dft_num <- dft |>
+        filter(
+          year(yr_season)<=2021,
+          year(yr_season)>=2000
+          ) |>
+        select(where(is.numeric),-matches("era5_[tc]"))
+
+      # colSums(is.na(dft_num))
+
+      princomp(dft_num)
+    }
+  )
+
+install.packages("FactoMineR")
+box::use(
+  FactoMineR[...]
+)
+plot(lpca_modis$Badakhshan)
+biplot(lpca_modis$Badakhshan)
+biplot(lpca_modis$Faryab)
+fv
+summary(lpca_modis$Badakhshan)
+colSums(is.na(ldf_env_wide$Mar |> filter(year(yr_season)>1984,year(yr_season)<=2021)))
+
+ldf_env_wide$Mar |> select(where(is.numeric),-starts_with("era5"))
+
+df_env_scaled |>
+  filter(mo_pub=="Jun") |>
+  pivot_wider(
+        id_cols = c("adm1_name","yr_season","mo_pub"),
+          names_from = "parameter",
+          values_from = "value_scaled"
+
+  )
+  glimpse()
+
+ldf_env_wide$Apr |>
+  filter(is.na(era5_cumu_precip_Mar))
 ```
 
 ```{r}
@@ -492,17 +4101,17 @@ lp_tile <- aoi_adm1 |>
       df_env_filt |>
         filter(adm1_name == adm_tmp) |>
       arrange(
-        parameter,adm1_name,yr_date
+        parameter,adm1_name,yr_season
       ) |>
         mutate (
-          yr = year(yr_date),
+          yr = year(yr_season),
           rp_bin = cut(rp_relevant_direction,
                        breaks = c(1, 2, 3, 4, 5, Inf),
                        labels = c("1-2", "2-3", "3-4", "4-5", ">=5"),
                        include.lowest = TRUE)
         ) |>
         ggplot(
-          aes(x = yr_date, y = parameter, fill = rp_bin)
+          aes(x = yr_season, y = parameter, fill = rp_bin)
         )+
         geom_tile_interactive(aes(
           tooltip = glue(
@@ -535,3 +4144,493 @@ girafe(ggobj = lp_tile[[2]])
 ```
 
 ## Suggested Next Steps:
+
+## Appendix
+
+
+one off snow checks
+```{r}
+#| eval: false
+
+
+# quick gut check on era5 snow fall - can add to appendix during cleanup
+df_era_snow <- df_environmental_yr_adj |>
+  filter(
+    yr_season >= df_validation_range[1],
+    yr_season <= df_validation_range[2],
+    adm1_name %in% aoi_adm1
+  ) |>
+  # this group_by() -> filter() step is just to grab the last dekad per month
+  # for ASI & VHI, the rest of the data is monthly time-step so it has no
+  # effect on them
+  group_by(
+    adm1_name, parameter, pub_mo_date
+  ) |>
+  filter(
+    date == max(date)
+  ) |>
+  ungroup() |>
+  filter(
+    # FEB ERA SNOW
+    month(pub_mo_date)==2
+    # regex to detect snow_cover or snow melt
+    &str_detect(parameter, "era.*snow(_cover|melt_sum)")|
+      # ASI
+      (str_detect(parameter,"asi")& month(pub_mo_date)==6)
+  )
+
+df_era_snow_wide <- df_era_snow |>
+  pivot_wider(
+    id_cols =c(yr_date, adm1_name),
+    names_from = parameter,
+    values_from = value
+  )
+
+
+df_era_snow_wide |>
+  group_by(
+    adm1_name
+  ) |>
+  summarise(
+    cor(asi,era5_land_snow_cover)
+  )
+
+# snow melt correlations are negative... so feb pub (jan data) does negatively correlate to ASI
+# more Jan snow melt less agg stress... could look more into ERA5 snowmelt var, but strange
+df_era_snow_wide |>
+  group_by(
+    adm1_name
+  ) |>
+  summarise(
+    cor(asi,era5_land_snowmelt_sum)
+  )
+df_env_filt_flag |> count(parameter) |> print(n=23)
+
+df_era5_land_rps_wide <- df_env_filt_flag |>
+  filter(
+    # (month(pub_mo_date)==2 & str_detect(parameter, "era.*snow(_cover|melt_sum)"))
+    (month(pub_mo_date)==2 & str_detect(parameter, "^era5_land"))|
+      # ASI
+      (str_detect(parameter,"asi")& month(pub_mo_date)==6)
+  ) |>
+   pivot_wider(
+    id_cols =c(yr_date, adm1_name),
+    names_from = parameter,
+    values_from = rp_relevant_direction
+  )
+
+df_era5_land_rps_wide |>
+ggplot(
+    aes(x= era5_land_snow_cover, y= asi)
+  )+
+  geom_point()
+
+
+
+thresh <- 5
+df_era5_land_rps_wide |>
+  filter(adm1_name %in% c("Takhar","Faryab","Sar-e-Pul")) |>
+  mutate(
+    perf_class = case_when(
+      era5_land_surface_runoff_sum>=thresh & asi>=thresh~"TP",
+      era5_land_surface_runoff_sum>=thresh & asi<thresh~"FP",
+      era5_land_surface_runoff_sum<=thresh & asi>thresh~"FN",
+      era5_land_surface_runoff_sum<=thresh & asi<=thresh~"TN"
+    )
+  ) |>
+  glimpse() |>
+  ggplot(
+    aes(x= era5_land_surface_runoff_sum, y= asi, color = perf_class)
+  )+
+  geom_point()+
+  scale_color_manual(
+    values= c("TP"= hdx_hex("mint-hdx"),
+              "TN"= hdx_hex("mint-light"),
+              "FN"= hdx_hex("tomato-hdx"),
+              "FP"=hdx_hex("tomato-light") )
+  )+
+  geom_vline(xintercept=thresh)+
+  geom_hline(yintercept = thresh)+
+  scale_x_log10()+
+  scale_y_log10()+
+  facet_wrap(~adm1_name)+
+  theme(
+    panel.border = element_rect(color="grey",fill=NA)
+  )+
+  labs(
+    title= "Performance: Feb ERA5 Surface Runoff Sum Predicting End of Seasson ASI",
+    caption = "High return periods runoff corresponds to deficit of runoff where as high RP ASI corresponds to higher vegetative stress (end of May)"
+    )
+
+
+# df_era_snow_esa |>
+#   ggplot(aes(x= )
+```
+
+
+```{r}
+#| eval: false
+
+# dont really like where this plot was going -- probably delete
+df_metrics_simple |>
+  filter(
+    pub_mo_label %in% c("Feb","Mar","Apr","May"),
+  ) |>
+  group_by(adm1_name, pub_mo_label) |>
+  slice_max(f1, n= 3, with_ties = T) |>
+  ggplot(
+    aes(
+      x= parameter_label,
+      y= adm1_name,
+      fill = f1
+    )
+  )+
+  # scale_x_discrete(limits = c("Feb","Ma
+  geom_tile() +
+  facet_grid(
+    cols = vars(pub_mo_label),scales="free"
+    )+
+  theme(
+    axis.text.x = element_text(angle =90),
+    panel.border = element_rect(fill = NA, color = "grey")
+  )
+
+```
+### Point System
+
+Point system - you need 4 points
+
+Feb: SEAS5 : 4 points Mar: - Observational Rainfall (CHIRPS): 2 points - Observed Soil Moisture : 2 points - NDSI or SWE: 2 points April: - Observed Rainfall CHIRPS OR ERA5: 4 points - NDSI: 2 points - SWE: 2 points May: - ASI: 4 points - VHI: 2 points - Soil Moisture: 2 points
+
+Jun: - ASI: 4 - VHI: 2 - Soil Moisture 2
+
+```{r}
+
+df_ps <- df_env_compare |>
+  label_parameters() |>
+  mutate(
+    ps = case_when(
+      str_detect(parameter,"NDSI|SWE") & pub_mo_label == "Mar"~"SNOW_COMBINED",
+      str_detect(parameter,"era5_land_volumetric_soil")~"soil_moisture",
+      str_detect(parameter,"NDSI") & pub_mo_label != "Mar"~"NDSI",
+      # str_detect(ps,"chirps_cumu|era5_cumu_precip") ~"observational_chirps_era5",
+      str_detect(parameter,"cumu_chirps|cumu_era5_land_total_precipitation") ~"cumu_observational_chirps_era5",
+      .default = parameter
+    )
+  )
+
+
+
+
+df_rps_composite <- df_ps |>
+  group_by(
+    pub_mo_label, yr_season,adm1_name,ps
+  ) |>
+  slice_max(
+    rp_relevant_direction,n=1,with_ties = F
+  ) |>
+
+  summarise(
+    rp = max(rp_relevant_direction,na.rm=T),
+    # rp_flag = rp>=5,
+  ) |>
+  mutate(
+      rp_flag = case_when(
+      ps == "SEAS5-MAM" ~ rp >=5,
+      ps == "soil_moisture" ~ rp>=10,
+      ps == "SNOW_COMBINED" ~ rp>=10,
+      ps == "NDSI" ~ rp>=10,
+      ps == "cumu_observational_chirps_era5"~ rp>=3,
+      ps == "asi"~ rp>=5,
+      ps == "vhi"~ rp>=5,
+      .default = NA_real_
+    )
+  ) |>
+  ungroup()
+
+
+df_pts_added  |>
+  filter(pub_mo_label == "Mar") |>
+  print(n=30)
+
+df_pts_added <- df_rps_composite |>
+  filter(pub_mo_label!="Jan") |>
+  mutate(
+    pts1 = case_when(
+
+      # Feb - Just SEAS5
+      pub_mo_label == "Feb" & ps=="SEAS5-MAM" & rp_flag~4,
+      pub_mo_label == "Feb" & ps=="SEAS5-MAM" & !rp_flag~0,
+
+      # March - soil moisture, snow, rainfall
+      pub_mo_label == "Mar" & ps=="soil_moisture" & rp_flag~2,
+      pub_mo_label == "Mar" & ps=="soil_moisture" & !rp_flag~0,
+      pub_mo_label == "Mar" &  ps=="SNOW_COMBINED" & rp_flag~2,
+      pub_mo_label == "Mar" &  ps=="SNOW_COMBINED" & !rp_flag~0,
+      pub_mo_label == "Mar" &  ps=="cumu_observational_chirps_era5" & rp_flag~2,
+      pub_mo_label == "Mar" &  ps=="cumu_observational_chirps_era5" & !rp_flag~0,
+
+      # april Snow/ rainfall
+      pub_mo_label == "Apr" & ps == "NDSI" & rp_flag~2,
+      pub_mo_label == "Apr" & ps == "NDSI" & !rp_flag~0,
+      pub_mo_label == "Apr" & ps == "SWE_inst" & rp_flag~2,
+      pub_mo_label == "Apr" & ps == "SWE_inst" & !rp_flag~0,
+      pub_mo_label == "Apr" & ps=="cumu_observational_chirps_era5" & rp_flag~4,
+      pub_mo_label == "Apr" & ps=="cumu_observational_chirps_era5" & !rp_flag~0,
+
+      # May
+      pub_mo_label == "May" & ps == "asi" & rp_flag~4,
+      pub_mo_label == "May" & ps == "asi" & !rp_flag~0,
+      pub_mo_label == "May" & ps == "vhi" & rp_flag~2,
+      pub_mo_label == "May" & ps == "vhi" & !rp_flag~0,
+      pub_mo_label=="May" & ps == "soil_moisture" & rp_flag ~ 2,
+      pub_mo_label=="May" & ps == "soil_moisture" & !rp_flag ~ 0,
+
+
+      # june = ASI, VHI, soil moisture
+      pub_mo_label == "Jun" & ps == "asi" & rp_flag~4,
+      pub_mo_label == "Jun" & ps == "asi" & !rp_flag~0,
+      pub_mo_label == "Jun" & ps == "vhi" & rp_flag~2,
+      pub_mo_label == "Jun" & ps == "vhi" & !rp_flag~0,
+      pub_mo_label=="Jun" & ps == "soil_moisture" & rp_flag ~ 2,
+      pub_mo_label=="Jun" & ps == "soil_moisture" & !rp_flag ~ 0,
+      # ps %in% ps_considered ~0,
+      .default = NA)
+    )
+
+
+
+
+
+
+df_pts_added  |>
+  filter(pub_mo_label %in% c("Feb","Mar","Apr","May","Jun")) |>
+  group_by(pub_mo_label,adm1_name,yr_season ) |>
+  summarise(
+    pts1 = sum(pts1,na.rm=T),
+    pts_flag = pts1>=4,.groups="drop_last"
+  ) |>
+  # count(pts1)
+  summarise(
+    ar = mean(pts_flag),
+    rp = 1/ar
+  ) |>
+  print(
+    n =25
+  )
+
+df_pts_added  |>
+  filter(adm1_name!="Badghis") |>
+  filter(pub_mo_label %in% c("Feb",
+                       "Mar",
+                       "Apr",
+                       # "May",
+                       "Jun"
+                       )) |>
+  group_by(pub_mo_label,yr_season,adm1_name ) |>
+  summarise(
+    pts1 = sum(pts1,na.rm=T),
+    pts_flag = pts1>=4,.groups="drop_last"
+  ) |>
+  group_by(
+    pub_mo_label,yr_season
+  ) |>
+  summarise(
+    pts_flag = any(pts_flag)
+  ) |>
+  group_by(pub_mo_label) |>
+  # count(pts1)
+  summarise(
+    ar = mean(pts_flag),
+    rp = 1/ar
+  ) |>
+  print(
+    n =25
+  )
+
+df_pts_added  |>
+  filter(!adm1_name %in% c("Badghis","Badakhshan")) |>
+  filter(pub_mo_label %in%
+           c(
+             # "Feb",
+             # "Mar",
+             # "Apr",
+             "May",
+             "Jun"
+           )) |>
+  group_by(pub_mo_label,yr_season,adm1_name ) |>
+  summarise(
+    pts1 = sum(pts1,na.rm=T),
+    pts_flag = pts1>=4,.groups="drop_last"
+  ) |>
+  group_by(
+    pub_mo_label,yr_season
+  ) |>
+  summarise(
+    pts_flag = any(pts_flag)
+  ) |>
+  group_by(yr_season) |>
+  summarise(
+    pts_flag = any(pts_flag)
+  ) |>
+  # count(pts1)
+  summarise(
+    ar = mean(pts_flag),
+    rp = 1/ar
+  ) |>
+  print(
+    n =25
+  )
+
+
+df_pts_monitoring_historical <- df_pts_added  |>
+  filter(
+    pub_mo_label %in% c("Feb","Mar","Apr","May","Jun"), !is.na(pts1)
+  )
+
+
+
+df_pts_w_activation <- df_pts_monitoring_historical |>
+   group_by(
+    pub_mo_label, yr_season,adm1_name
+  ) |>
+  mutate(
+    activate = sum(pts1)>=4,
+    activate_color = ifelse(activate&pts1>0,"yes","no")
+  )
+
+mos_monitoring <- list(
+  "Feb"= "Feb",
+  "Mar"= "Mar",
+  "Apr" = "Apr",
+  # "May" = "May",
+  "Jun" = "Jun"
+)
+
+
+lp_observational_tile <- map(
+  mos_monitoring,
+  \(mo_tmp){
+  df_pts_w_activation |>
+      filter(adm1_name!="Badghis",
+             pub_mo_label==mo_tmp) |>
+  ggplot(
+    aes(x= yr_season,
+        y= ps ,
+        fill = pts1,
+        color = activate_color)
+  )+
+  geom_tile( linewidth = 1)+
+  scale_color_manual(
+    values = c(
+      "yes" = "red",
+      "no"= NULL
+    )
+  )+
+  scale_fill_gradient()+
+  facet_grid(
+    rows = vars(adm1_name),
+    scales= "free")
+  }
+)
+
+lp_observational_tile$Apr
+lp_observational_tile$Mar
+
+```
+
+### Runoff
+
+```{r}
+# i need to have a little look at this runoff var
+
+df_env_filt |>
+  filter(
+    str_detect(parameter, "runoff")
+  ) |> count(parameter)
+
+df_runoff <- df_env_filt |>
+  filter(
+    str_detect(parameter, "runoff_max")
+    )
+
+df_asi <- df_env_filt |>
+  filter(str_detect(parameter, "asi"), pub_mo_label =="Jun") |>
+  rename(
+    asi = value
+  ) |>
+  select(
+    adm1_name, pub_yr_date, asi,rp_asi = rp_relevant_direction
+  )
+
+df_runoff_asi <- df_runoff |>
+  filter(
+    # pub_mo_label == "Feb",
+    adm1_name == "Takhar"
+  ) |>
+  left_join(
+    df_asi, by = c("pub_yr_date","adm1_name")
+  ) |>
+  group_by(adm1_name, pub_mo_label) |>
+  mutate(
+    anom_runoff = value - mean(value, na.rm = T),
+    anom_asi = asi - mean(asi, na.rm = T)
+  ) |>
+  select(
+    adm1_name, date, pub_mo_date,pub_mo_label, anom_runoff,anom_asi, value, asi,
+    rp_runoff = rp_relevant_direction,rp_asi
+  )
+
+df_runoff_asi |>
+  ggplot(
+    aes(x= anom_runoff, y= anom_asi, color = rp_runoff)
+  )+
+  geom_point_interactive(
+    aes(tooltip = glue("date: {date}
+                       value:{value}"))
+  )+
+  scale_color_continuous(trans = scales::log10_trans())+
+  facet_wrap(~pub_mo_label, scales= "free")
+
+runoff_rp_threshold <- 3
+asi_rp_threshold <-  3
+p_runoff_rp_scatter <- df_runoff_asi |>
+  mutate(
+    rp_class = case_when(
+      rp_runoff>=runoff_rp_threshold &
+      rp_asi >=asi_rp_threshold ~"TP",
+      rp_runoff<runoff_rp_threshold &
+      rp_asi <asi_rp_threshold ~"TN",
+
+      rp_runoff>=runoff_rp_threshold &
+      rp_asi <asi_rp_threshold ~"FP",
+
+      rp_runoff<runoff_rp_threshold &
+      rp_asi >=asi_rp_threshold ~"FN"
+
+    )
+  ) |>
+
+  ggplot(
+    aes(x= rp_runoff, y= rp_asi, color = rp_class)
+  )+
+  geom_vline(
+    xintercept = runoff_rp_threshold
+  )+
+  geom_hline(
+    yintercept = asi_rp_threshold
+  )+
+  geom_point_interactive(
+    aes(tooltip = glue("date: {date}
+                       runoff:{value}
+                       asi: {asi}
+                       RP ASI: {rp_asi}
+                       RP runoff: {rp_runoff}"))
+  )+
+  # scale_color_continuous(trans = scales::log10_trans())+
+  facet_wrap(~pub_mo_label, scales= "free")
+
+girafe(ggobj =p_runoff_rp_scatter)
+
+
+```

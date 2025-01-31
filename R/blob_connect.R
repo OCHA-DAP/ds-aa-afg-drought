@@ -55,6 +55,7 @@ proj_blob_paths <- function(){
     DF_ADM2_CHIRPS_WFP = paste0(vector_raw, "wfp-chirps-adm2.csv"),
     DF_ADM2_NDVI_WFP = paste0(vector_raw, "wfp-ndvi-adm2.csv"),
     DF_ADM1_CHIRPS = paste0(vector_processed,"chirps_monthly_afg_adm1_historical.csv"),
+    DF_ADM1_CHIRPS_WFP = paste0(vector_processed, "chirps_monthly_afg_adm1_wfp_historical.csv"),
     DF_ADM1_MODIS_NDVI_CROPS = paste0(vector_processed, "modis_ndvi_crops_adm1.csv"),
     DF_ADM1_MODIS_SNOW = paste0(vector_processed, "modis_snow_frac_monthly_afg_adm1_historical.csv"),
     DF_ADM1_MODIS_SNOWMELT_M2010 = paste0(vector_processed, "modis_first_day_no_snow_2010_mask.csv"),

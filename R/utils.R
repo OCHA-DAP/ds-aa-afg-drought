@@ -1,3 +1,49 @@
+box::use(
+  dplyr,
+  rlang,
+  utils,
+  stringr,
+  tools,
+  sf,
+  glue
+)
+
+#' threshold_var
+#' @description
+#' useful utility function doing grouped return period thresholding all in one
+#' currently only used in book_afg_analysis/06_indicator_expansion.qmd
+#' with one directionality. In this case i deal w/ directionality as a pre
+#' processing step. However, in future it would be cool if this function worked
+#' with directions `1` & `-1`
+#'
+#' @param df
+#' @param var
+#' @param by
+#' @param rp_threshold
+#' @param direction
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+threshold_var <-  function(df,var, by,rp_threshold,direction=1){
+  if(direction==1){
+    df |>
+      dplyr$group_by(
+        dplyr$across({{by}})
+      ) |>
+      dplyr$arrange(
+        dplyr$desc(!!rlang$sym(var))
+      ) |>
+      dplyr$mutate(
+        rank = dplyr$row_number(),
+        q_rank = rank/(max(rank)+1),
+        rp_emp = 1/q_rank,
+        !!rlang$sym(glue$glue("{var}_flag")):= rp_emp>=rp_threshold
+      ) |>
+      dplyr$select(-rank,-q_rank,-rp_emp)
+  }
+}
 
 #' @export
 load_aoi_names <-  function(){
@@ -33,42 +79,42 @@ download_shapefile <- function(
     iso3 = NULL,
     boundary_source = NULL
 ) {
-  if (stringr::str_ends(url, ".zip")) {
-    utils::download.file(
+  if (stringr$str_ends(url, ".zip")) {
+    utils$download.file(
       url = url,
       destfile = zf <- tempfile(fileext = ".zip"),
       quiet = TRUE
     )
 
-    utils::unzip(
+    utils$unzip(
       zipfile = zf,
       exdir = td <- tempdir()
     )
 
     # if the file extension is just `.zip`, we return the temp dir alone
     # because that works for shapefiles, otherwise we return the file unzipped
-    fn <- stringr::str_remove(basename(url), ".zip")
-    if (tools::file_ext(fn) == "") {
+    fn <- stringr$str_remove(basename(url), ".zip")
+    if (tools$file_ext(fn) == "") {
       fn <- td
     } else {
       fn <- file.path(td, fn)
     }
   } else {
-    utils::download.file(
+    utils$download.file(
       url = url,
-      destfile = fn <- tempfile(fileext = paste0(".", tools::file_ext(url))),
+      destfile = fn <- tempfile(fileext = paste0(".", tools$file_ext(url))),
       quiet = TRUE
     )
   }
 
   if (!is.null(layer)) {
-    ret <- sf::st_read(
+    ret <- sf$st_read(
       fn,
       layer = layer,
       quiet = TRUE
     )
   } else {
-    ret <- sf::st_read(
+    ret <- sf$st_read(
       fn,
       quiet = TRUE
     )
@@ -85,7 +131,7 @@ download_shapefile <- function(
 download_fieldmaps_sf <- function(iso3, layer = NULL) {
   iso3 <- tolower(iso3)
   download_shapefile(
-    url = glue::glue("https://data.fieldmaps.io/cod/originals/{iso3}.gpkg.zip"),
+    url = glue$glue("https://data.fieldmaps.io/cod/originals/{iso3}.gpkg.zip"),
     layer = layer,
     iso3 = iso3,
     boundary_source = "FieldMaps, OCHA"

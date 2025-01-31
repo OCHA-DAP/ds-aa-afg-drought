@@ -8,25 +8,38 @@ box::use(
   lubridate,
   rlang,
   stringr,
+  utils
+  )
+
+box::use(
   ../R/blob_connect
 )
 
+
 bps <- blob_connect$proj_blob_paths()
 
-load_wfp_chirps <- function(){
+#' @export
+load_wfp_chirps <- function(adm_level,source = c("hdx","blob")){
+  if(adm_level ==2 & source == "hdx"){
+    chirps_url <- "https://data.humdata.org/dataset/3b5e8a5c-e4e0-4c58-9c58-d87e33520e08/resource/a8c98023-e078-4684-ade3-9fdfd66a1361/download/afg-rainfall-adm2-full.csv"
+    utils$download.file(chirps_url, tf <- tempfile("afg-rainfall-adm2-full.csv"))
+    df_chirps_adm2 <- readr$read_csv(tf)
 
-  chirps_url <- "https://data.humdata.org/dataset/3b5e8a5c-e4e0-4c58-9c58-d87e33520e08/resource/a8c98023-e078-4684-ade3-9fdfd66a1361/download/afg-rainfall-adm2-full.csv"
-  download.file(chirps_url, tf <- tempfile("afg-rainfall-adm2-full.csv"))
-  df_chirps_adm2 <- readr$read_csv(tf)
+    ret <- df_chirps_adm2[-1,] |>
+      janitor$clean_names() |>
+      readr$type_convert()
+  }
+  if(adm_level ==1 & source =="blob"){
+    ret <- cumulus$blob_read(name = blob_connect$proj_blob_paths()$DF_ADM2_CHIRPS_WFP, stage= "dev")
+  }
+  return(ret)
 
-  df_chirps_adm2[-1,] |>
-    janitor$clean_names() |>
-    readr$type_convert()
+
 }
 
 load_wfp_ndvi <- function(){
   url <- "https://data.humdata.org/dataset/fa36ae79-984e-4819-b0eb-a79fbb168f6c/resource/d79de660-6e50-418b-a971-e0dfaa02586f/download/afg-ndvi-adm2-full.csv"
-  download.file(url, tf <- tempfile("afg-ndvi-adm2-full.csv"))
+  utils$download.file(url, tf <- tempfile("afg-ndvi-adm2-full.csv"))
   df_adm2 <- readr$read_csv(tf)
 
   df_adm2[-1,] |>
@@ -56,6 +69,83 @@ load_fao_vegetation_data <- function(){
 }
 
 
+#' @export
+prep_observational_data <- function(df){
+  df_fao <- df |>
+    dplyr$filter(stringr$str_detect(parameter,"^asi|^vhi"))
+
+  df_no_fao <- dplyr$anti_join(df,df_fao)
+
+  df_fao_clean <- df_fao |>
+    deduplicate_fao() |>
+    # just hardcoding this as Badakhshan is problematic and no longer in framework
+    trim_clean_fao(aoi_adm1=c("Sar-e-Pul","Takhar","Faryab")) |>
+    filter_fao_to_dekad_3()
+
+  df_clean <- dplyr$bind_rows(
+    df_no_fao,
+    df_fao_clean
+  )|>
+    dplyr$mutate(
+      yr_season = dplyr$case_when(
+        lubridate$month(date) %in% c(11,12)~yr_date+ lubridate$years(1),
+        .default = yr_date
+      )
+    ) |>
+    dplyr$filter(
+      lubridate$year(yr_season)<2025,
+      # take these out because we've gotten them from ERA5-LAND instead which
+      # has longer record
+      !(parameter %in% c("total_precipitation","mean_2m_air_temperature"))
+    )
+  append_average_soil_moisture(df_clean)
+}
+
+append_average_soil_moisture <-  function(df){
+  df_sm_avg <- df |>
+    dplyr$filter(stringr$str_detect(parameter,"era5_land_volumetric_soil_water_layer_[123]")) |>
+    dplyr$group_by(
+      dplyr$across(c(-parameter,-value))
+    ) |>
+    dplyr$summarise(
+      parameter = "era5_land_soil_moisture_1m",
+      value = mean(value),
+      .groups="drop"
+    )
+
+  dplyr$bind_rows(
+    df,
+    df_sm_avg
+  )
+
+}
+
+deduplicate_fao <- function(df){
+  df |>
+    dplyr$group_by(
+      dplyr$across(-value)
+    ) |>
+    dplyr$slice(1) |>
+    dplyr$ungroup()
+}
+
+trim_clean_fao <-  function(df,aoi_adm1){
+  df_deduped <- deduplicate_fao(df)
+  df_deduped |>
+    dplyr$filter(
+      adm1_name %in% aoi_adm1,
+      !(lubridate$month(pub_mo_date) %in% c(11,12,1,2))
+    )
+}
+
+filter_fao_to_dekad_3 <- function(df){
+  df |>
+    dplyr$group_by(
+      dplyr$across(-c("value","date"))
+    ) |>
+    dplyr$filter(date == max(date)) |>
+    dplyr$ungroup()
+}
 
 #' Title
 #'
@@ -64,8 +154,8 @@ load_fao_vegetation_data <- function(){
 #'
 #' @examples
 #' df_env <- load_cleaned_env_vars()
-load_cleaned_env_features <- function(mo=c(1:5), include_cumulative = T){
-  feature_names <- c("era5_land","fao","chirps","ndsi","swe","era5")
+load_cleaned_env_features <- function(mo=c(1:5), feature_names =  c("era5_land","fao","chirps_wfp","ndsi","swe","era5"),include_cumulative = T){
+
   feature_names <- rlang$set_names(feature_names,feature_names)
   l_features <- purrr$map(
     feature_names, \(nm_temp){
@@ -118,13 +208,14 @@ load_cleaned_env_features <- function(mo=c(1:5), include_cumulative = T){
 #' @examples
 #' load_env_ds() |>
 #'   wrangle_monthly_generic2()
-load_env_features <-  function(x = c("era5_land","fao","chirps","ndsi","swe","era5")){
+load_env_features <-  function(x = c("era5_land","fao","chirps","chirps_wfp","ndsi","swe","era5")){
   x <- rlang$arg_match(x)
   switch(
     x,
     "era5_land" = load_era5_land_multiband(),
     "fao" = load_fao_vegetation_data(),
     "chirps"=load_chirps(),
+    "chirps_wfp"=load_wfp_chirps(adm_level=1,source = "blob"),
     "ndsi" = load_ndsi(),
     "swe" = load_swe(),
     "era5" = load_era5()
