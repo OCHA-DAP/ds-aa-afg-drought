@@ -766,7 +766,103 @@ gt_jrp(
   )
 ```
 
+## RP Disussion
+
+Why are we choosing a 3 year RP? Well we do see that CERF allocatoins since 2008 have a rougly 1 in 3 year RP and they line up decently with
+
+```{r}
+
+df_fao <- loaders$load_fao_vegetation_data()
+df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_allocations.xlsx") |>
+  clean_names() |>
+  mutate(
+    allocation_date = as_date(allocation_date)
+  )
+
+# if you do play around w/ this number it does look like it peaks out around 4... which equate to a joint RP of around 3
+# w/ rp at 5 u miss 2006 activatoin
+rp_compare <- 4
+df_asi_eos <- df_fao |>
+  clean_names() |>
+  mutate(
+    date= as_date(date),
+    yr_season = floor_date(date, "year")
+  ) |>
+  filter(
+    adm1_name %in% aoi_adm1,
+    year (date)<=2024,
+    month(date)==5,
+    dekad ==3,
+    parameter == "asi"
+  ) |>
+    utils$threshold_var(
+    var="value",
+    by= c("adm1_name"),
+    rp_threshold = rp_compare
+  ) |>
+    mutate(
+    yr = year(yr_season)
+  ) |>
+  rename(
+    strata = adm1_name
+  )
+
+
+
+df_cerf_yr <-  df_cerf |>
+  group_by(yr = year(allocation_date)) |>
+  summarise(
+    n=n()
+  ) |>
+  complete(
+    yr = 2006:2024,
+    fill = list(n=0)
+  )
+
+
+bind_rows(
+df_asi_eos,
+  df_cerf_yr |>
+    mutate(
+      strata = "CERF Allocations",
+      value_flag = n>0
+    )
+) |>
+  mutate(
+    value_fill = case_when(
+      value_flag==F ~ "no activations",
+      value_flag == T & strata != "CERF Allocations"~"activation",
+      value_flag == T  & strata == "CERF Allocations" & n ==1~ "1 activation",
+      value_flag == T & strata == "CERF Allocations" & n ==2~ "2 activations",
+      .default = "?"
+
+    ),
+    strata = factor(strata, c("Faryab","Sar-e-Pul","Takhar","CERF Allocations")),
+  ) |>
+  ggplot(
+    aes(x= strata, y= yr, fill = value_fill)
+  )+
+  geom_tile(color = "white") +
+  scale_fill_manual(
+    values = c("no activations"=hdx_hex("grey-medium"),
+               "activation" = hdx_hex("tomato-light"),
+               "1 activation"=hdx_hex("tomato-hdx"),
+               "2 activations"= hdx_hex("tomato-dark"))
+  )+
+  scale_y_reverse(expand= c(0,0), breaks= 1984:2024)+
+  scale_x_discrete(expand= c(0,0))+
+  theme(
+    axis.title = element_blank(),
+    legend.position = "none"
+  )+
+  labs(
+    title = glue("End of Season ASI - Thresholded at {rp_compare} year RP and Historical CERF Activations")
+  )
+
+```
+
+
 ## Remaining Steps
 
-- CERF/OCHA AFG coordinate partners to decide on pre-season trigger moments and allocation model
-- CERF/OCHA AFG decide if March fits into pre-season or mid/post-season allocation bucket
+-   CERF/OCHA AFG coordinate partners to decide on pre-season trigger moments and allocation model
+-   CERF/OCHA AFG decide if March fits into pre-season or mid/post-season allocation bucket

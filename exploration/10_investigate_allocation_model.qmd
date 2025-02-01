@@ -79,20 +79,19 @@ df_pcts <- df |>
 
 Partners:
 
-- FAO
-- WFP
-- UN Women
-- UNFPA
-- UNICEF
-- IOM
+-   FAO
+-   WFP
+-   UN Women
+-   UNFPA
+-   UNICEF
+-   IOM
 
-
-Still need to get activity list/ required lead times and required $ for activities.
+Still need to get activity list/ required lead times and required \$ for activities.
 
 But some educated guesses/thoughts:
 
-- AHF activities/partners under second window - (mid/post season)
-- only 1 or 2 partners potentially under pre-season window
+-   AHF activities/partners under second window - (mid/post season)
+-   only 1 or 2 partners potentially under pre-season window
 
 ```{r}
 df_pcts |>
@@ -124,7 +123,6 @@ df_pcts |>
   )
 
 ```
-
 
 ```{r}
 

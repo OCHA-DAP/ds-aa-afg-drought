@@ -8,11 +8,12 @@ box::use(
   lubridate,
   rlang,
   stringr,
-  utils
+  utils,
+  glue
   )
 
 box::use(
-  ../R/blob_connect
+  ./blob_connect
 )
 
 
@@ -46,6 +47,87 @@ load_wfp_ndvi <- function(){
     janitor$clean_names() |>
     readr$type_convert()
 }
+
+
+filter_to_validation_range <- function(df,df_valid){
+  df |>
+    dplyr$filter(
+      yr_season >= min(df_valid$yr_season),
+      yr_season <= max(df_valid$yr_season)
+    )
+}
+
+load_aggregated_forecast <- function(aoi_adm1,valid_months=c(3,4,5)){
+  valid_months_chr <- lubridate$month(valid_months,abbr=T,label=T)
+  parameter_label <- glue$glue("SEAS5-{glue$glue_collapse(stringr$str_sub(valid_months_chr,1,1),sep='')}")
+
+
+  df_seas5 <- cumulus$pg_load_seas5_historical(
+    iso3 ="AFG",
+    adm_level = 1,
+    adm_name = aoi_adm1,
+    convert_units = T
+  )
+
+  df_agg <- cumulus$seas5_aggregate_forecast(
+    df_seas5,
+    valid_months = valid_months,
+    value= "mean",
+    by = c("iso3","pcode","name","issued_date")
+  )
+
+  df_agg |>
+    dplyr$mutate(
+
+      yr_season = lubridate$floor_date(issued_date+months(leadtime),"year"),
+      parameter = parameter_label
+    )  |>
+    dplyr$select(
+      yr_season, adm1_name=name, pub_mo_date =issued_date, value=mean,parameter
+    )
+
+
+
+}
+
+#' load_compiled_indicators
+#'
+#' @param aoi_adm1 `character` admins to include
+#'
+#' @returns
+#' @export
+load_compiled_indicators <- function(aoi_adm1) {
+  df_observational <- load_cleaned_env_features(mo = c(11,12,1:6))
+  df_obs_clean <- prep_observational_data(df= df_observational)
+
+  df_validation_set <- df_obs_clean |>
+    dplyr$filter(parameter == "asi")
+
+  df_seas5_forecast <- load_aggregated_forecast(aoi_adm1 = aoi_adm1,valid_months  = c(3,4,5))
+
+  df_obs_pred <- dplyr$bind_rows(
+    df_obs_clean,
+    df_seas5_forecast
+  )
+
+
+  df_obs_pred |>
+    filter_to_validation_range(df_valid = df_validation_set) |>
+    dplyr$filter(adm1_name %in% aoi_adm1) |>
+    dplyr$group_by(adm1_name, parameter, pub_mo_label = lubridate$month(pub_mo_date,label = T, abbr = T)) |>
+    dplyr$arrange(dplyr$desc(value), .by_group = TRUE) |>
+    dplyr$mutate(rank = dplyr$row_number(), q_rank = rank/(max(rank)+1), rp_max_direction = 1/q_rank) |>
+    dplyr$arrange(value, .by_group = TRUE) |>
+    dplyr$mutate(rank = dplyr$row_number(), q_rank = rank/(max(rank)+1), rp_min_direction = 1/q_rank) |>
+    dplyr$ungroup() |>
+    dplyr$mutate(
+      rp_relevant_direction  = dplyr$case_when(
+      stringr$str_detect(parameter,"asi|temp")~ rp_max_direction,
+      .default = rp_min_direction
+    ))
+}
+
+
 
 
 #' @export
