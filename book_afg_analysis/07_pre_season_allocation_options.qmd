@@ -782,6 +782,7 @@ df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_all
 # if you do play around w/ this number it does look like it peaks out around 4... which equate to a joint RP of around 3
 # w/ rp at 5 u miss 2006 activatoin
 rp_compare <- 4
+
 df_asi_eos <- df_fao |>
   clean_names() |>
   mutate(
@@ -818,8 +819,12 @@ df_cerf_yr <-  df_cerf |>
     yr = 2006:2024,
     fill = list(n=0)
   )
+```
 
 
+historical view of end of season ASI vs CERF allocation
+```{r}
+# ASI vs
 bind_rows(
 df_asi_eos,
   df_cerf_yr |>
@@ -858,8 +863,191 @@ df_asi_eos,
   labs(
     title = glue("End of Season ASI - Thresholded at {rp_compare} year RP and Historical CERF Activations")
   )
+```
+
+
+
+historical view of Feb SEAS5 prediction for MAM vs CERF allocation
+````{r}
+rp_compare <- 3
+
+df_asi_validation <- df_fao |>
+  clean_names() |>
+  mutate(
+    date= as_date(date),
+    yr_season = floor_date(date, "year")
+  ) |>
+  filter(
+    adm1_name %in% aoi_adm1,
+    year (date)<=2024,
+    month(date)==5,
+    dekad ==3,
+    parameter == "asi"
+  )
+
+df_compiled_indicators <- loaders$load_compiled_indicators(aoi_adm1 = aoi_adm1)
+
+df_seas5_mam <- df_compiled_indicators |>
+  filter(
+    parameter == "SEAS5-MAM"
+  )
+
+
+df_seas5_mam |>
+  mutate(
+    yr =year(yr_season),
+    value_flag= rp_relevant_direction>=rp_compare
+  ) |>
+  rename(
+    strata = adm1_name
+  ) |>
+  bind_rows(
+  df_cerf_yr |>
+    mutate(
+      strata = "CERF Allocations",
+      value_flag = n>0
+    )
+) |>
+  mutate(
+    value_fill = case_when(
+      value_flag==F ~ "no activations",
+      value_flag == T & strata != "CERF Allocations"~"activation",
+      value_flag == T  & strata == "CERF Allocations" & n ==1~ "1 activation",
+      value_flag == T & strata == "CERF Allocations" & n ==2~ "2 activations",
+      .default = "?"
+
+    ),
+    strata = factor(strata, c("Faryab","Sar-e-Pul","Takhar","CERF Allocations")),
+  ) |>
+  ggplot(
+    aes(x= strata, y= yr, fill = value_fill)
+  )+
+  geom_tile(color = "white") +
+  scale_fill_manual(
+    values = c("no activations"=hdx_hex("grey-medium"),
+               "activation" = hdx_hex("tomato-light"),
+               "1 activation"=hdx_hex("tomato-hdx"),
+               "2 activations"= hdx_hex("tomato-dark"))
+  )+
+  scale_y_reverse(expand= c(0,0), breaks= 1984:2024)+
+  scale_x_discrete(expand= c(0,0))+
+  theme(
+    axis.title = element_blank(),
+    legend.position = "none"
+  )+
+  labs(
+    title = glue("Feb SEAS5 Prediction of MAM - Thresholded at {rp_compare} year RP and Historical CERF Activations")
+  )
+````
+
+
+quantitative analysis: optimal RP thresholds for prediction of CERF allocation
+
+```{r}
+df_windows_flagged_adm1 <- map(1:7,\(rp_temp){
+  # rp_temp <- 2
+  df_window_b_flag <- df_asi_validation |>
+  utils$threshold_var(
+    var="value",
+    by= c("adm1_name"),
+    rp_threshold = rp_temp
+  ) |>
+    mutate(
+    yr = year(yr_season),
+    rp = rp_temp
+  ) |>
+    rename(
+      window_b_flag = value_flag
+    ) |>
+    select(yr,  rp, adm1_name, window_b_flag)
+
+  df_seas5_mam |>
+    mutate(
+      yr = year(yr_season)
+    ) |>
+    arrange(yr
+            )
+
+    df_window_a_flag <- df_seas5_mam |>
+      filter(pub_mo_label =="Feb") |>
+      mutate(
+        yr =year(yr_season),
+        window_a_flag= rp_relevant_direction>=rp_temp,
+        rp = rp_temp
+  ) |>
+      select(yr, rp, adm1_name, window_a_flag)
+
+    left_join(df_window_b_flag,df_window_a_flag, by = c("yr","adm1_name","rp"))
+}
+) |>
+  list_rbind()
+
+df_asi_cerf_joined <- df_windows_flagged_adm1 |>
+  group_by(
+    yr,rp
+  ) |>
+    # count(value_flag)
+  summarise(
+    window_a_flag =any(window_a_flag),
+    window_b_flag =any(window_b_flag)
+  ) |>
+  inner_join(
+    df_cerf_yr |>
+      mutate(
+        cerf_flag = n>0
+      )
+  )
+
+
+df_optimal_window_a <- df_asi_cerf_joined |>
+  group_by(
+    rp
+  ) |>
+  mutate(
+    across(ends_with("flag"),\(x) fct_relevel(as_factor(x), "TRUE","FALSE"))
+  ) |>
+  yardstick::f_meas(truth = window_a_flag,estimate = cerf_flag) |>
+  mutate(
+    window = "window_a"
+  )
+
+df_optimal_window_b <- df_asi_cerf_joined |>
+  group_by(
+    rp
+  ) |>
+  mutate(
+    across(ends_with("flag"),\(x) fct_relevel(as_factor(x), "TRUE","FALSE"))
+  ) |>
+  yardstick::f_meas(truth = window_b_flag,estimate = cerf_flag) |>
+  mutate(
+    window = "window_b"
+  )
+
+bind_rows(
+  df_optimal_window_a,
+  df_optimal_window_b
+) |>
+  ggplot(
+    aes(x=rp, y= .estimate, group = window,color =window)
+  )+
+  geom_line(linewidth=1.5,alpha= 0.4)+
+  geom_point(alpha = 0.4, size= 5)+
+  scale_x_continuous(breaks = 1:7)+
+  labs(
+    title = "Afghanistan AA: How well do different RP thresholds (set per admin) predict CERF allocation",
+    subtitle = "Using SEAS5 Feb publication MAM forecast for window A, and EOS ASI for window B",
+    y= "F1 Score"
+
+  )+
+  scale_color_manual(
+    values = c("window_a"= hdx_hex("tomato-light"), "window_b"= hdx_hex("mint-dark"))
+  ) +
+  theme(
+    legend.title = element_blank()
+  )
 
 ```
+
 
 
 ## Remaining Steps
