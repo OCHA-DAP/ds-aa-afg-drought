@@ -123,6 +123,7 @@ df_agg <- seas5$aggregate_forecast(
   )
 
 
+
 df_agg_formatted <- df_agg |>
   # join admin labels
   left_join(df_adm1_lookup, by = c("pcode" = "adm1_pcode")) |>
@@ -151,7 +152,16 @@ df_agg_formatted <- df_agg |>
   mutate(
     aoi = adm1_name %in% aoi_adm1
   )
-
+df_agg_formatted |>
+  filter(aoi) |>
+  group_by(iso3, adm1_name, leadtime) |>
+  summarise(
+    n= n(),
+    n_unique = length(unique(mm))
+  ) |>
+  filter(
+    n!= n_unique
+  )
 
 df_rps_latest <- df_agg_formatted |>
   group_by(
@@ -191,21 +201,39 @@ df_filtered_activation_status <- df_rps_latest |>
       )
   ) |>
   mutate(
-    rp_breach = mm<= thresh_4
+    rp_breach = mm<= thresh_4,
+    rp_breach_label = ifelse(rp_breach,"Activation","No Activation"),
+    rp_breach_label = fct_expand(as_factor(rp_breach_label),"Activation","No Activation")
   )
 
+
 df_filtered_activation_status |>
-   ggplot(
-    aes(x= adm1_name, y= mm, color = rp_breach)
+  ggplot(
+    aes(x= adm1_name, y= mm)
   ) +
-  geom_point()+
+  geom_point(
+    aes(
+      color=rp_breach_label,
+    ) , size=6, alpha=0.7,
+    show.legend = c(color=TRUE)
+  ) +
+  scale_color_manual(
+    values = c(
+      `No Activation`="#55b284ff",
+      `Activation` =hdx_hex("tomato-hdx")
+    ),
+    drop=F
+  )+
   geom_segment(
     # data= df_thresholds_plot,
     aes(x = as.numeric(factor(adm1_name)) - 0.3,
         xend = as.numeric(factor(adm1_name)) + 0.3,
         y = thresh_4,
-        yend = thresh_4), color = hdx_hex("tomato-hdx"),linetype = "dashed"
+        yend = thresh_4),
+    color = hdx_hex("tomato-hdx"),
+    linetype = "dashed"
   )+
+
   geom_text(
     aes(
       x= as.numeric(factor(adm1_name))+0.4,
@@ -223,17 +251,18 @@ df_filtered_activation_status |>
       label= scales$label_number(accuracy = 1)(mm)
 
     ),
-     color = hdx_hex("mint-hdx")
+     color ="#55b284ff"
 
   ) +
   # annotate("text", x = 10, y = max(df$y), label = "Top Right Title", hjust = 1, size = 5)+
   labs(
-    title = "Seasonal Precipitation Forecast: March-April-May",
-    subtitle = "4 year return period rainfall deficit threshold shown as red line",
-    caption = "Forecast publication: Feb 2025\nData Source: ECMWF SEAS5"
+    y= "Precipitation (mm)",
+    title = "Afghanistan Drought Monitoring: March-April-May 2025",
+    subtitle = "Forecast Published: 2025 February",
+    caption = "Horizonal red dashed line indicates trigger threshold level (4 year return period rainfall deficit)\nData Source: ECMWF SEAS5"
   )+
   theme(
-    legend.position = "none",
+    # legend.position = "none",
     legend.title = element_blank(),
     axis.title.x = element_blank(),
     strip.background  = element_rect(fill= hdx_green_classic),
