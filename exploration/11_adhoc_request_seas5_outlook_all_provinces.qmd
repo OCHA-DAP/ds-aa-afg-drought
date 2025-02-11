@@ -34,7 +34,7 @@ project:
 
 aoi_adm1 <-  c(
   "Takhar",
-  "Badakhshan",
+  # "Badakhshan",
   "Faryab",
   "Sar-e-Pul"
 )
@@ -49,8 +49,13 @@ box::use(
   gt[...],
   ggplot2[...],
   tidyr[...],
-  janitor[...]
+  janitor[...],
+  glue[...],
+  scales
          )
+
+
+RP_THRESHOLD = c(3,4,5)
 
 gghdx()
 ```
@@ -73,6 +78,25 @@ df_adm1_lookup <- df_labels |>
 ```
 
 ```{r}
+df_seas5_thresholds <- cumulus$blob_read(
+  name = "ds-aa-afg-drought/processed/vector/afg_SEAS5_thresholds.parquet",
+  stage ="dev",
+  container ="projects"
+  )
+
+df_thresholds_wide <- df_seas5_thresholds |>
+  filter(
+    rp %in% c(RP_THRESHOLD)
+  ) |>
+  pivot_wider(
+    names_from = rp,
+    values_from = rv,names_glue = "thresh_{rp}"
+  )
+
+
+```
+
+```{r}
 # connect to prod db and grab SEAS forecast of interest
 con <- cumulus$pg_con(stage ="prod")
 
@@ -90,9 +114,6 @@ df <- tbl(con, "seas5") |>
   )
 ```
 
-
-
-
 ```{r}
 
 # aggregate to MAM season
@@ -100,6 +121,7 @@ df_agg <- seas5$aggregate_forecast(
   df = df, valid_months = c(3:5),
   by = c("iso3","pcode","issued_date")
   )
+
 
 
 df_agg_formatted <- df_agg |>
@@ -130,6 +152,16 @@ df_agg_formatted <- df_agg |>
   mutate(
     aoi = adm1_name %in% aoi_adm1
   )
+df_agg_formatted |>
+  filter(aoi) |>
+  group_by(iso3, adm1_name, leadtime) |>
+  summarise(
+    n= n(),
+    n_unique = length(unique(mm))
+  ) |>
+  filter(
+    n!= n_unique
+  )
 
 df_rps_latest <- df_agg_formatted |>
   group_by(
@@ -137,18 +169,111 @@ df_rps_latest <- df_agg_formatted |>
     pcode
   ) |>
   slice_max(
-    issued_date,n=3
+    issued_date,n=4
   ) |>
     mutate(
+      # pub_date_facet = format(issued_date,"%B %Y")
       # reorder factors
     pub_date_facet = fct_relevel(
       format(issued_date,"%B %Y"),
       "November 2024",
       "December 2024",
-      "January 2025"
+      "January 2025",
+      "February 2025"
     )
     )
+
+
 ```
+
+## Simple activation status plot
+```{r}
+
+df_filtered_activation_status <- df_rps_latest |>
+  filter(issued_date=="2025-02-01",aoi) |>
+  mutate(
+    issued_month_label  = month(issued_date, abbr=T,label = T)
+  ) |>
+  left_join(
+    df_thresholds_wide |>
+      rename(
+        issued_month_label  =pub_mo
+      )
+  ) |>
+  mutate(
+    rp_breach = mm<= thresh_4,
+    rp_breach_label = ifelse(rp_breach,"Activation","No Activation"),
+    rp_breach_label = fct_expand(as_factor(rp_breach_label),"Activation","No Activation")
+  )
+
+
+df_filtered_activation_status |>
+  ggplot(
+    aes(x= adm1_name, y= mm)
+  ) +
+  geom_point(
+    aes(
+      color=rp_breach_label,
+    ) , size=6, alpha=0.7,
+    show.legend = c(color=TRUE)
+  ) +
+  scale_color_manual(
+    values = c(
+      `No Activation`="#55b284ff",
+      `Activation` =hdx_hex("tomato-hdx")
+    ),
+    drop=F
+  )+
+  geom_segment(
+    # data= df_thresholds_plot,
+    aes(x = as.numeric(factor(adm1_name)) - 0.3,
+        xend = as.numeric(factor(adm1_name)) + 0.3,
+        y = thresh_4,
+        yend = thresh_4),
+    color = hdx_hex("tomato-hdx"),
+    linetype = "dashed"
+  )+
+
+  geom_text(
+    aes(
+      x= as.numeric(factor(adm1_name))+0.4,
+      y= thresh_4,
+      label= scales$label_number(accuracy = 1)(thresh_4)
+
+    ),
+     color = hdx_hex("tomato-hdx")
+
+  ) +
+  geom_text(
+    aes(
+      x= as.numeric(factor(adm1_name))+0.1,
+      y= mm,
+      label= scales$label_number(accuracy = 1)(mm)
+
+    ),
+     color ="#55b284ff"
+
+  ) +
+  # annotate("text", x = 10, y = max(df$y), label = "Top Right Title", hjust = 1, size = 5)+
+  labs(
+    y= "Precipitation (mm)",
+    title = "Afghanistan Drought Monitoring: March-April-May 2025",
+    subtitle = "Forecast Published: 2025 February",
+    caption = "Horizonal red dashed line indicates trigger threshold level (4 year return period rainfall deficit)\nData Source: ECMWF SEAS5"
+  )+
+  theme(
+    # legend.position = "none",
+    legend.title = element_blank(),
+    axis.title.x = element_blank(),
+    strip.background  = element_rect(fill= hdx_green_classic),
+    strip.text = element_text(color = "white"),
+    panel.border = element_rect(fill = NA, color = 'grey'),
+    plot.caption = element_text(size= 12, hjust =0, margin= margin(t=20))
+  )
+```
+
+
+## Deeper look
 
 ```{r}
 df_rps_latest |>
@@ -173,6 +298,9 @@ df_rps_latest |>
   )+
   facet_wrap(
     ~pub_date_facet
+  ) +
+  geom_hline(
+    yintercept = 4
   )
 ```
 
@@ -211,6 +339,7 @@ df_rps_latest |>
 ```
 
 Some additional plots/tables
+
 ```{r}
 df_rps_latest |>
   ggplot(
@@ -261,7 +390,6 @@ df_agg_formatted |>
   facet_wrap(~adm1_name, scales="free")
 ```
 
-
 ```{r}
 df_rps_latest |>
   mutate(
@@ -287,22 +415,33 @@ df_rps_latest |>
   cols_merge(
     columns = c("mm_Jan","rp_emp_Jan"), pattern = "{1} ({2})"
   ) |>
+  cols_merge(
+    columns = c("mm_Feb","rp_emp_Feb"), pattern = "{1} ({2})"
+  ) |>
   cols_label (
+    mm_Feb = "Feb",
     mm_Jan = "Jan",
     mm_Dec = "Dec",
-    mm_Nov= "Nov"
+    mm_Nov= "Nov",
+    adm1_name= "Province"
   ) |>
   cols_hide(
     columns = c("iso3","pcode","aoi")
+  ) |>
+  tab_header(
+    title = "SEAS5 - MAM Total Rainfall Per Publication Month",subtitle = "mm (Return period)"
+  ) |>
+  tab_options(
+   heading.background.color = "#00ad78ff",
+    column_labels.background.color = hdx_hex("mint-ultra-light")
   )
+
 ```
-
-
 
 ```{r}
 df_rps_latest |>
   filter(
-    issued_date =="2025-01-01"
+    issued_date =="2025-02-01"
   ) |>
   ggplot(
     aes(x= adm1_name, y= rp_emp, color = aoi, fill = aoi)
@@ -311,5 +450,111 @@ df_rps_latest |>
   theme(
     axis.text = element_text(angle =090),
     axis.title.x = element_blank()
+  )
+```
+
+
+```{r}
+
+
+
+drought_palette <- c("#003366", "#66a3ff", "orange", "#cc0000")
+hdx_green_classic <- "#00ad78ff"
+df_thresholds_plot <- df_seas5_thresholds |>
+  filter(
+    pcode %in% df_forecasts_labelled$pcode,
+    leadtime %in% df_forecasts_labelled$leadtime,
+    rp %in% c(3,4,5)
+  ) |>
+  left_join(
+    df_forecasts_labelled |>
+      select(
+        issued_date_ord,
+        iso3, pcode, issued_date, adm1_name, pub_mo
+      )
+  ) |>
+  mutate(
+    rp_breach = glue("{rp} year RP"),
+    label_y_placement = case_when(
+      rp_breach == "3 year RP"~ rv+5,
+      rp_breach == "4 year RP"~ rv,
+      rp_breach == "5 year RP"~ rv-5
+    )
+  )
+
+df_forecasts_labelled |>
+  ggplot(
+    aes(x= adm1_name, y= mm, color = rp_breach)
+  ) +
+  geom_segment(
+    data= df_thresholds_plot,
+    aes(x = as.numeric(factor(adm1_name)) - 0.3,
+        xend = as.numeric(factor(adm1_name)) + 0.3,
+        y = rv,
+        yend = rv)
+  )+
+  geom_text(
+    data= df_thresholds_plot,
+    aes(
+      x= as.numeric(factor(adm1_name))+0.5,
+      y= label_y_placement,
+      label= scales$label_number(accuracy = 1)(rv)
+    )
+
+  )+
+  scale_color_manual(
+    values = c(
+      "1-3 year RP" = drought_palette[1],
+      "3 year RP" = drought_palette[2],
+      "4 year RP" = drought_palette[3],
+      "5 year RP" = drought_palette[4]
+      )
+  )+
+  geom_point(size=3,alpha=0.7)+
+  facet_wrap(~issued_date_ord)+
+  scale_x_discrete()+
+  scale_y_continuous(
+    limits = c(0, 300),
+    breaks = seq(0, 300, 25)
+  )+
+  labs(
+    title = "Seasonal Rainfall Forecast for March-April-May 2025 by publication date",
+    subtitle = "Afghanistan: Anticipatory Action for Drought"
+  )+
+  theme(
+    # legend.position = "none",
+    legend.title = element_blank(),
+    axis.title.x = element_blank(),
+    strip.background  = element_rect(fill= hdx_green_classic),
+    strip.text = element_text(color = "white"),
+    panel.border = element_rect(fill = NA, color = 'grey')
+  )
+
+```
+
+## eyeball check for repeated values
+
+```{r}
+df_agg |>
+    left_join(df_adm1_lookup, by = c("pcode" = "adm1_pcode")) |>
+  # grab latest publication
+  # create a column that indicates whether admin is in our AOI
+  mutate(
+    aoi = adm1_name %in% aoi_adm1,
+        pub_date_facet = fct_relevel(
+      format(issued_date,"%B"),
+      "November",
+      "December",
+      "January",
+      "February"
+    )
+  ) |>
+  filter(aoi) |>
+  ggplot(
+    aes(x= issued_date, y= mm, color = adm1_name, group=adm1_name)
+  )+
+  geom_point()+geom_line()+
+  facet_wrap(
+    ~pub_date_facet
   )
 ```
