@@ -69,7 +69,10 @@ box::use(
 
 )
 gghdx()
+```
 
+
+```{r}
 lgdf <- cumulus$download_fieldmaps_sf(iso3= "AFG",layer = list("afg_adm0","afg_adm1","afg_adm2"))
 
 df_seas5_adm2 <- seas5$load_seas5_historical_weighted(weight_set = "WT_ADM2")
