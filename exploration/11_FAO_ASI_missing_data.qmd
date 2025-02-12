@@ -1,0 +1,249 @@
+---
+title-block-banner: "#00ad78ff"
+title-block-banner-color: "#ffffff"
+title: ASI/VHI Duplicate & Missing Data
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+## Intro
+
+Noticed some issues w/ FAO ASI & VHI dekadal data.
+
+-   Source of ASI data: <https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_ASI/DATA/ASI_Dekad_Season1_data.csv>
+-   Source of VHI data: <https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_NDVI_ANOMALY/DATA/vhi_adm1_dekad_data.csv>
+
+The issues are described below.
+
+```{r}
+library(tidyverse)
+library(gt)
+
+df_asi <- readr::read_csv("https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_ASI/DATA/ASI_Dekad_Season1_data.csv")
+
+ df_vhi <-  readr::read_csv("https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_NDVI_ANOMALY/DATA/vhi_adm1_dekad_data.csv")
+
+ldf <-  list("ASI"=df_asi,"VHI" = df_vhi)
+```
+
+```{r}
+#| eval: false
+
+
+# writing out this data for safe keeping
+ldf |>
+  imap(
+    \(dft,nmt){
+
+      fname <- glue::glue("{format(Sys.Date(),'%Y%m%d')}_FAO_{nmt}_dataset_issues.csv")
+      # write to blob
+      blob_path <- glue("ds-aa-afg-drought/raw/{fname}")
+      cumulus::blob_write(
+        dft,
+        blob_path,
+        stage ="dev"
+      )
+      # write locally
+      readr::write_csv(
+        dft, glue::glue("data/{fname}")
+      )
+    }
+  )
+```
+
+### Issue 1 - Duplicates
+
+**Duplicate ASI records/values**
+
+Here we see the number of duplciates by admin
+
+```{r}
+l_tbl_num_unique <- ldf |>
+  map(\(dft){
+    dft |>
+      group_by(Province, ADM1_CODE,Date) |>
+      mutate(
+        n=n()
+      ) |>
+      group_by(Province, ADM1_CODE,n) |>
+      summarise(nn= n(),.groups="drop") |>
+      ungroup() |>
+      pivot_wider(names_from = n, values_from = nn) |>
+      gt() |>
+      gt::cols_label(
+        `1` = "Number unique",
+        `2` = "Number w/ duplicates"
+      )
+  }
+  )
+
+```
+
+ASI:
+
+```{r}
+l_tbl_num_unique$VHI
+```
+
+VHI:
+
+```{r}
+l_tbl_num_unique$ASI
+```
+
+Here is a peak at the actual duplicated data
+
+```{r}
+
+l_tbl_dup_data <- ldf |>
+  map(\(dft){
+    dft |>
+  group_by(Province, ADM1_CODE,Date) |>
+  mutate(
+    n=n()
+  ) |>
+  arrange(
+    Province, ADM1_CODE,Date
+  ) |>
+  filter(n>1) |>
+  ungroup() |>
+  gt()
+  }
+  )
+```
+
+ASI:
+
+```{r}
+l_tbl_dup_data$ASI
+```
+
+VHI:
+
+```{r}
+l_tbl_dup_data$VHI
+```
+
+### Issue 2 - Missing Data
+
+missing data for admins. Here we will just look at few admins to simplify the problem.
+
+```{r}
+
+AOI <- c("Faryab","Sar-e-Pul","Takhar","Badakhshan")
+
+
+ldf_missing_data <- ldf |>
+  map(
+    \(dft){
+      dft |>
+  filter(
+    Province %in% AOI
+  ) |>
+        # remove duplicate data to isolate this new issue
+  group_by(Province, ADM1_CODE,Date,Data) |>
+  slice(1) |>
+  select(Province,ADM1_CODE, Date, Dekad, Data) |>
+  pivot_wider(
+    id_cols = c("Date", "Dekad"),
+    names_from = "Province",
+    values_from = "Data"
+  ) |>
+  filter(
+    if_any(.cols = c(Faryab, `Sar-e-Pul`, Takhar, Badakhshan), ~is.na(.x))
+  )
+    }
+  )
+
+
+```
+
+Missing values per admin and month
+
+```{r}
+ldf_missing_by_month <- ldf_missing_data |>
+  map(
+
+    \(dft){
+      dft |>
+  mutate(
+    mo = month(Date,label = T, abbr= T)
+  ) |>
+  group_by(
+    mo
+  ) |>
+  summarise(
+    across(
+      .cols = c(Faryab, `Sar-e-Pul`, Takhar, Badakhshan),
+      .fns = ~sum(is.na(.x))
+  )
+  )
+    }
+  )
+```
+
+ASI
+
+```{r}
+gt(ldf_missing_by_month$ASI)
+
+```
+
+VHI
+
+```{r}
+gt(ldf_missing_by_month$VHI)
+```
+
+Missing values per year
+
+```{r}
+l_tbl_missing_by_yr <- ldf_missing_data |>
+  map(\(dft){
+    dft |>
+  mutate(
+    yr = year(Date)
+  ) |>
+  group_by(
+    yr
+  ) |>
+  summarise(
+    across(
+      .cols = c(Faryab, `Sar-e-Pul`, Takhar, Badakhshan),
+      .fns = ~sum(is.na(.x))
+  )
+  ) |> gt()
+  }
+  )
+
+```
+
+ASI
+
+```{r}
+l_tbl_missing_by_yr$ASI
+```
+
+VHI
+
+```{r}
+l_tbl_missing_by_yr$VHI
+```
