@@ -1,0 +1,254 @@
+---
+title-block-banner: "#00ad78ff"
+title-block-banner-color: "#ffffff"
+title: Exploratory - AFG Drought Framework - Faryab
+subtitle: Snow Melt Date vs Agricultural Stress Index (ASI)
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+## Overview
+
+-   Looking at snow indicator: first date of no snow. As computed [here](https://code.earthengine.google.com/90458b47d36c4bbd3d5221088fc652e0).
+-   Ran the analysis for Faryab Province in Afghanistan.
+-   There seems to be some relation, but a bit noisy.
+
+```{r}
+box::use(
+  dplyr[...],
+  readr[...],
+  ggplot2[...],
+  janitor[...],
+  lubridate[...],
+  glue[...],
+  gghdx[...],
+  ggiraph[...],
+  ../R/blob_connect,
+  ../R/utils
+)
+gghdx()
+```
+
+
+
+```{r}
+aoi_adm1 <- c("Takhar",
+"Badakhshan",
+"Badghis",
+"Faryab",
+"Sar-e-Pul" )
+
+df_asi <-
+  read_csv("https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_ASI/DATA/ASI_Dekad_Season1_data.csv") |>
+  clean_names() |>
+  mutate(
+    adm1_name = province
+  ) |>
+  filter(adm1_name %in% aoi_adm1)
+
+
+
+
+
+
+
+# from GEE - can link the script or put it in repo directly
+df_snow_doy <- read_csv("../data/modis_first_day_no_snow.csv")
+df_snow_doy2 <- read_csv("../data/modis_first_day_no_snow_2010_mask.csv") |>
+  clean_names()
+
+
+df_snow_doy2_j <- df_snow_doy2 |>
+  mutate(
+    year = year(date)
+  ) |>
+  select(date, year,adm1_name,value) |>
+  left_join(
+    df_snow_doy |>
+      mutate(
+        adm1_name ="Faryab"
+      ) |>
+      rename(
+        value_prev = "calDoy"
+      )
+  )
+
+df_snow_doy2_j |>
+  filter(!is.na(value_prev)) |>
+  ggplot(aes(x= value,y= value_prev))+
+  geom_point()
+
+
+
+
+
+df_snow_asi <- df_snow_doy |>
+  mutate(
+    date = as_date("2023-01-01")+ days(as.integer(calDoy))
+  ) |>
+  left_join(
+    df_asi |>
+      filter(
+        month =="06",
+        dekad ==3
+      ) |>
+      rename(
+        asi_june = data
+      ) |>
+      select(year, asi_june)
+  )  |>
+  left_join(
+     df_asi |>
+      filter(
+        month =="05",
+        dekad ==3
+      ) |>
+      rename(
+        asi_may = data
+      ) |>
+      select(year, asi_may)
+  )
+
+df_snow_asi2 <- df_snow_doy2 |>
+  select(yr_date=date, adm1_name, value) |>
+  mutate(
+    year = year(yr_date),
+
+    date = as_date("2023-01-01")+ days(as.integer(value))
+  ) |>
+  left_join(
+    df_asi |>
+      filter(
+        month =="06",
+        dekad ==3
+      ) |>
+      rename(
+        asi_june = data
+      ) |>
+      select(year,adm1_name, asi_june)
+  )  |>
+  left_join(
+     df_asi |>
+      filter(
+        month =="05",
+        dekad ==3
+      ) |>
+      rename(
+        asi_may = data
+      ) |>
+      select(year, adm1_name,asi_may)
+  )
+
+
+
+ df_snow_asi2|>
+  filter(
+    adm1_name =="Faryab"
+  ) |>
+  ggplot(aes(x= value, asi_june))+
+  geom_point()+
+  geom_text(aes(label = year))
+
+
+
+```
+
+## Last Date Snow Vs end of June ASI
+
+```{r}
+#| fig.height: 9
+
+df_snow_asi <- df_snow_asi |>
+  mutate(
+    label= glue(
+      "year: {year}
+      snow melted: {format(date,'%d %b')}")
+  )
+
+df_snow_asi |>
+  ggplot(
+    aes(x= date, y= asi_june)
+  )+
+  geom_point()+
+    geom_vline(
+    xintercept = c(50,85)
+  ) |>
+  labs(
+    x= "Approximate day of snow melt",
+    y= "ASI end of June"
+  )+
+    geom_vline(
+    xintercept = as_date(c("2023-04-01","2023-02-15"))
+  )+
+  geom_text(
+    data=df_snow_asi|>
+        filter(asi_june>20),
+    aes(
+      label = label
+        ),
+    nudge_x = 3
+  )
+
+```
+
+## Last Date Snow Vs end of June ASI
+
+```{r}
+#| fig.height: 9
+
+df_snow_asi |>
+  ggplot(
+    aes(x= date, y= asi_may)
+  )+
+  geom_point()+
+  labs(
+    x= "Approximate day of snow melt",
+    y= "ASI end of May"
+  )+
+  geom_vline(
+    xintercept = as_date(c("2023-04-01","2023-02-15"))
+  )+
+      geom_vline(
+    xintercept = as_date(c("2023-04-01","2023-02-15"))
+  )+
+  geom_text(
+    data=df_snow_asi|>
+        filter(asi_june>20),
+    aes(
+      label = label
+        ),nudge_x = 3
+  )
+```
+
+## May ASI vs June ASI
+
+End of May ASI is a good predictor of end of June ASI
+
+```{r}
+df_snow_asi |>
+  ggplot(
+    aes(x= asi_may, y= asi_june)
+  )+
+  geom_point()
+
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).

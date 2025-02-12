@@ -1,0 +1,554 @@
+---
+title-block-banner: "#00ad78ff"
+title-block-banner-color: "#ffffff"
+title: Exploratory - AFG SEAS5
+subtitle: Current Predictions & Trigger Likelihoods
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+## Intro
+
+Work to support AFG AA Framework discussions. In particular we are looking at the SEAS5 ECMWF Forecast.
+
+More framework details:
+
+-   AOI: Faryab Province
+-   Data source: ECMWF SEAS5
+-   Season of interest: 2025 Spring Wheat - March - April - May (M-A-M)
+
+The time frame of interest is 2025 . At the time of writing we have a The October 2024 Seasonal forecast which runs through April. Therefore we want to better understand how well the the October M-A forecast precedes drought predictions for M-A-M that come November-March.
+
+```{r}
+SEASON_OF_INTEREST <- c(3,4,5)
+LATEST_SEASON_PREDICTABLE <-  c(3,4)
+
+box::use(
+  ../R/blob_connect,
+  ../R/utils[download_fieldmaps_sf]
+)
+
+box::use(
+  dplyr[...],
+  forcats[...],
+  ggplot2[...],
+  gt[...],
+  gghdx,
+  DBI,
+  RPostgres,
+  janitor[clean_names],
+  lubridate[...],
+  purrr,
+  readr,
+  scales,
+  stats,
+  stringr,
+  tidyr[...]
+)
+gghdx$gghdx()
+
+gdf <- download_fieldmaps_sf("AFG","afg_adm1")
+gdf <- gdf |>
+  clean_names()
+
+
+con <- DBI$dbConnect(
+  drv = RPostgres$Postgres(),
+  user = Sys.getenv("AZURE_DB_USER_ADMIN"),
+  host = Sys.getenv("AZURE_PROD_DB_HOST"),
+  password = Sys.getenv("AZURE_PROD_DB_PW"),
+  port = 5432,
+  dbname = "postgres"
+)
+DBI$dbListTables(con)
+
+db_faryab <- tbl(con, "seas5") |>
+  filter(
+    iso3 == "AFG",
+    adm_level ==1,
+    pcode == "AF29"
+  ) |>
+  collect() |>
+  mutate(
+    precipitation = mean *days_in_month(valid_date)
+  )
+
+db_faryab_filt <- db_faryab |>
+  filter(
+    issued_date>= "1981-06-01"
+  )
+
+
+```
+
+```{r}
+
+aggregate_forecast <-  function(df,valid_months){
+  df |>
+     group_by(issued_date) %>%
+    filter(
+      # all(valid_months %in% month(valid_date))&
+      month(valid_date) %in% valid_months,
+      all(valid_months %in% month(valid_date))
+
+    ) |>
+    summarise(
+      mm = sum(precipitation),
+      # **min() - BECAUSE**  for MJJA (5,6,7,8) at each pub_date we have a set of leadtimes
+      # for EXAMPLE in March we have the following leadtimes 2
+      # 2 : March + 2 = May,
+      # 3 : March + 3 = June,
+      # 4 : March + 4 = July
+      # 5:  March + 5 = Aug
+      # Therefore when we sum those leadtime precip values we take min() of lt integer so we get the leadtime to first month being aggregated
+      leadtime = min(leadtime),
+      .groups = "drop"
+    ) |>
+    arrange(issued_date)
+}
+
+df_mam <- aggregate_forecast(db_faryab_filt,valid_months = SEASON_OF_INTEREST)
+
+df_ma <-  aggregate_forecast(db_faryab_filt, valid_months = LATEST_SEASON_PREDICTABLE)
+```
+
+## Current MA predictions
+
+```{r}
+#| fig.height: 10
+
+# this was originally done before Nov forecast was available, so we used October preds of MA
+# The chunk below was added later (Nov 5) when the Nov forecast was available
+
+df_ma_oct <- df_ma |>
+  filter(
+    month(issued_date)==10
+  ) |>
+  mutate(
+    latest_forecast = year(issued_date)==2024
+  )
+
+df_ma_oct_rp <- df_ma_oct |>
+  arrange(mm) |>
+  mutate(
+    rank = row_number(),
+    q_rank = rank/(nrow(df_ma_oct)+1),
+    rp_emp = 1/q_rank,
+
+  )
+
+# rp_func = approxfun(df_ma_oct_rp$mm, df_ma_oct_rp$rp_emp, rule=2)
+rp_func = approxfun( df_ma_oct_rp$rp_emp, df_ma_oct_rp$mm,rule=2)
+rps <- c(3,5,10)
+rvs <- rp_func(rps)
+rps_label = paste0(rps,"-year return period: ", round(rvs,0))
+
+
+df_ma_oct |>
+  ggplot(
+    aes(x=as_factor(1), y= mm, color = latest_forecast, size = latest_forecast)
+  )+
+  geom_jitter(width = 0.1, alpha=0.5)+
+  geom_hline(
+    yintercept = rvs
+  )+
+  annotate("text", y= rvs+1, x=0.8, label = rps_label)+
+  geom_text(
+    data= df_ma_oct |> filter(latest_forecast),
+    aes(
+      x= 1.1,
+      y= mm+1,
+      label = paste0("Current prediction: ", round(mm,1))
+    ),
+    size= 3
+  )+
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none"
+  )+
+  labs(
+    title = "Faryab, Afghanistan: October predictions for March-April",
+    subtitle = "Rainfall deficit severity as compared to previous predictions"
+  )
+```
+
+```{r}
+#| fig.height: 10
+
+df_mam_nov <- df_mam |>
+  filter(
+    month(issued_date)==11
+  ) |>
+  mutate(
+    latest_forecast = year(issued_date)==2024
+  )
+
+df_mam_nov_rp <- df_mam_nov |>
+  arrange(mm) |>
+  mutate(
+    rank = row_number(),
+    q_rank = rank/(nrow(df_mam_nov)+1),
+    rp_emp = 1/q_rank,
+
+  )
+
+# rp_func = approxfun(df_ma_oct_rp$mm, df_ma_oct_rp$rp_emp, rule=2)
+rp_func = approxfun( df_mam_nov_rp$rp_emp, df_mam_nov_rp$mm,rule=2)
+rps <- c(3,5,10)
+rvs <- rp_func(rps)
+rps_label = paste0(rps,"-year return period: ", round(rvs,0))
+
+
+df_mam_nov |>
+  ggplot(
+    aes(x=as_factor(1), y= mm, color = latest_forecast, size = latest_forecast)
+  )+
+  geom_jitter(width = 0.1, alpha=0.5)+
+  geom_hline(
+    yintercept = rvs
+  )+
+  annotate("text", y= rvs+1, x=0.8, label = rps_label)+
+  geom_text(
+    data= df_mam_nov |> filter(latest_forecast),
+    aes(
+      x= 1.1,
+      y= mm+1,
+      label = paste0("Current prediction: ", round(mm,1))
+    ),
+    size= 3
+  )+
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none"
+  )+
+  labs(
+    title = "Faryab, Afghanistan: November predictions for March-April-May",
+    subtitle = "Rainfall deficit severity as compared to previous predictions"
+  )
+```
+
+## Implication of current forecast
+
+Given the current M-A forecast what would be the likelihood to trigger framework based on M-A-M predictions and 3 year RP threshold at each lead time?
+
+To answer this we look at the current October M-A rainfall prediction of \~104.2 mm. We look across all 40+ years of predictions and identify all years that had an October M-A rainfall prediction of 104.2 mm or less and then analyze how often that aligned with 3 year RP breach in for M-A-M from Nov-March predictions. x In this problem construction we are particularly interested in the precision metric. This is because we are using the current years prediction as a `TRUE` prediction of drought.
+
+```{r}
+ma_prediction <- df_ma_oct |>
+  filter(latest_forecast) |>
+  pull(mm)
+
+
+bad_pred_years <- df_ma_oct |>
+  mutate(
+    valid_date = issued_date+months(leadtime),
+    lte_current_ma = mm<=ma_prediction,
+    yr_valid = floor_date(valid_date, "year")
+  )
+
+
+df_mam_and_oct_pred <- df_mam |>
+  group_by(leadtime) |>
+  arrange(leadtime,mm) |>
+   mutate(
+     valid_date = issued_date +months(leadtime),
+     yr_valid = floor_date(valid_date, "year"),
+     n=n(),
+    rank = row_number(),
+    q_rank = rank/(n()+1),
+    rp_emp = 1/q_rank,
+  ) |>
+  mutate(
+    rp_gte_3 = rp_emp>=3
+  ) |>
+  # ggplot(
+  #   aes(x= as_factor(1),y = mm, color = rp_gte_3)
+  # )+
+  # geom_jitter()+
+  # facet_wrap(~leadtime)
+  left_join(
+    bad_pred_years |>
+      rename(
+        oct_pred_mm = mm
+      ) |>
+      select(-c("leadtime","issued_date")),
+    by = "yr_valid"
+  ) |>
+  mutate(
+    TP = lte_current_ma & rp_gte_3,
+    FP = lte_current_ma & !rp_gte_3,
+    TN =!lte_current_ma &!rp_gte_3,
+    FN =!lte_current_ma & rp_gte_3
+  )
+
+
+
+df_confusion_lt <- df_mam_and_oct_pred |>
+  group_by(leadtime) |>
+  summarise(
+    TP = mean(TP),
+    FP = mean(FP),
+    TN = mean(TN),
+    FN = mean(FN)
+  ) |>
+  mutate(
+    precision = TP/(TP+FP),
+    recall = TP/(TP+FN),
+    f1 = 2*precision*recall/(precision+recall)
+  )
+
+
+df_mam_any_and_oct_pred <- df_mam |>
+  group_by(leadtime) |>
+  arrange(leadtime,mm) |>
+   mutate(
+     valid_date = issued_date +months(leadtime),
+     yr_valid = floor_date(valid_date, "year"),
+     n=n(),
+    rank = row_number(),
+    q_rank = rank/(n()+1),
+    rp_emp = 1/q_rank,
+  ) |>
+  group_by(yr_valid) |>
+  summarise(
+    rp_gte_3 = any(rp_emp>=3)
+  ) |>
+  # ggplot(
+  #   aes(x= as_factor(1),y = mm, color = rp_gte_3)
+  # )+
+  # geom_jitter()+
+  # facet_wrap(~leadtime)
+  left_join(
+    bad_pred_years |>
+      rename(
+        oct_pred_mm = mm
+      ) |>
+      select(-c("leadtime","issued_date")),
+    by = "yr_valid"
+  ) |>
+  mutate(
+    TP = lte_current_ma & rp_gte_3,
+    FP = lte_current_ma & !rp_gte_3,
+    TN =!lte_current_ma &!rp_gte_3,
+    FN =!lte_current_ma & rp_gte_3
+  )
+
+
+df_confusion_any <- df_mam_any_and_oct_pred |>
+    summarise(
+    TP = mean(TP),
+    FP = mean(FP),
+    TN = mean(TN),
+    FN = mean(FN)
+  ) |>
+  mutate(
+    precision = TP/(TP+FP),
+    recall = TP/(TP+FN),
+    f1 = 2*precision*recall/(precision+recall)
+  )
+
+```
+
+```{r}
+df_confusion_any |>
+  pivot_longer(everything(),names_to = "metric") |>
+  gt() |>
+  fmt_percent(column = "value",decimals = 1) |>
+  tab_options(column_labels.background.color = "#00ad78ff")
+```
+
+```{r}
+mam_prediction <- df_mam_nov |>
+  filter(latest_forecast) |>
+  pull(mm)
+
+
+bad_pred_years <- df_mam_nov |>
+  mutate(
+    valid_date = issued_date+months(leadtime),
+    lte_current_ma = mm<=mam_prediction,
+    yr_valid = floor_date(valid_date, "year")
+  )
+
+
+df_mam_and_nov_pred <- df_mam_nov |>
+  group_by(leadtime) |>
+  arrange(leadtime,mm) |>
+   mutate(
+     valid_date = issued_date +months(leadtime),
+     yr_valid = floor_date(valid_date, "year"),
+     n=n(),
+    rank = row_number(),
+    q_rank = rank/(n()+1),
+    rp_emp = 1/q_rank,
+  ) |>
+  mutate(
+    rp_gte_3 = rp_emp>=3
+  ) |>
+  # ggplot(
+  #   aes(x= as_factor(1),y = mm, color = rp_gte_3)
+  # )+
+  # geom_jitter()+
+  # facet_wrap(~leadtime)
+  left_join(
+    bad_pred_years |>
+      rename(
+        nov_pred_mm = mm
+      ) |>
+      select(-c("leadtime","issued_date")),
+    by = "yr_valid"
+  ) |>
+  mutate(
+    TP = lte_current_ma & rp_gte_3,
+    FP = lte_current_ma & !rp_gte_3,
+    TN =!lte_current_ma &!rp_gte_3,
+    FN =!lte_current_ma & rp_gte_3
+  )
+
+
+
+df_confusion_lt <- df_mam_and_nov_pred |>
+  group_by(leadtime) |>
+  summarise(
+    TP = mean(TP),
+    FP = mean(FP),
+    TN = mean(TN),
+    FN = mean(FN)
+  ) |>
+  mutate(
+    precision = TP/(TP+FP),
+    recall = TP/(TP+FN),
+    f1 = 2*precision*recall/(precision+recall)
+  )
+
+
+df_mam_any_and_nov_pred <- df_mam_and_nov_pred |>
+  group_by(leadtime) |>
+  arrange(leadtime,mm) |>
+   mutate(
+     valid_date = issued_date +months(leadtime),
+     yr_valid = floor_date(valid_date, "year"),
+     n=n(),
+    rank = row_number(),
+    q_rank = rank/(n()+1),
+    rp_emp = 1/q_rank,
+  ) |>
+  group_by(yr_valid) |>
+  summarise(
+    rp_gte_3 = any(rp_emp>=3)
+  ) |>
+  # ggplot(
+  #   aes(x= as_factor(1),y = mm, color = rp_gte_3)
+  # )+
+  # geom_jitter()+
+  # facet_wrap(~leadtime)
+  left_join(
+    bad_pred_years |>
+      rename(
+        oct_pred_mm = mm
+      ) |>
+      select(-c("leadtime","issued_date")),
+    by = "yr_valid"
+  ) |>
+  mutate(
+    TP = lte_current_ma & rp_gte_3,
+    FP = lte_current_ma & !rp_gte_3,
+    TN =!lte_current_ma &!rp_gte_3,
+    FN =!lte_current_ma & rp_gte_3
+  )
+
+
+df_confusion_any <- df_mam_any_and_nov_pred |>
+    summarise(
+    TP = mean(TP),
+    FP = mean(FP),
+    TN = mean(TN),
+    FN = mean(FN)
+  ) |>
+  mutate(
+    precision = TP/(TP+FP),
+    recall = TP/(TP+FN),
+    f1 = 2*precision*recall/(precision+recall)
+  )
+
+```
+
+```{r}
+# wow precision of 100%.
+df_confusion_any |>
+  pivot_longer(everything(),names_to = "metric") |>
+  gt() |>
+  fmt_percent(column = "value",decimals = 1) |>
+  tab_options(column_labels.background.color = "#00ad78ff")
+```
+
+## Calculate some empirical Joint RPs
+
+```{r}
+# if we set threshold to 3 year RP RV for both Jan & Feb we end up w/ an empirical
+# RP of about 2.53
+
+df_rp3_thresholds <- df_mam |>
+  filter(
+    year(issued_date)!= 2024
+  ) |>
+    group_by(leadtime) |>
+  arrange(leadtime,mm) |>
+   mutate(
+     valid_date = issued_date +months(leadtime),
+     yr_valid = floor_date(valid_date, "year"),
+     n=n(),
+    rank = row_number(),
+    q_rank = rank/(n()+1),
+    rp_emp = 1/q_rank,
+  ) |>
+  summarise(
+    rp_func = list(approxfun(rp_emp, mm, rule=2)),
+    rv_3 = map_dbl(3,rp_func)
+  )
+
+df_mam |>
+  left_join(
+    df_rp3_thresholds |> select(-rp_func)
+  ) |>
+  mutate(
+    flag = mm<= rv_3
+  ) |>
+  mutate(
+    issued_year = floor_date(issued_date, "year")
+  ) |>
+  filter(
+    leadtime %in% c(1,2)
+  ) |>
+  group_by(issued_year) |>
+  summarise(
+    flag = any(flag)
+  ) |>
+  summarise(
+    mean = mean(flag),
+    rp = 1/mean
+  )
+
+
+
+```
