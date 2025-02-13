@@ -24,6 +24,7 @@ project:
 ---
 
 ## Intro
+
 ```{r}
 
 aoi_adm1 <- c(
@@ -61,7 +62,6 @@ library(vip)
 gghdx()
 ```
 
-
 ```{r}
 
 label_parameters <- function(df){
@@ -83,6 +83,7 @@ label_parameters <- function(df){
       str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
       str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
       str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
+      str_detect(parameter,"mam_mixed_seas_observed")~"Mixed forecast & obs -MAM",
       .default = parameter
     )
     )
@@ -102,6 +103,20 @@ df_indicators_flagged <- df_compiled_indicators |>
   mutate(
     flag = rp_relevant_direction>=3
   )
+# df_indicators_flagged <- df_compiled_indicators_w_mixed |>
+#   mutate(
+#     flag = rp_relevant_direction>=3
+#   )
+
+df_indicators_flagged |>
+  filter(
+    parameter == "mam_mixed_seas_observed"
+  )
+df_indicators_flagged |>
+  filter(is.na(pub_mo_label
+               ))
+
+
 
 # get validation set flagged w/ RP breaches
 df_valid_flag <-
@@ -122,8 +137,17 @@ df_valid_flag |>
   arrange(
     adm1_name,yr_season
   ) |>
-  print(n=100)
 
+  print(n=100)
+# df_indicators_flagged |>
+#   filter(
+#     str_detect(parameter,"^mam")
+#   ) |>
+#   left_join(
+#     df_valid_flag,
+#     by = c("yr_season","adm1_name")
+#   ) |>
+#   glimpse()
 
 df_env_compare <- df_indicators_flagged |>
   left_join(
@@ -163,7 +187,9 @@ df_perf_metrics <- df_env_compare |>
     FN = !flag & valid_flag
   ) |>
   group_by(
-    adm1_name, pub_mo_label = month(pub_mo_date,label=T,abbr=T),parameter
+    adm1_name,
+    pub_mo_label =month(pub_mo_date,label=T,abbr=T),
+    parameter
   ) |>
   summarise(
     precision = sum(TP)/(sum(TP)+sum(FP)),
@@ -177,30 +203,31 @@ df_perf_metrics <- df_env_compare |>
     f1 = ifelse(precision==0&recall==0,0,f1),
     rank_correct= dense_rank(accuracy)
   ) |>
-    mutate(
-    parameter_simplified = case_when(
-      # str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
-      str_detect(parameter,"NDSI")~"NDSI",
-      str_detect(parameter,"asi")~"ASI",
-      str_detect(parameter,"vhi")~"VHI",
-
-      str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
-      str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
-      str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
-      str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
-      str_detect(parameter,"era5_land_temperature_2m")~"Temp (ERA)",
-      str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
-      str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
-      str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
-      str_detect(parameter,"cumu_era5_land_temperature_2m")~"Temp cumu (ERA5)",
-
-      str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
-      str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
-      str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
-      .default = parameter
-    )
-  ) |>
-  ungroup()
+  label_parameters()
+  #   mutate(
+  #   parameter_simplified = case_when(
+  #     # str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
+  #     str_detect(parameter,"NDSI")~"NDSI",
+  #     str_detect(parameter,"asi")~"ASI",
+  #     str_detect(parameter,"vhi")~"VHI",
+  #
+  #     str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
+  #     str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
+  #     str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
+  #     str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
+  #     str_detect(parameter,"era5_land_temperature_2m")~"Temp (ERA)",
+  #     str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
+  #     str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
+  #     str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
+  #     str_detect(parameter,"cumu_era5_land_temperature_2m")~"Temp cumu (ERA5)",
+  #
+  #     str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
+  #     str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
+  #     str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
+  #     .default = parameter
+  #   )
+  # ) |>
+  # ungroup()
 
 ```
 
@@ -836,6 +863,49 @@ p_ts_f1 <- df_metrics_top3 |>
 
 
 ggplot(
+  df_metrics_filt |>
+    filter(
+    parameter!="mam_mixed_seas_observed"
+  ),
+  aes(
+    x= pub_mo_label, y= f1
+  )
+)+
+  geom_point(
+    alpha=0.5,
+    color = "darkgrey"
+  )+
+
+  geom_point(
+    data= df_top_metrics_label |>
+      filter(parameter!="mam_mixed_seas_observed"),
+    aes(color =parameter_label)
+  )+
+  geom_label_repel(
+    data =  df_top_metrics_label |> filter(parameter != "mam_mixed_seas_observed") ,
+    aes(
+      label = parameter_label,
+      fill = parameter_label
+    ),
+    alpha=0.5,
+    max.overlaps = 20,
+    color = "black"
+    )+
+  # scale_fill_brewer(palette = "Set3")+
+  scale_fill_manual(values = c25) +
+  scale_color_manual(values = c25)+
+  labs(
+    x = "Activation moment/ publication month",
+    title = "Predictiveness of Indicators by Province and Trigger Timing (F1 Score)",
+    subtitle = "Only Top 3 Indicators Labelled Per Publication Month and Province"
+  )+
+  facet_wrap(~adm1_name,ncol=1)+
+  theme(
+    panel.grid.major.x = element_line(color = "black"),
+    legend.position = "none"
+
+  )
+ggplot(
   df_metrics_filt,
   aes(
     x= pub_mo_label, y= f1
@@ -848,14 +918,15 @@ ggplot(
 
   geom_point(
     data= df_top_metrics_label,
-    aes(color =parameter_simplified)
+    aes(color =parameter_label)
   )+
   geom_label_repel(
     data =  df_top_metrics_label ,
     aes(
-      label = parameter_simplified,
-      fill = parameter_simplified
+      label = parameter_label,
+      fill = parameter_label
     ),
+    alpha=0.5,
     max.overlaps = 20,
     color = "black"
     )+
@@ -863,7 +934,7 @@ ggplot(
   scale_fill_manual(values = c25) +
   scale_color_manual(values = c25)+
   labs(
-    # title = "F1 Scores: How well do indicators predict worst end of season ASI values",
+    x = "Activation moment/ publication month",
     title = "Predictiveness of Indicators by Province and Trigger Timing (F1 Score)",
     subtitle = "Only Top 3 Indicators Labelled Per Publication Month and Province"
   )+
@@ -891,8 +962,8 @@ p_ts_f1 +
 
 ## Appendix
 
-
 one off snow checks
+
 ```{r}
 #| eval: false
 
@@ -1011,7 +1082,6 @@ df_era5_land_rps_wide |>
 #   ggplot(aes(x= )
 ```
 
-
 ```{r}
 #| eval: false
 
@@ -1040,6 +1110,7 @@ df_metrics_simple |>
   )
 
 ```
+
 ### Point System
 
 Point system - you need 4 points

@@ -363,6 +363,8 @@ load_era5_land_multiband <- function(){
     dplyr$mutate(
       parameter = paste0("era5_land_",parameter)
     )
+
+  # downloaded these at later point
   df_era5_land_main_extra <- cumulus$blob_read(
     name = bps$DF_ADM1_ERA5_LAND_PRECIP_TEMP,
     stage= "dev"
