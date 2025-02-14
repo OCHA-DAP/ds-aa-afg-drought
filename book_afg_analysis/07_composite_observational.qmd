@@ -93,28 +93,9 @@ box::use(
   cumulus
 )
 
-# library(tidymodels)
-# library(usemodels) # cool package for writing tidymodels boilerplate
-# library(vip)
-# not using box as it doesn't play nice w/ meta pacakges like `{tidymodels}`
-# library(tidyverse)
-# library(cumulus)
-# library(gt)
-# library(gghdx)
-# library(glue)
-# library(janitor)
-# library(ggiraph)
-# library(ggh4x)
-# library(ggrepel)
-# library(sf)
 gghdx()
 
 
-df_compiled_indicators <- cumulus$blob_read(,
-  container = "projects",
-  name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators_v2.parquet"
-)
-# df_compiled_indicators <- loaders$load_compiled_indicators(aoi_adm1 = aoi_adm1)
 ```
 
 
@@ -123,7 +104,10 @@ df_compiled_indicators <- cumulus$blob_read(,
 Based on the above let's select some indicators and make a weighting
 
 ```{r}
-
+df_compiled_indicators <- cumulus$blob_read(,
+  container = "projects",
+  name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators_v2.parquet"
+)
 
 df_env_model <-
   df_compiled_indicators |>
@@ -488,7 +472,7 @@ plot_optimal_compositions <-  function(df, label_plot = F, pal){
       pub_mo_label,adm1_name,wt_set,avg_estimate,.estimate
     ) |>
     unnest(wt_set) |>
-    label_parameters() |>
+    utils$label_parameters() |>
     mutate(
       p_label = glue(
       "id: {wt_id}
@@ -583,7 +567,7 @@ plot_low_var_optimal <-  function(df,
       id = dense_rank(wt_id)
     ) |>
     ungroup() |>
-    label_parameters()
+    utils$label_parameters()
 
   p <- dfp |>
     distinct() |>
@@ -1426,7 +1410,7 @@ ldf_top_weights_nested <-  map2(l_top_wt_sets_per_mo,l_weight_combos,
            # by = "wt_id"
            # wt_id %in% df_top$wt_id
          )
-         # label_parameters()
+         # utils$label_parameters()
      }
  )
 
@@ -1443,7 +1427,7 @@ lp_optimal_weight_composition <- map(ldf_best_metrics_overall,
            pub_mo_label,adm1_name,wt_set,avg_estimate,.estimate
          ) |>
          unnest(wt_set) |>
-         label_parameters()
+         utils$label_parameters()
 
        dft |>
          group_by(pub_mo_label, adm1_name) |>
@@ -1540,7 +1524,7 @@ dft_low_sd_f1 <- ldf_best_metrics_overall$gte2000 |>
     id = dense_rank(wt_id)
   ) |>
   ungroup() |>
-  label_parameters()
+  utils$label_parameters()
 
 dft_low_sd_f1 |>
   distinct() |>

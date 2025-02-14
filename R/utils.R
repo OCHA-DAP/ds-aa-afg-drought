@@ -9,6 +9,8 @@ box::use(
 )
 
 
+
+
 #' return_period empirical
 #'
 #' @param x
@@ -299,4 +301,31 @@ proj_palettes <-  function(){
                         "Neutral" ="#CCEBC5"
     )
   )
+}
+
+
+#' @export
+label_parameters <- function(df){
+  df |>
+    dplyr$mutate(
+      parameter_label = dplyr$case_when(
+        stringr$str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
+        stringr$str_detect(parameter,"NDSI")~"NDSI",
+        stringr$str_detect(parameter,"asi")~"ASI",
+        stringr$str_detect(parameter,"vhi")~"VHI",
+        stringr$str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
+        stringr$str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
+        stringr$str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
+        stringr$str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
+        stringr$str_detect(parameter,"mean_2m_air_temperature")~"Temp (ERA)",
+        stringr$str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
+        stringr$str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
+        stringr$str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
+        stringr$str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
+        stringr$str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
+        stringr$str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
+        stringr$str_detect(parameter,"mam_mixed_seas_observed")~"Mixed forecast & obs -MAM",
+        .default = parameter
+      )
+    )
 }

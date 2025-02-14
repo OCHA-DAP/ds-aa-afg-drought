@@ -64,35 +64,7 @@ box::use(
 gghdx()
 ```
 
-```{r}
 
-label_parameters <- function(df){
-  df |>
-    mutate(
-     parameter_label = case_when(
-      str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
-      str_detect(parameter,"NDSI")~"NDSI",
-      str_detect(parameter,"asi")~"ASI",
-      str_detect(parameter,"vhi")~"VHI",
-      str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
-      str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
-      str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
-      str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
-      str_detect(parameter,"mean_2m_air_temperature")~"Temp (ERA)",
-      str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
-      str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
-      str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
-      str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
-      str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
-      str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
-      str_detect(parameter,"mam_mixed_seas_observed")~"Mixed forecast & obs -MAM",
-      .default = parameter
-    )
-    )
-}
-
-
-```
 
 ```{r}
 
@@ -176,7 +148,7 @@ df_perf_metrics <- df_env_compare |>
     f1 = ifelse(precision==0&recall==0,0,f1),
     rank_correct= dense_rank(accuracy)
   ) |>
-  label_parameters()
+  utils$label_parameters()
 
 
 ```
@@ -699,7 +671,7 @@ df_metrics_simple <- df_perf_metrics |>
           !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
         ) |>
   # filter(!is.nan(f1)) |>
-  label_parameters()
+  utils$label_parameters()
 
 
 
@@ -1084,7 +1056,7 @@ Jun: - ASI: 4 - VHI: 2 - Soil Moisture 2
 #| eval: false
 
 df_ps <- df_env_compare |>
-  label_parameters() |>
+  utils$label_parameters() |>
   mutate(
     ps = case_when(
       str_detect(parameter,"NDSI|SWE") & pub_mo_label == "Mar"~"SNOW_COMBINED",
