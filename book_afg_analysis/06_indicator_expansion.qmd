@@ -95,8 +95,6 @@ label_parameters <- function(df){
 ```
 
 ```{r}
-# df_compiled_indicators <- loaders$load_compiled_indicators(aoi_adm1 = aoi_adm1)
-
 
 df_compiled_indicators <- cumulus$blob_read(,
   container = "projects",
@@ -814,7 +812,10 @@ box::use(
 )
 ```
 
-F1 by pub mo plot  w/ out mixed forecat observational
+## F1 plots of interest
+
+- F1 by pub mo plot  w/ out mixed forecat observational
+
 ```{r}
 #| fig.height: 9
 

@@ -1,0 +1,2143 @@
+---
+title: Composite Indicator
+
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+## Intro
+
+```{r}
+
+aoi_adm1 <- c(
+  "Takhar",
+  # "Badakhshan",
+  # "Badghis",
+  "Sar-e-Pul" ,
+  "Faryab"
+  )
+
+label_parameters <- function(df){
+  df |>
+    mutate(
+     parameter_label = case_when(
+      str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
+      str_detect(parameter,"NDSI")~"NDSI",
+      str_detect(parameter,"asi")~"ASI",
+      str_detect(parameter,"vhi")~"VHI",
+
+      str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
+      str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
+      str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
+      str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
+      str_detect(parameter,"mean_2m_air_temperature")~"Temp (ERA)",
+      str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
+      str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
+      str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
+
+      str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
+      str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
+      str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
+
+
+      .default = parameter
+    )
+    )
+}
+
+
+
+```
+
+```{r}
+SEASON_OF_INTEREST <- c(3,4,5)
+# LATEST_SEASON_PREDICTABLE <-  c(3,4)
+
+box::use(
+  ../R/blob_connect,
+  ../R/utils,
+  seas5 = ../R/seas5_utils,
+  loaders = ../R/load_funcs,
+  dplyr[...],
+  tidyr[...],
+  stringr[...],
+  glue[...],
+  janitor[...],
+  yardstick[...],
+  ggplot2[...],
+  gghdx[...],
+  ggrepel[...],
+  lubridate[...],
+  sf[...],
+  readr[...],
+  purrr[...],
+  patchwork[...],
+  cumulus
+)
+
+# library(tidymodels)
+# library(usemodels) # cool package for writing tidymodels boilerplate
+# library(vip)
+# not using box as it doesn't play nice w/ meta pacakges like `{tidymodels}`
+# library(tidyverse)
+# library(cumulus)
+# library(gt)
+# library(gghdx)
+# library(glue)
+# library(janitor)
+# library(ggiraph)
+# library(ggh4x)
+# library(ggrepel)
+# library(sf)
+gghdx()
+
+
+df_compiled_indicators <- cumulus$blob_read(,
+  container = "projects",
+  name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators_v2.parquet"
+)
+# df_compiled_indicators <- loaders$load_compiled_indicators(aoi_adm1 = aoi_adm1)
+```
+
+
+## Heuristic Weighting
+
+Based on the above let's select some indicators and make a weighting
+
+```{r}
+
+
+df_env_model <-
+  df_compiled_indicators |>
+  # df_env_compare |>
+    select(
+    date,
+    yr_season,
+    pub_mo_date,
+    pub_mo_label,
+    adm1_name,
+    parameter,
+    value
+    ) |>
+  filter(
+    # these parameters are just a bit of noise
+    !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","era5_land_runoff_max"),
+    # these were consolidated into the average of all 4 soil moisture layers
+    !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d"),
+    # already have these from ERA land up to 2024 rather than 2020
+    !(parameter %in% c("total_precipitation","mean_2m_air_temperature"))
+
+  )
+
+# just some manual inspectino stuff here
+df_env_model |>
+  filter(str_detect(parameter,"^asi|^vhi")) |>
+  group_by(parameter, pub_mo_label) |>
+  count() |>
+  pivot_wider(names_from=pub_mo_label, values_from = n)
+
+date_ranges <- df_env_model |>
+  group_by(parameter) |>
+  summarise(
+    start = min(pub_mo_date),
+    end = max(pub_mo_date)
+  )
+```
+
+### Weighting Functons
+
+```{r weightingFuncs}
+
+
+
+#' create_weight_grid
+#' @description
+#' function to create valid weight sets in long data.frame that can be
+#' iterated through
+#' @param x
+#' @param wt_vals
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+#' params_set_gte_1984 <- c(
+#'   "era5_land_soil_moisture_1m",
+#'   "cumu_era5_land_total_precipitation_sum",
+#'   "vhi",
+#'   "era5_land_snow_cover", # toying w/ adding this or not
+#'   "asi"
+#'   )
+#' weight_combos <- create_weight_grid(params_set_gte_1984,wt_vals = c(0,seq(0.1, 1, by = 0.1)))
+
+create_weight_grid <- function(x,wt_vals){
+
+  df <- map(x,\(xt){
+    tibble(
+      !!sym(xt) :=wt_vals
+    )
+  }
+  )|>
+    list_cbind()
+
+  df_expanded <- expand_grid(!!!df)
+
+  df_valid_combinations <- df_expanded[rowSums(df_expanded) == 1, ]
+
+    df_valid_combinations |>
+      mutate(
+        wt_id = row_number()
+      ) |>
+      pivot_longer(
+        -wt_id, names_to = "parameter", values_to ="weight"
+      )
+}
+
+
+
+#' Title
+#'
+#' @param df
+#' @param params_included
+#' @param earliest_year
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+#' df_env_model |>
+#'   normalize_to_z(params_included = l_params$gte1984,earliest_year = 1984)
+
+normalize_to_z <- function(df,params_included, earliest_year){
+      df |>
+        filter(
+          year(yr_season)>=earliest_year
+        ) |>
+        mutate(
+        pub_mo_label = as.character(pub_mo_label)
+      ) |>
+      filter(
+        parameter %in% params_included,
+        pub_mo_label %in% c(month.abb[4:6])
+      ) |>
+      group_by(
+        pub_mo_label, adm1_name, parameter
+      ) |>
+      mutate(
+        zscore = scale(value,center=T,scale=T)[,1],
+        zscore = ifelse(parameter != "asi",zscore*-1,zscore)
+      )  |>
+      ungroup()
+}
+
+#' Title
+#'
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+#' df_env_model |>
+#'   normalize_to_z(params_included = l_params$gte2000,earliest_year = 2001) |>
+#'   extract_truth_set()
+
+extract_truth_set <- function(df){
+  df |>
+    filter(
+      month(pub_mo_date)==6,
+      parameter == "asi"
+    ) |>
+    select(
+      yr_season, adm1_name, value,zscore_asi_Jun=zscore
+    ) |>
+    distinct()
+}
+
+#' Title
+#'
+#' @param df
+#' @param params_included
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+summarise_z <- function(
+    df,
+    params_included,
+    weight_values
+    ){
+
+  df_weight_grid <- create_weight_grid(x = params_included, wt_vals = weight_values)
+
+  df_filt <- df |>
+    filter(
+      parameter %in% params_included
+    )
+  split(df_filt,df_filt$pub_mo_label) |>
+    map(\(dft){
+
+      split(
+        df_weight_grid,
+        df_weight_grid$wt_id
+      ) |>
+        map(
+          \(dft_w){
+
+            dft_weighted <- dft |>
+              left_join(
+                dft_w, by = "parameter"
+              )
+            dft_summarised <- dft_weighted |>
+              group_by(
+                yr_season ,
+                pub_mo_label,
+                adm1_name,
+                pub_mo_date,wt_id
+              ) |>
+              summarise(
+                zscore = weighted.mean(zscore,w=weight,na.rm=T)
+                ,.groups="drop"
+              ) |>
+              mutate(
+                wt_set = list(dft_w)
+              )
+          }
+        ) |>
+        list_rbind()
+    }
+    ) |>
+    list_rbind()
+
+}
+
+
+
+#' Title
+#'
+#' @param df
+#' @param params_included
+#' @param earliest_year
+#' @param rp
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+weighted_classify <- function(df,
+                              params_included,
+                              earliest_year,
+                              rp=3,
+                              weight_values ){
+  df_normalized <- df |>
+    normalize_to_z(
+      params_included = params_included,
+      earliest_year = earliest_year
+    )
+
+  df_truth <- df_normalized |>
+    extract_truth_set()
+
+  df_z_weighted <- df_normalized |>
+    summarise_z(params_included = params_included,weight_values= weight_values)
+
+   df_z_weighted |>
+      left_join(
+        df_truth |>
+          select(-value)
+      ) |>
+      utils$threshold_var(
+        var= "zscore",
+        by = c("pub_mo_label","adm1_name","wt_id"),
+        rp_threshold = rp
+      ) |>
+      utils$threshold_var(
+        var= "zscore_asi_Jun",
+        by = c("pub_mo_label","adm1_name","wt_id"),
+        rp_threshold = rp
+      ) |>
+      arrange(adm1_name, yr_season,wt_id) |>
+      ungroup()
+
+}
+
+single_indicator_performance <- function(df, parameter,earliest_year,rp){
+  df_normalized <- df |>
+    normalize_to_z(
+      params_included = parameter,
+      earliest_year = earliest_year
+    )
+
+  df_truth <- df_normalized |>
+    extract_truth_set()
+
+
+
+  df_classified <- df_normalized |>
+    left_join(
+      df_truth |>
+        select(-value)
+    ) |>
+    utils$threshold_var(
+      var= "zscore",
+      by = c("pub_mo_label","adm1_name"),
+      rp_threshold = rp
+    ) |>
+    utils$threshold_var(
+      var= "zscore_asi_Jun",
+      by = c("pub_mo_label","adm1_name"),
+      rp_threshold = rp
+    ) |>
+    arrange(adm1_name, yr_season) |>
+    ungroup()
+  summarise_performance(df_classified,by = c("pub_mo_label","adm1_name"))
+}
+#' Title
+#'
+#' @param df
+#' @param by
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+summarise_performance <-  function(
+    df,
+    by=c("pub_mo_label","adm1_name","wt_id","wt_set"),
+    parameter_subset = NULL
+    ){
+  if(!is.null(parameter_subset)){
+    df |>
+      filter(
+        parameter %in% parameter_subset
+      )
+  }
+  df |>
+    mutate(
+      across(ends_with("_flag"),\(x) factor(x,levels = c("TRUE","FALSE")))
+    ) |>
+    group_by(
+      across({{by}})
+    ) |>
+    f_meas(zscore_asi_Jun_flag, zscore_flag, estimator= "binary",event_level = "first") |>
+    ungroup()
+
+}
+
+#' Title
+#'
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+top_performance_per_moment <- function(df,n=1){
+  # df=  ldf_perf_all_models$gte1984,n=1
+  df_max <- df |>
+    group_by(pub_mo_label, wt_id) |>
+    summarise(
+      avg_estimate = mean(.estimate)
+    ) |>
+    slice_max(
+      order_by = avg_estimate,
+      n= n
+    )|>
+    ungroup()
+
+  inner_join(
+    df_max,
+    select(df,
+           any_of(c("adm1_name","pub_mo_label", "wt_id", "wt_set",".estimate","asi_f1"))
+           ),
+    by = c("pub_mo_label","wt_id")
+  )
+}
+
+#' Title
+#'
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+plot_optimal_compositions <-  function(df, label_plot = F, pal){
+
+  df_labelled <- df|>
+    select(
+      pub_mo_label,adm1_name,wt_set,avg_estimate,.estimate
+    ) |>
+    unnest(wt_set) |>
+    label_parameters() |>
+    mutate(
+      p_label = glue(
+      "id: {wt_id}
+      f1: {scales::label_number(accuracy =0.001)(.estimate)}
+      avg f1: {scales::label_number(accuracy =0.001)(avg_estimate)}"
+      ),
+      weight_pct_label = scales::percent(weight,accuracy = 1, trim = FALSE),
+    )
+
+  p <- df_labelled |>
+    group_by(pub_mo_label, adm1_name) |>
+    mutate(
+      pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+      id = dense_rank(wt_id)
+    ) |>
+    ungroup() |>
+    ggplot(
+      aes(x= id, y= weight,fill = parameter_label)
+    )+
+    geom_bar(
+      stat= "identity", color = "black"
+    )+
+
+    scale_fill_manual(values=pal)+
+    facet_grid(cols= vars(pub_mo_facet),
+               rows = vars(adm1_name)
+               ,scales="free")+
+    labs(
+      x = "Different indicator weightings"
+
+    )+
+    scale_y_continuous(labels=scales::label_percent())+
+    theme(
+      legend.title = element_blank(),
+      axis.text.x = element_blank()
+    )
+  if(label_plot){
+    # df <- ldf_tops2$gte1984
+    df |>
+      mutate(
+        p_label = glue("{wt_id}: {scales::label_number(accuracy =0.01)(avg_estimate)}")
+      )
+    p <- p +
+      # composition plot
+      geom_text(
+        aes(x= id, y= weight, label = weight_pct_label),
+        position = position_stack(vjust = 0.5), color ="black"
+      )+
+      # wt plot
+      geom_label(aes(x= id, y= 1.1, label = p_label), color ="black",fill="beige",alpha=0.4)+
+      # theme(
+      #   panel.spacing.y = unit(4, "lines")
+      # )+
+      expand_limits(y = 1.2)
+  }
+  p
+}
+
+
+
+#' Title
+#' helper func to find weight ids that are simple and optimal
+#' not a perfect solution, but gets us 90% there.
+#' @param df
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+plot_low_var_optimal <-  function(df,
+                                  pal,
+                                  label_wt_id =T){
+
+
+  dfp <- df|>
+    select(
+      pub_mo_label, wt_set
+    ) |>
+    unnest(wt_set) |>
+    group_by(
+      pub_mo_label,wt_id
+    ) |>
+    mutate(
+      sd = sd(weight)
+
+    ) |>
+    group_by(pub_mo_label) |>
+    slice_min(sd) |>
+    group_by(pub_mo_label) |>
+    mutate(
+      pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+      id = dense_rank(wt_id)
+    ) |>
+    ungroup() |>
+    label_parameters()
+
+  p <- dfp |>
+    distinct() |>
+    mutate(
+      weight_pct_label = scales::percent(weight,accuracy = 1, trim = FALSE),
+      weight_id_label = glue("weight id: {wt_id}")
+
+    ) |>
+    filter(pub_mo_label!= "Jun") |>
+    ggplot(
+      aes(
+        x= id,
+        y= weight,
+        fill = parameter_label
+      ),
+      position = position_stack(vjust = 0.5)
+    )+
+    geom_bar(
+      stat= "identity", color = "black"
+    )+
+
+    geom_text(aes(x= id, y= weight, label = weight_pct_label),
+              position = position_stack(vjust = 0.5), color ="black")+
+    scale_fill_manual(values=pal) +
+    scale_y_continuous(labels =scales::label_percent())+
+    facet_grid(cols= vars(pub_mo_facet)
+               ,scales="free")+
+    labs(
+      # title = "May publication weight combos that give avg 0.90 f1"
+    )
+  if(label_wt_id){
+    p <- p +
+      geom_text(
+        aes(
+          x= id+.25,
+          y= 0.5,
+          label = weight_id_label
+          ), color ="black"
+      )
+  }
+  p
+}
+
+
+#' Title
+#'
+#' @param df
+#' @param param_simple
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+get_simple_weight_id <- function(df,param_simple){
+    df |>
+    select(wt_set) |>
+    unnest(wt_set) |>
+    distinct() |>
+    filter(
+      parameter == param_simple ,
+      weight == 1
+    ) |>
+    pull(wt_id) |>
+    unique()
+
+}
+#' Title
+#' @description
+#' After plotting different optimal weight combinations you might want to compare specific
+#' weighting compositions to a simpler model (i.e ASI). So this allows you to plug in the
+#' weight ids for both april and may as well as `param_simple` which has always been ASI up to
+#' this point in analysis. The output data.frame is interesting for plotting.
+#'
+#' @param df
+#' @param wt_id_apr
+#' @param wt_id_may
+#' @param param_simple
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+compare_to_simple_model <- function(df,wt_id_apr, wt_id_may,param_simple){
+  simple_model_id <-get_simple_weight_id(df= df, param_simple = param_simple)
+
+    df_chosen <- df |>
+      summarise_performance() |>
+      filter(
+        (pub_mo_label == "Apr" & wt_id==wt_id_apr)|
+        (pub_mo_label == "May" & wt_id==wt_id_may)|
+        wt_id == simple_model_id
+
+      ) |>
+      filter(pub_mo_label != "Jun")
+
+    df_simple <- df_chosen |>
+      filter(
+        wt_id == simple_model_id
+      )
+    anti_join(df_chosen,df_simple) |>
+      left_join(
+        df_simple |>
+          select(
+            pub_mo_label,adm1_name,
+            estimate_simple =.estimate),
+        by = c("pub_mo_label","adm1_name")
+      )
+
+}
+```
+
+```{r decideParameters}
+# setup as many sets of parameters as we want
+# subequent code will iterate through each parameter set
+
+params_set_gte_2001 <- c(
+  "era5_land_soil_moisture_1m",
+  "cumu_era5_land_total_precipitation_sum",
+  "NDSI_Snow_Cover_mean",
+  "vhi",
+  "asi"
+)
+
+# and one that takes data going back to 1984
+params_set_gte_1984 <- c(
+  "era5_land_soil_moisture_1m",
+  "cumu_era5_land_total_precipitation_sum",
+  "vhi",
+  "era5_land_snow_cover", # toying w/ adding this or not
+  "asi"
+)
+params_set_gte_1984_no_snow <- c(
+  "era5_land_soil_moisture_1m",
+  "cumu_era5_land_total_precipitation_sum",
+  "vhi",
+    # "era5_land_snow_cover", # toying w/ adding this or not
+  "asi"
+)
+
+params_set_gte_1984_w_mixed_forecast_obs <- c(
+  "era5_land_soil_moisture_1m",
+  "cumu_era5_land_total_precipitation_sum",
+  "vhi",
+  "mam_mixed_seas_observed",
+    "era5_land_snow_cover", # toying w/ adding this or not
+  "asi"
+)
+
+l_params <- list(
+  "gte2001"= params_set_gte_2001,
+  "gte1984" = params_set_gte_1984,
+  "gte_1984_no_snow" = params_set_gte_1984_no_snow,
+  "gte_1984_w_mixed_forecast_obs" = params_set_gte_1984_w_mixed_forecast_obs
+)
+
+# cram those into table!
+df_parameter_configs <- tibble(
+  param_set_id = names(l_params),
+  parameter_sets = l_params,
+  earliest_year =parse_number(param_set_id)
+)
+```
+
+
+### Weight implementation
+
+```{r}
+
+# run weighting and aggregations
+
+# For each paramter set (i.e gte1984, gte_1984_no_snow, gte2001) this returns
+# 1. a historical data set per model composition
+# 2. an assessment of f1 performance of each model set measuring against
+# reference framework of just using ASI
+
+# this takes approx 10 minutes to run on my computer. There are many millions
+# of rows .. could save as a file, but it will take a long time even load
+# from the blob.
+
+system.time(
+  ldf_perf <- pmap(
+  list(
+    df_parameter_configs$param_set_id,
+    df_parameter_configs$parameter_sets,
+    df_parameter_configs$earliest_year
+    ),
+  \(id,params, start_yr){
+
+    # cat("reclassifying\n")
+    df_all_weights_flagged <- weighted_classify(
+      df = df_env_model,
+      earliest_year = start_yr,
+      params_included = unlist(params),
+      weight_values = seq(0,1,by =0.05),
+      rp=3
+    )
+
+    df_asi_perf <-  single_indicator_performance(
+      df_env_model,
+      parameter = "asi",
+      earliest_year = start_yr,
+      rp=3
+    )
+
+    df_perf <- df_all_weights_flagged |>
+      summarise_performance() |>
+       left_join(
+        df_asi_perf |>
+          rename(asi_f1 = .estimate)
+        )
+
+    l_ret <- list(
+      ALL_MODELS = df_perf,
+      HISTORICAL_WEIGHTED = df_all_weights_flagged
+    )
+    l_ret
+  }
+)
+)
+
+ldf_perf <- set_names(ldf_perf,df_parameter_configs$param_set_id)
+
+# extract historical data.frame sets
+ldf_historical <-  ldf_perf |>
+  map("HISTORICAL_WEIGHTED")
+
+ldf_perf_all_models <- ldf_perf |>
+  map("ALL_MODELS")
+
+ldf_top3 <- ldf_perf_all_models |>
+  map(\ (dft){
+    dft |>
+      top_performance_per_moment(n=3)
+  })
+
+
+```
+
+```{r}
+#| eval: false
+
+cumulus$blob_write(
+  ldf_perf$gte1984$HISTORICAL_WEIGHTED ,
+  container = "projects",
+  name = "ds-aa-afg-drought/weight_parameter_set/gte1984/historical_weighted.parquet"
+)
+ck <- cumulus$blob_read(
+    container = "projects",
+    name = "ds-aa-afg-drought/weight_parameter_set/gte1984/historical_weighted.parquet"
+)
+```
+
+### Weighting results
+
+Here we look at the results when we use parameters going back to 1984 and
+include a snow cover variable. These plots were put in the google slides
+```{r}
+
+ldf_top3$gte1984 |>
+  filter(pub_mo_label!="Jun") |>
+  group_by(pub_mo_label, adm1_name) |>
+  slice_max(avg_estimate,with_ties = F) |>
+  # left_join(df_asi_performance |> rename(asi_f1 = .estimate)) |>
+  pivot_longer (cols = c(".estimate","asi_f1")) |>
+  mutate(
+    indicator_label = ifelse(name == ".estimate", "Combined Indicator","Simple Indicator (ASI)" )
+  ) |>
+  ggplot(
+    aes(x = adm1_name, y =value, fill = indicator_label)
+  )+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Indicator (ASI)"=hdx_hex("sapphire-light"))
+  )+
+  facet_wrap(~pub_mo_label)+
+  scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: Composite Indicator vs ASI Only",
+    subtitle= "Analysis 1984-present (including ERA5 snow)",
+    caption= "Composite indicator contains optimal weighted aggregations of Snow Cover (ERA5), Soil Moisture (ERA5), ASI (FAO), VHI (FAO), and cumulative precipitation (ERA 5)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+pal_indicator_composition <-  c("ASI"="green4",
+                                "VHI"="#CAB2D6",
+                                "NDSI"= "#6A3D9A",
+                                "Precip cumu (ERA)"= "skyblue2",
+                                "era5_land_soil_moisture_1m"= "dodgerblue2",
+                                "Snow Cover (ERA5)"= "white")
+
+
+p_optimal_low_variance_weights <- plot_low_var_optimal(
+  ldf_top3$gte1984,
+  pal = pal_indicator_composition,label_wt_id = F
+)+
+  coord_flip()
+
+
+ plot_optimal_compositions(
+  ldf_top3$gte1984  |>
+    filter(pub_mo_label != "Jun"),
+  label_plot = T,
+  pal = pal_indicator_composition
+  ) +
+  labs(
+      title ="Indicator weighting options that result in max performance"
+    )
+
+
+df_compare <- compare_to_simple_model(
+  ldf_historical$gte1984,
+  wt_id_apr = 3316,#379 -- was optimal when did weight by 0.1 #14 is optimal
+  wt_id_may = 3490, #142 & 84 are optimal for May, but dont include soil moisture
+  param_simple = "asi"
+  )
+
+p_optimal_chosen_compared_to_asi <- df_compare |>
+  pivot_longer(cols = c(".estimate","estimate_simple")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","Simple Model (ASI ONLY)")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge", color = "lightgrey") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Model (ASI ONLY)"=hdx_hex("sapphire-light"))
+  )+
+  labs(
+    title = "F1 Score Comparison: April & May activation moments",
+    subtitle= "Composite Indicator (one weight set per activation moment) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  facet_wrap(~pub_mo_label)+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+p_optimal_chosen_compared_to_asi +
+  theme(
+    plot.caption = element_blank(),legend.position = "top"
+  )+
+  p_optimal_low_variance_weights+
+  theme(
+    axis.title.y= element_blank(),
+    axis.text.y= element_blank(),
+    strip.text = element_blank(),
+    legend.title = element_blank()
+  )+
+  plot_layout(nrow=2,heights = c(1,0.05))
+
+```
+
+### With mixed forecast observational
+
+- Now let's look at when we include the mixed observational forecast indicators
+- so here are the best performing modesl compared to f1
+
+```{r}
+ldf_top3$gte_1984_w_mixed_forecast_obs |>
+  filter(pub_mo_label!="Jun") |>
+  group_by(pub_mo_label, adm1_name) |>
+  slice_max(avg_estimate,with_ties = F) |>
+  # left_join(df_asi_performance |> rename(asi_f1 = .estimate)) |>
+  pivot_longer (cols = c(".estimate","asi_f1")) |>
+  mutate(
+    indicator_label = ifelse(name == ".estimate", "Combined Indicator","Simple Indicator (ASI)" )
+  ) |>
+  ggplot(
+    aes(x = adm1_name, y =value, fill = indicator_label)
+  )+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Indicator (ASI)"=hdx_hex("sapphire-light"))
+  )+
+  facet_wrap(~pub_mo_label)+
+  scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: Composite Indicator vs ASI Only",
+    subtitle= "Analysis 1984-present (including ERA5 snow)",
+    caption= "Composite indicator contains optimal weighted aggregations of Snow Cover (ERA5), Soil Moisture (ERA5), ASI (FAO), VHI (FAO), and cumulative precipitation (ERA 5)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+```
+
+
+but let's compare the weights w/ less variance - `pseudo-regularization`
+
+
+```{r}
+
+# this is where i get the weight ids for ploting
+plot_low_var_optimal(
+  ldf_top3$gte_1984_w_mixed_forecast_obs,
+  pal = pal_indicator_composition,label_wt_id = T
+)+
+  coord_flip()
+
+
+
+# but in plot i dont need to show the weight id - so save this too
+p_optimal_low_variance_weights <- plot_low_var_optimal(
+  ldf_top3$gte_1984_w_mixed_forecast_obs,
+  pal = pal_indicator_composition,label_wt_id = F
+)+
+  coord_flip()
+
+
+# there are too many ties -- this takes forecer to render and is unreadable :-)
+ # plot_optimal_compositions(
+ #  ldf_top3$gte_1984_w_mixed_forecast_obs  |>
+ #    filter(pub_mo_label != "Jun"),
+ #  label_plot = T,
+ #  pal = pal_indicator_composition
+ #  ) +
+ #  labs(
+ #      title ="Indicator weighting options that result in max performance"
+ #    )
+
+
+# this takes a minute
+
+df_compare_gte_1984_w_mixed_forecast_obs <- compare_to_simple_model(
+  ldf_historical$gte_1984_w_mixed_forecast_obs,
+  wt_id_apr = 9834,
+  wt_id_may = 12297, #142 & 84 are optimal for May, but dont include soil moisture
+  param_simple = "asi"
+  )
+
+
+pal_indicator_composition <-  c("ASI"="green4",
+                                "VHI"="#CAB2D6",
+                                "NDSI"= "#6A3D9A",
+                                "Precip cumu (ERA)"= "skyblue2",
+                                "era5_land_soil_moisture_1m"= "dodgerblue2",
+                                "mam_mixed_seas_observed" = "cyan",
+                                "Snow Cover (ERA5)"= "white")
+
+
+
+p_comparison_1984_w_mixed_forecast_obs <- df_compare_gte_1984_w_mixed_forecast_obs |>
+  pivot_longer(cols = c(".estimate","estimate_simple")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","Simple Model (ASI ONLY)")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge", color = "lightgrey") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Model (ASI ONLY)"=hdx_hex("sapphire-light"))
+  )+
+  labs(
+    title = "F1 Score Comparison: April & May activation moments",
+    subtitle= "Composite Indicator (one weight set per activation moment) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  facet_wrap(~pub_mo_label)+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+p_comparison_1984_w_mixed_forecast_obs +
+  theme(
+    plot.caption = element_blank(),legend.position = "top"
+  )+
+  p_optimal_low_variance_weights+
+  theme(
+    axis.title.y= element_blank(),
+    axis.text.y= element_blank(),
+    strip.text = element_blank(),
+    legend.title = element_blank()
+  )+
+  plot_layout(nrow=2,heights = c(1,0.15))
+```
+
+
+
+## Historical timeline
+
+Make tile plot showing when simple indicator - composite indicator - and truth (ASI EOS) would have activated.
+
+```{r}
+simple_model_id <- get_simple_weight_id(
+  df= ldf_historical$gte1984,
+  param_simple = "asi"
+  )
+
+
+optimal_model_wt_id <-  c(14,379,3316)[3]
+df_simple_historical <- ldf_historical$gte1984 |>
+  select(
+    yr_season,wt_id,wt_set, pub_mo_label, adm1_name,ends_with("flag")
+
+  ) |>
+  pivot_longer(cols = ends_with("flag")) |>
+  filter(wt_id ==simple_model_id,name== "zscore_flag") |>
+  mutate(
+    weight_type = "Simple (ASI only)"
+  )
+df_simple_historical |> count(value)
+
+df_historical_weights_sel <- ldf_historical$gte1984 |>
+  select(
+    yr_season,wt_id,wt_set, pub_mo_label, adm1_name,ends_with("flag")
+
+  ) |>
+  pivot_longer(cols = ends_with("flag")) |>
+  filter(
+    wt_id == optimal_model_wt_id & pub_mo_label=="Apr"
+  ) |>
+  mutate(
+    weight_type =ifelse(name == "zscore_flag","Combined","EOS ASI\n'Truth'")
+  )
+
+
+bind_rows(
+  df_historical_weights_sel,
+  df_simple_historical
+) |>
+  filter(adm1_name == "Takhar",pub_mo_label == "Apr") |>
+  mutate(
+    yr = year(yr_season),
+    weight_type = factor(weight_type, c("Simple (ASI only)","Combined","EOS ASI\n'Truth'"))
+  ) |>
+  ggplot()+
+  geom_tile(
+    aes(x = weight_type,y= yr,  fill = value), color = "white",linewidth = 0.7
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"=hdx_hex("tomato-hdx"), "FALSE"="grey")
+  )+
+  scale_y_reverse(breaks= 1984:2024,
+                  expand= c(0,0)
+                  # limits = c(2024,1984)
+                  )+
+  scale_x_discrete(expand =c(0,0))+
+  labs(
+    title = "Historical analyses of indicators",
+    subtitle = "April - Takhar Province",
+    caption = glue("optimal model id: {optimal_model_wt_id}")
+  )+
+  facet_wrap(~adm1_name)+
+  theme(
+    axis.title = element_blank(),
+    legend.position = "none"
+  )
+```
+
+
+
+
+```{r}
+ldf_top3$gte2001 |>
+  filter(pub_mo_label!="Jun") |>
+    group_by(pub_mo_label, adm1_name) |>
+  slice_max(avg_estimate,with_ties = F) |>
+  # left_join(df_asi_performance |> rename(asi_f1 = .estimate)) |>
+  pivot_longer (cols = c(".estimate","asi_f1")) |>
+  mutate(
+    indicator_label = ifelse(name == ".estimate", "Combined Indicator","Simple Indicator (ASI)" )
+  ) |>
+  ggplot(
+    aes(x = adm1_name, y =value, fill = indicator_label)
+  )+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Indicator (ASI)"=hdx_hex("sapphire-light"))
+  )+
+  facet_wrap(~pub_mo_label)+
+  scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: Composite Indicator vs ASI Only",
+    subtitle= "Analysis 2001-present (including MODIS Snow -NDSI)",
+    caption= "Composite indicator contains optimal weighted aggregations of NDSI Snow Cover (MODIS), Soil Moisture (ERA5), ASI (FAO), VHI (FAO), and cumulative precipitation (ERA 5)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+ldf_top3$gte_1984_no_snow |>
+  filter(pub_mo_label!="Jun") |>
+    group_by(pub_mo_label, adm1_name) |>
+  slice_max(avg_estimate,with_ties = F) |>
+  # left_join(df_asi_performance |> rename(asi_f1 = .estimate)) |>
+  pivot_longer (cols = c(".estimate","asi_f1")) |>
+  mutate(
+    indicator_label = ifelse(name == ".estimate", "Combined Indicator","Simple Indicator (ASI)" )
+  ) |>
+  ggplot(
+    aes(x = adm1_name, y =value, fill = indicator_label)
+  )+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_fill_manual(
+    values = c("Combined Indicator"=hdx_hex("tomato-light"), "Simple Indicator (ASI)"=hdx_hex("sapphire-light"))
+  )+
+  facet_wrap(~pub_mo_label)+
+  scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: Composite Indicator vs ASI Only",
+    subtitle= "Analysis 1984-Present (No Snow included)",
+    caption= "Composite indicator contains optimal weighted aggregations of  Soil Moisture, ASI, VHI, and cumulative precipitation",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+```
+
+
+# Check point
+
+some of below probably not running or correct  anymore.
+
+double check RP'S
+
+```{r}
+ldf_historical$gte1984 |>
+  group_by(
+    adm1_name,
+    #yr_season,
+    pub_mo_label,
+    wt_id,
+    wt_set,
+  ) |>
+  summarise(
+    activation_rate_wt = mean(zscore_flag),
+    activation_rate_truth = mean(zscore_asi_Jun_flag)
+  )
+ldf_historical$gte2001 |>
+  group_by(
+    adm1_name,
+    #yr_season,
+    pub_mo_label,
+    wt_id,
+    wt_set,
+  ) |>
+  summarise(
+    activation_rate_wt = mean(zscore_flag),
+    activation_rate_truth = mean(zscore_asi_Jun_flag)
+  )
+
+ldf_historical$gte_1984_no_snow |>
+  group_by(
+    adm1_name,
+    #yr_season,
+    pub_mo_label,
+    wt_id,
+    wt_set,
+  ) |>
+  summarise(
+    activation_rate_wt = mean(zscore_flag),
+    activation_rate_truth = mean(zscore_asi_Jun_flag)
+  )
+
+```
+
+```{r}
+df_truth_joint <- df_all_weights_flagged |>
+  distinct(
+    yr_season,adm1_name, zscore_asi_Jun_flag
+  ) |>
+  group_by(
+    yr = year(yr_season)
+  ) |>
+  summarise(
+    flag = any(zscore_asi_Jun_flag)
+  ) |>
+  mutate(
+    indicator_type = "Truth"
+  )
+
+ df_apr_joint <- df_all_weights_flagged |>
+  filter(
+    (pub_mo_label == "Apr" &
+    wt_id %in% c(1,684)
+    )) |>
+    mutate(
+      yr= year(yr_season),
+    indicator_type = case_when(
+      wt_id == 1 ~ "Simple (ASI only)",
+      # name== "zscore_asi_Jun_flag"~"Truth",
+      .default= "Composite",
+      # .default = "combined"
+
+  )
+    ) |>
+   select(yr,indicator_type, pub_mo_label, adm1_name,zscore_flag) |>
+   group_by(
+     yr, indicator_type, pub_mo_label
+   ) |>
+   summarise(
+     flag = any(zscore_flag)
+   )
+df_apr_joint |>
+  bind_rows(
+    df_truth_joint
+  ) |>
+  group_by(
+    indicator_type
+  ) |>
+  summarise(
+    flag = mean(flag)
+  )
+df_apr_joint |>
+  bind_rows(
+    df_truth_joint
+  ) |>
+  ggplot()+
+  geom_tile(
+    aes(x = indicator_type,y= yr,  fill = flag), color = "white"
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"=hdx_hex("tomato-hdx"), "FALSE"="grey")
+  )+
+  labs(
+    title = "April Joint"
+  )
+
+
+
+
+```
+
+```{r}
+box::use(forcats[...])
+df_historical_rethresh <- ldf_historical$gte1984 |>
+    utils$threshold_var(
+      var= "zscore",
+      by = c("pub_mo_label","adm1_name","wt_id"),
+      rp_threshold = 4
+    ) |>
+    utils$threshold_var(
+      var= "zscore_asi_Jun",
+      by = c("pub_mo_label","adm1_name","wt_id"),
+      rp_threshold = 4
+    ) |>
+  mutate(
+    across(ends_with("_flag"),\(x){fct_relevel(as_factor(x),"TRUE","FALSE")})
+  )
+
+
+df_rethresh_f1 <- df_historical_rethresh |>
+  group_by(
+    across(c("pub_mo_label","adm1_name","wt_id"))
+  ) |>
+  f_meas(truth = zscore_asi_Jun_flag,estimate=zscore_flag)
+
+df_rethresh_f1 |>
+  group_by(pub_mo_label,wt_id) |>
+  mutate(
+    avg_f1 = mean(.estimate)
+  ) |>
+  group_by(pub_mo_label,adm1_name) |>
+
+  slice_max(
+    order_by = avg_f1,
+    n=1 , with_ties = F
+  )
+```
+
+```{r}
+# okay -- above we get best weights per adm and month.
+# can we instead test each set of weights against all provinces and get the highest f1 score
+# that works per weight
+
+l_top_wt_sets_per_mo <- ldf_conf_metrics  |>
+  map(
+    \(dft){
+      dft |>
+        group_by(pub_mo_label, wt_id) |>
+        summarise(
+          avg_estimate = mean(.estimate)
+        ) |>
+        slice_max(
+          order_by = avg_estimate,
+          n= 1
+        )
+
+    }
+
+  )
+
+ldf_best_metrics_overall<- map2(ldf_conf_metrics,l_top_wt_sets_per_mo,
+  \(dft_conf,dft_top){
+          dft_conf |>
+        inner_join(
+          dft_top, by = c("pub_mo_label","wt_id")
+          )
+  }
+)
+ldf_best_metrics_overall<- map(named_weight_sets,
+  \(nmt){
+    dft_conf <- ldf_conf_metrics[[nmt]]
+    dft_top <- l_top_wt_sets_per_mo[[nmt]]
+    dft_conf |>
+        inner_join(
+          dft_top, by = c("pub_mo_label","wt_id")
+          )
+  }
+)
+
+
+ldf_top_weights_nested <-  map2(l_top_wt_sets_per_mo,l_weight_combos,
+     \(df_top,df_wt_set){
+     df_top_wt_vals <- df_top |>
+         inner_join(
+           df_wt_set |>
+             group_by(wt_id) |>
+             nest()
+           # by = "wt_id"
+           # wt_id %in% df_top$wt_id
+         )
+         # label_parameters()
+     }
+ )
+
+
+ldf_best_metrics_overall$gte1984 |> select(wt_set) |> unnest(wt_set) |> count(parameter)
+
+
+
+lp_optimal_weight_composition <- map(ldf_best_metrics_overall,
+     \(dft){
+
+       dft <- dft|>
+         select(
+           pub_mo_label,adm1_name,wt_set,avg_estimate,.estimate
+         ) |>
+         unnest(wt_set) |>
+         label_parameters()
+
+       dft |>
+         group_by(pub_mo_label, adm1_name) |>
+         mutate(
+           pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+           id = dense_rank(wt_id)
+         ) |>
+         ungroup() |>
+         ggplot(
+           aes(x= id, y= weight,fill = parameter_label)
+         )+
+         geom_bar(
+           stat= "identity", color = "grey"
+         )+
+
+         scale_fill_manual(values=rand_pal)+
+         facet_grid(cols= vars(pub_mo_facet),
+                    rows = vars(adm1_name)
+                    ,scales="free")+
+         labs(
+           # title = "May publication weight combos that give avg 0.90 f1"
+         )
+
+
+     }
+)
+lp_optimal_weight_composition$gte2000
+lp_optimal_weight_composition$gte1984
+
+lp_weight_performance_per_adm <- map(
+  ldf_best_metrics_overall,\(dft){
+
+         dft <- dft |>
+           mutate(
+             pub_mo_facet = factor(pub_mo_label, levels = c("Apr","May","Jun"))
+           )
+
+         dft |>
+           ggplot(
+             aes(
+               x= adm1_name,
+               y= .estimate,
+               group = wt_id
+               # color =as_factor(wt_id)
+             )
+           )+
+           geom_point(alpha=0.3,size=4)+
+           geom_line(alpha=0.3)+
+           facet_wrap(~pub_mo_facet)+
+           geom_hline(
+             data = dft |>
+               select(
+                 pub_mo_facet,
+                 adm1_name,
+                 avg_estimate
+                 ) |> distinct(),
+             aes(yintercept = avg_estimate),
+             linetype = "dashed",
+             color = hdx_hex("tomato-hdx")
+           )+
+           labs(
+             y= "F1 Performance"
+           )+
+           theme(
+             panel.border = element_rect(fill=NA, color = "grey")
+           )
+
+     }
+)
+
+
+lp_weight_performance_per_adm$gte2000
+lp_weight_performance_per_adm$gte1984
+
+
+
+# i like these, but problem is faryab actually performs worse
+dft_low_sd_f1 <- ldf_best_metrics_overall$gte2000 |>
+  select(
+    pub_mo_label, wt_set
+  ) |>
+  unnest(wt_set) |>
+  group_by(
+    pub_mo_label,wt_id
+  ) |>
+  mutate(
+    sd = sd(weight)
+  ) |>
+  group_by(pub_mo_label) |>
+  slice_min(sd) |>
+  group_by(pub_mo_label) |>
+  mutate(
+    pub_mo_facet = factor(pub_mo_label,levels= c("Apr","May","Jun")),
+    id = dense_rank(wt_id)
+  ) |>
+  ungroup() |>
+  label_parameters()
+
+dft_low_sd_f1 |>
+  distinct() |>
+  mutate(
+    weight_pct_label = scales::percent(weight,accuracy = 1, trim = FALSE),
+    weight_id_label = glue("weight id: {wt_id}")
+
+  ) |>
+  filter(pub_mo_label!= "Jun") |>
+  ggplot(
+    aes(x= id, y= weight,fill = parameter_label), position = position_stack(vjust = 0.5)
+  )+
+  geom_bar(
+    stat= "identity"
+  )+
+  geom_text(aes(x= id, y= weight, label = weight_pct_label),
+            position = position_stack(vjust = 0.5), color ="white")+
+  geom_text(aes(x= id, y= 1.01, label = weight_id_label), color ="black")+
+  scale_fill_manual(values=rand_pal)+
+  facet_grid(cols= vars(pub_mo_facet)
+             ,scales="free")+
+  labs(
+    # title = "May publication weight combos that give avg 0.90 f1"
+  )
+
+
+ldf_best_metrics_overall$gte2000 |>
+  filter(
+    pub_mo_label == "Apr",
+         wt_id ==684 # if filtering to >20000
+         ) |>
+  left_join(
+      ldf_conf_metrics$gte2000 |>
+      filter(wt_id ==1) |>
+      # select(-wt_id) |>
+      rename(
+        asi_only_f1 = .estimate
+        ) |>
+        select(pub_mo_label,adm1_name, asi_only_f1)
+   , by = c("pub_mo_label","adm1_name")
+  ) |>
+  pivot_longer(cols = c(".estimate","asi_only_f1")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: April Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+ldf_best_metrics_overall$gte2000 |>
+  filter(
+    pub_mo_label == "May",
+         wt_id ==524 # if filtering to >20000
+         ) |>
+  left_join(
+
+      ldf_conf_metrics$gte2000 |>
+      filter(wt_id ==1) |>
+      # select(-wt_id) |>
+      rename(
+        asi_only_f1 = .estimate
+        ) |>
+        select(pub_mo_label,adm1_name, asi_only_f1)
+   , by = c("pub_mo_label","adm1_name")
+  ) |>
+  pivot_longer(cols = c(".estimate","asi_only_f1")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: May Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+
+
+
+
+
+
+
+
+
+
+
+df_best_wt_sets_w_metrics |>
+  print(n=100) |>
+  filter(pub_mo_label=="May") |>
+  select(wt_set,avg_estimate) |>
+  # pull(avg_estimate) |>
+  unnest(wt_set) |>
+  distinct() |>
+  mutate(
+    id = dense_rank(wt_id)
+  ) |>
+  ggplot(
+    aes(x= id, y= weight,fill = parameter)
+  )+
+  geom_bar(
+    stat= "identity"
+  )+
+  labs(
+    title = "May publication weight combos that give avg 0.90 f1"
+  )
+
+
+
+
+top_wt_sets_per_mo <- df_conf_metrics  |>
+  group_by(pub_mo_label, wt_id) |>
+  summarise(
+    avg_estimate = mean(.estimate)
+  ) |>
+  slice_max(
+    order_by = avg_estimate,n= 1
+  )
+df_best_metrics_overall <- df_conf_metrics |>
+  inner_join(
+    top_wt_sets_per_mo, by = c("pub_mo_label","wt_id")
+  )
+df_best_wt_sets_w_metrics <- df_best_metrics_overall |>
+  left_join(
+    df_all_weights_flagged |>
+      distinct(wt_id,wt_set)
+    ) |>
+  left_join(
+      df_conf_metrics |>
+      filter(wt_id ==1) |>
+      # select(-wt_id) |>
+      rename(
+        asi_only_f1 = .estimate
+        ) |>
+        select(pub_mo_label,adm1_name, asi_only_f1)
+   , by = c("pub_mo_label","adm1_name")
+  )
+
+df_best_wt_sets_w_metrics |>
+  select(-wt_id) |>
+  unnest(wt_set)
+
+
+df_best_wt_sets_w_metrics |>
+  filter(
+    pub_mo_label == "Apr",
+         wt_id ==346 # if filtering to >20000
+         ) |>
+  pivot_longer(cols = c(".estimate","asi_only_f1")) |>
+  mutate(
+    name = ifelse(str_detect(name,".estimate"), "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= value, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: April Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+
+df_wt_combos_long |>
+  filter(wt_id  ==346)
+```
+
+Look at equal weigts
+
+```{r}
+df_conf_metrics |>
+  filter(pub_mo_label == "Apr") |>
+  filter(
+    wt_id %in% c(1,equal_wts_id)
+  ) |>
+    mutate(
+    name = ifelse(wt_id == equal_wts_id, "Combined Indicator","ASI only")
+  ) |>
+  ggplot(
+    aes(x= adm1_name,y= .estimate, fill = name )
+  ) +
+  geom_bar(stat= "identity", position = "dodge") +
+    scale_y_continuous(
+    breaks = seq(0,1,by = 0.05)
+  )+
+  labs(
+    title = "F1 Score Comparison: April Publication Month",
+    subtitle= "Composite Indicator (one optimal weight set applied) vs ASI Only",
+    caption= "Composite indicator created via weighted aggregation of z-scores of cumulative rainfall (ERA5), snow cover (NDSI), Soil Moisture (ERA5), VHI (FAO), ASI (FAO)",
+    y= "F1 Score"
+  )+
+  theme(
+    legend.title=element_blank(),
+    axis.title.x = element_blank()
+  )
+)
+
+```
+
+```{r}
+df_all_weights_flagged
+df_weighted_historical_sample <- df_all_weights_flagged |>
+  filter(pub_mo_label == "Apr",adm1_name == "Takhar")
+
+df_end_of_season_valid <- df_weighted_historical_sample |>
+  select(yr_season,zscore_asi_Jun_flag) |>
+  distinct() |>
+  mutate(
+    name = "ASI\nEnd of Season\n('truth')"
+  ) |>
+  rename(zscore_flag = zscore_asi_Jun_flag)
+
+bind_rows(
+  df_weighted_historical_sample ,
+  df_end_of_season_valid
+)
+
+df_weighted_historical_sample |>
+filter(
+    wt_id %in% c(1,equal_wts_id,38)
+  ) |>
+  bind_rows(
+    df_end_of_season_valid |>
+      rename()
+  ) |>
+  mutate(
+    yr = year(yr_season),
+    name = case_when(
+      wt_id == 1~"ASI only",
+      wt_id == equal_wts_id~"Combined (equal)",
+      wt_id == 38 ~"Combnied (optimal)",
+      .default = name
+      )
+  ) |>
+  ggplot()+
+  geom_tile(
+    aes(x = name,y= yr,  fill = zscore_flag), color = "white"
+  ) +
+  scale_fill_manual(
+    values = c("TRUE"="red", "FALSE"="grey")
+  )
+```
+
+```{r}
+
+df_best_wt_sets_w_metrics |>
+  filter(
+    wt_id == 39
+  ) |>
+  select(-wt_id) |>
+  unnest(wt_set)
+
+df_best_wt_sets_w_metrics |>
+  print(n=100) |>
+  filter(pub_mo_label=="May") |>
+  select(wt_set,avg_estimate) |>
+  # pull(avg_estimate) |>
+  unnest(wt_set) |>
+  distinct() |>
+  mutate(
+    id = dense_rank(wt_id)
+  ) |>
+  ggplot(
+    aes(x= id, y= weight,fill = parameter)
+  )+
+  geom_bar(
+    stat= "identity"
+  )+
+  labs(
+    title = "May publication weight combos that give avg 0.90 f1"
+  )
+
+
+
+df_conf_metrics |>
+  filter(
+    wt_id ==38 & pub_mo_label=="Apr"
+  )
+
+
+
+
+### Simlarity Metrics #######
+xck_nest <- df_wt_combos_long |>
+  group_by(wt_id) |>
+  nest()
+
+df_max_f1_apr  |>
+  left_join(ck_nest) |>
+  unnest(data)
+
+
+
+ck <- df_max_f1_apr  |>
+  left_join(ck_nest) |>
+  unnest(data)
+
+
+
+aligned_weights <- ck %>%
+  group_by(adm1_name, wt_id, parameter) %>%
+  summarise(weight = sum(weight), .groups = "drop") %>% # Aggregate weights if duplicates
+  pivot_wider(names_from = parameter, values_from = weight, values_fill = 0) |>
+  mutate(
+    row_id = row_number()
+  )
+
+pairwise_comparisons <- aligned_weights %>%
+  # mutate(row_id = row_number()) %>% # Add a unique ID to each row for pairing
+  cross_join(aligned_weights, suffix = c("_x", "_y")) %>% # Generate all pairs
+  filter(row_id_x < row_id_y) # Avoid duplicate comparisons and self-comparisons
+
+pairwise_comparisons |>
+  glimpse()
+# Step 3: Compute similarity metrics
+similarity_results |>
+  glimpse()
+
+similarity_results <- pairwise_comparisons %>%
+  rowwise() %>%
+  mutate(
+    # Extract weight vectors using regex pattern
+    weight_vector_x = list(c_across(matches("^(cumu.*_x|era5_land.*_x|NDSI.*_x|vhi_x|asi_x)$"))),
+    weight_vector_y = list(c_across(matches("^(cumu.*_y|era5_land.*_y|NDSI.*_y|vhi_y|asi_y)$")))
+  )
+
+similarity_results <- similarity_results %>%
+  rowwise() %>%
+  mutate(
+    # Calculate Euclidean distance
+    manhattan_distance = sum(abs(unlist(weight_vector_x) - unlist(weight_vector_y)), na.rm = TRUE)
+    # euclidean_distance = sqrt(sum((unlist(weight_vector_x) - unlist(weight_vector_y))^2, na.rm = TRUE)),
+    # # Calculate Cosine similarity
+    # cosine_similarity = sum(unlist(weight_vector_x) * unlist(weight_vector_y), na.rm = TRUE) /
+    #   (sqrt(sum(unlist(weight_vector_x)^2, na.rm = TRUE)) * sqrt(sum(unlist(weight_vector_y)^2, na.rm = TRUE)))
+  )
+
+most_similar_weight_set <- similarity_results %>%
+  group_by(wt_id_x) %>%
+   summarise(
+    # avg_jsd_distance = mean(jsd_distance, na.rm = TRUE),  # For JSD
+    avg_manhattan_distance = mean(manhattan_distance, na.rm = TRUE)  # For Manhattan
+  ) %>%
+  # Rank by lowest JSD or Manhattan distance (lower is better)
+  arrange(avg_manhattan_distance) %>%
+  slice(1)
+
+df_agg_all_weight_combos
+df_wt_combos_long |>
+  filter(wt_id == 883)
+
+# Step 4: Select relevant columns for clarity
+final_results <- similarity_results %>%
+  select(
+    adm1_name_x, wt_id_x,
+    adm1_name_y, wt_id_y,
+    euclidean_distance, cosine_similarity
+  )
+
+# View results
+final_results |>
+  ungroup() |>
+  filter(adm1_name_x!= adm1_name_y)
+############
+
+
+id_simple_asi_model <- df_wt_combos_long |>
+  filter(
+    parameter == "asi",
+    weight ==1
+  ) |>
+  pull(
+    wt_id
+  )
+
+df_simple_asi_weight_set <- df_wt_combos_long |>
+  filter(wt_id %in% id_simple_asi_model) |>
+  group_by(wt_id) |>
+  nest()
+
+
+
+
+df_weight_sets_nested <- df_wt_combos_long |>
+  group_by(wt_id) |>
+  nest()
+
+
+
+df_max_f1 |>
+  group_by(
+    pub_mo_label, wt_id
+  ) |>
+  mutate(
+    num_wt_sets = n()
+  ) |>
+  filter(num_wt_sets>1)
+
+df_max_f1_co_occur <- df_max_f1  |>
+  group_by(
+    pub_mo_label, wt_id
+  ) |>
+  mutate(
+    num_wt_sets = n()
+  ) |>
+  ungroup() |>
+  filter(num_wt_sets>1) |>
+  left_join(df_weight_sets_nested, by ="wt_id") |>
+  group_by(adm1_name,pub_mo_label) |>
+  unnest(data)
+
+# we have 3 clear options for June - def easiest to just go w/ ASI and/or VHI
+df_max_f1_co_occur |>
+  ungroup() |>
+  filter(num_wt_sets>2) |>
+  print(n=45) |>
+  distinct(pub_mo_label,wt_id, parameter,weight)
+
+df_max_f1_co_occur |>
+  print(n=45) |>
+  distinct(pub_mo_label,wt_id, parameter,weight)
+
+df_max_f1_shared <- df_max_f1  |>
+  # group_by(
+  #   pub_mo_label, wt_id
+  # ) |>
+  # mutate(
+  #   num_wt_sets = n()
+  # ) |>
+  # ungroup() |>
+  # filter(num_wt_sets>1) |>
+  left_join(df_weight_sets_nested, by ="wt_id") |>
+  group_by(adm1_name,pub_mo_label) |>
+  unnest(data) |>
+  mutate(
+    wt_id_dense = dense_rank(wt_id)
+  ) |>
+  ungroup() |>
+  mutate(
+    pub_mo_label = fct_relevel(pub_mo_label, "Apr","May","Jun")
+  )
+
+
+df_f1_labels <- df_max_f1_shared |>
+  distinct(pub_mo_label, adm1_name,.estimate) |>
+    left_join(
+    df_conf_metrics |>
+      filter(wt_id ==1) |>
+      group_by(pub_mo_label,adm1_name) |>
+      transmute(
+        simple_estimate = scales::label_number(accuracy = 0.01)(.estimate)
+  ), by = c("pub_mo_label","adm1_name")
+  ) |>
+      mutate(
+    pub_mo_label = fct_relevel(pub_mo_label, "Apr","May","Jun")
+  )
+
+
+df_max_f1_shared |>
+    mutate(
+    pub_mo_label = fct_relevel(pub_mo_label, "Apr","May","Jun")
+  ) |>
+# filter(pub_mo_label %in% c("May","Jun"), adm1_name == "Sar-e-Pul") |>
+  ggplot(
+  )+
+  geom_bar(stat="identity", aes(x= wt_id_dense, y= weight, fill = parameter))+
+  # geom_text(size = 3, position = position_stack(vjust = 0.5))
+  # geom_text(
+  #   aes(
+  #     label = scales::label_percent(accuracy=1)(weight)
+  #     ),
+  #   position = position_stack(vjust = 0.5), color ="white"
+  # )+
+  geom_label(
+    data= df_f1_labels,
+    x= 50, y= 0.5,color="red",alpha = 0.6,
+    aes(
+        label = glue(
+          "Max F1: {scales::label_number(accuracy=0.01)(.estimate)}\nASI Only F1: {simple_estimate}"
+
+          )
+    )
+  )+
+  facet_grid(
+    cols = vars(adm1_name),
+    rows = vars(pub_mo_label),
+    # labeller = labeller(adm1_name=~facet_label),
+    scales = "free_x")+
+  labs(
+    title = "Weight combinations for optimal F1 scores by data publication date and province",
+    subtitle = "Optimal F1 Score & F1 Score of simple model (ASI only shown)"
+  )+
+  theme(
+    axis.title.x =element_blank(),
+    axis.text.x =element_blank(),
+    # strip.switch.pad.grid = unit(1, "in")
+  )
+
+
+dft_sel <- dft |>
+  pivot_longer(
+    cols = -c("yr_season","pub_mo_label","adm1_name","pub_mo_date"),
+    names_to = "parameter"
+  ) |>
+  filter(
+    parameter %in% c("era5_land_soil_moisture_1m","cumu_era5_land_total_precipitation_sum","NDSI_Snow_Cover_mean","vhi","asi")
+  ) |>
+  group_by(
+    across(-c("value","yr_season","pub_mo_date"))
+  )
+dft_sel |>
+  distinct(parameter)
+scale(dft_sel$value )[,1]
+dft_scaled <- dft_sel |>
+  mutate(
+    value_centered = scale(value, center= T,scale=F)[,1],
+    zscore = scale(value,center=T,scale=T)[,1],
+    across(
+      c("value_centered","zscore"),~ifelse(parameter != "asi",.x*-1,.x)
+    )
+  )
+
+dft_scaled |>
+  # filter(parameter == "asi") |>
+  arrange(parameter)
+
+# unweighted
+dft_z_agg_unweighted <- dft_scaled |>
+  group_by(
+   yr_season ,
+   pub_mo_label,
+   adm1_name,
+   pub_mo_date
+  ) |>
+  summarise(
+    across(
+      .cols = c("zscore","value_centered"),
+      .fns = \(x) mean(x,na.rm=T)
+    ),.groups="drop"
+  )
+
+
+dft_unweighted_pred <- dft_z_agg_unweighted |>
+  left_join(
+    df_jun_asi_scaled_short
+  ) |>
+  threshold_var(
+    var= "zscore",
+    by = c("pub_mo_label","adm1_name"),
+    rp_threshold = 3
+  ) |>
+  threshold_var(
+    var= "zscore_asi_Jun",
+    by = c("pub_mo_label","adm1_name"),
+    rp_threshold = 3
+  ) |>
+  arrange(adm1_name, yr_season) |>
+  mutate(
+    across(ends_with("_flag"),~as_factor(.x))
+  ) |>
+  ungroup()
+
+recall(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag,event_level ="second")
+precision(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag,event_level ="second")
+f_meas(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag,event_level ="second")
+metrics(dft_unweighted_pred,truth = zscore_asi_Jun_flag,estimate = zscore_flag)
+
+```
