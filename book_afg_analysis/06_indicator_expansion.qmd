@@ -42,23 +42,25 @@ box::use(
   loaders = ../R/load_funcs
 )
 
-# not using box as it doesn't play nice w/ meta pacakges like `{tidymodels}`
-# in refactoring I should probably just laod this specific packages necessary
-# for tidymodels and ultimately move all the heavy tidymodels work to a new
-# notebook
+box::use(
+  dplyr[...],
+  readr[...],
+  tidyr[...],
+  purrr[...],
+  glue[...],
+  lubridate[...],
+  gt[...],
+  janitor[...],
+  ggh4x[...],
+  ggrepel[...],
+  sf[...],
+  gghdx[...],
+  ggplot2[...],
+  ggiraph[...],
+  stringr[...],
+  cumulus
 
-library(tidyverse)
-library(cumulus)
-library(gt)
-library(gghdx)
-library(glue)
-library(janitor)
-library(ggiraph)
-library(ggh4x)
-library(ggrepel)
-library(sf)
-library(tidymodels)
-library(vip)
+)
 gghdx()
 ```
 
@@ -90,33 +92,21 @@ label_parameters <- function(df){
 }
 
 
-
-
 ```
 
 ```{r}
-box::reload(loaders)
+# df_compiled_indicators <- loaders$load_compiled_indicators(aoi_adm1 = aoi_adm1)
 
-df_compiled_indicators <- loaders$load_compiled_indicators(aoi_adm1 = aoi_adm1)
+
+df_compiled_indicators <- cumulus$blob_read(,
+  container = "projects",
+  name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators_v2.parquet"
+)
 
 df_indicators_flagged <- df_compiled_indicators |>
   mutate(
     flag = rp_relevant_direction>=3
   )
-# df_indicators_flagged <- df_compiled_indicators_w_mixed |>
-#   mutate(
-#     flag = rp_relevant_direction>=3
-#   )
-
-df_indicators_flagged |>
-  filter(
-    parameter == "mam_mixed_seas_observed"
-  )
-df_indicators_flagged |>
-  filter(is.na(pub_mo_label
-               ))
-
-
 
 # get validation set flagged w/ RP breaches
 df_valid_flag <-
@@ -133,21 +123,6 @@ df_valid_flag <-
    yr_season,adm1_name,valid_flag
   )
 
-df_valid_flag |>
-  arrange(
-    adm1_name,yr_season
-  ) |>
-
-  print(n=100)
-# df_indicators_flagged |>
-#   filter(
-#     str_detect(parameter,"^mam")
-#   ) |>
-#   left_join(
-#     df_valid_flag,
-#     by = c("yr_season","adm1_name")
-#   ) |>
-#   glimpse()
 
 df_env_compare <- df_indicators_flagged |>
   left_join(
@@ -204,30 +179,7 @@ df_perf_metrics <- df_env_compare |>
     rank_correct= dense_rank(accuracy)
   ) |>
   label_parameters()
-  #   mutate(
-  #   parameter_simplified = case_when(
-  #     # str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
-  #     str_detect(parameter,"NDSI")~"NDSI",
-  #     str_detect(parameter,"asi")~"ASI",
-  #     str_detect(parameter,"vhi")~"VHI",
-  #
-  #     str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
-  #     str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
-  #     str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
-  #     str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
-  #     str_detect(parameter,"era5_land_temperature_2m")~"Temp (ERA)",
-  #     str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
-  #     str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
-  #     str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
-  #     str_detect(parameter,"cumu_era5_land_temperature_2m")~"Temp cumu (ERA5)",
-  #
-  #     str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
-  #     str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
-  #     str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
-  #     .default = parameter
-  #   )
-  # ) |>
-  # ungroup()
+
 
 ```
 
@@ -433,7 +385,7 @@ generalize_f1 <- function(df, aoi, weight=NULL){
       adm1_name %in% aoi
     ) |>
     group_by(
-      pub_mo_label, parameter,parameter_simplified
+      pub_mo_label, parameter,parameter_label
     )
   if(is.null(weight)){
     ret <-  df_agg |>
@@ -465,7 +417,6 @@ wt_set <- list(NO_WT = NULL, AREA_WT = "area_wt", AREA_FSC_PIN_WT = "area_x_fsc_
 df_perf_metrics_w_wt <- df_perf_metrics |>
   left_join(df_area_wt_table)
 
-df_perf_metrics_w_wt |> count(parameter) |> print(n=23)
 
 df_perf_metrics_w_wt_filt <- df_perf_metrics_w_wt |>
         filter(
@@ -503,7 +454,7 @@ lp_f1_combined <- imap(
       ggplot(
         aes(
           x= pub_mo_label,
-          y = parameter_simplified,
+          y = parameter_label,
           fill = !!sym(perf_param)
         )
       )+
@@ -551,8 +502,7 @@ lp_f1_combined <- imap(
   }
 
 )
-lp_f1_combined$AREA_WT
-lp_f1_combined$NO_WT
+
 
 
 ldf_f1_combined <- imap(
@@ -582,8 +532,10 @@ ldf_f1_combined <- imap(
       )
   }) |>
   list_rbind()
-ldf_f1_combined
+```
 
+quick look at ndsi params - later we just decide to go w/ mean
+```{r}
 lp_ndsi_params <- map(
   wt_set,
   \(wt_temp){
@@ -631,13 +583,21 @@ lp_ndsi_params <- map(
 )
 
 lp_ndsi_params$NO_WT
-library(patchwork)
-lp_f1_combined$NO_WT +
-  lp_f1_combined$AREA_WT +
-  lp_f1_combined$AREA_FSC_PIN_WT + plot_layout(nrow = 1)+
-  plot_annotation(title= "Average F1 Score Across Provinces")
+```
 
+
+```{r}
+# combining with patchwork like this looks terrible when rendered in html
+# box::use(patchwork[...])
+# lp_f1_combined$NO_WT +
+#   lp_f1_combined$AREA_WT +
+#   lp_f1_combined$AREA_FSC_PIN_WT + plot_layout(nrow = 1)+
+#   plot_annotation(title= "Average F1 Score Across Provinces")
+
+# So just go separate
 girafe(ggobj =lp_f1_combined$AREA_FSC_PIN_WT)
+girafe(ggobj =lp_f1_combined$NO_WT)
+girafe(ggobj =lp_f1_combined$AREA_WT)
 
 ```
 
@@ -770,12 +730,12 @@ df_top_metrics_label <- df_metrics_filt |>
   mutate(
     include = row_number()
   ) |>
-  print(n=25) |>
+  # print(n=25) |>
   filter(include%in% c(1:3) & f1_lgl) |>
   ungroup()
 
-df_top_metrics_label |>
-  filter(adm1_name == "Sar-e-Pul")
+# df_top_metrics_label |>
+#   filter(adm1_name == "Sar-e-Pul")
 
 df_metrics_top3 <- df_metrics_filt |>
         group_by(adm1_name, pub_mo_label) |>
@@ -783,7 +743,7 @@ df_metrics_top3 <- df_metrics_filt |>
 
 
 viridis_colors <- viridisLite::viridis(15, option = "A")
-length(c25)
+
 c25 <- c(
 
   "green4",
@@ -823,13 +783,13 @@ p_ts_f1 <- df_metrics_top3 |>
     alpha=0.5, color = "darkgrey"
   )+
   geom_point(
-    aes(color =parameter_simplified)
+    aes(color =parameter_label)
   )+
   geom_label_repel(
     data = df_metrics_top3,
     aes(
-      label = parameter_simplified,
-      fill = parameter_simplified
+      label = parameter_label,
+      fill = parameter_label
     ),
     max.overlaps = 20,
     color = "black"
@@ -849,18 +809,14 @@ p_ts_f1 <- df_metrics_top3 |>
 
   )
 
-# whta if we just show values > 0.5
-# p_ts_f1_gte0.5 <- df_metrics_filt |>
-#    filter(
-#           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max"),
-#           !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
-#         ) |>
-#   filter(f1>=0.5) |>
-#   filter(
-#     adm1_name != "Badkhshan"
-#   # ) |>
+box::use(
+  patchwork[...]
+)
+```
 
-
+F1 by pub mo plot  w/ out mixed forecat observational
+```{r}
+#| fig.height: 9
 
 ggplot(
   df_metrics_filt |>
@@ -905,6 +861,14 @@ ggplot(
     legend.position = "none"
 
   )
+
+```
+
+same plot, but w/ mixed forecast indicator included
+
+```{r}
+#| fig.height: 9
+
 ggplot(
   df_metrics_filt,
   aes(
@@ -945,23 +909,16 @@ ggplot(
 
   )
 
-p_ts_f1_gte0.5
-library(patchwork)
-# box::use(patchwork[...])
 
-p_ts_f1 +
-  p_perf_tile_combined+
 
-  plot_layout(widths = c(2,1))+
-  plot_annotation(
-    title = "How well do RS indicators predict worst end of season ASI values?"
-  )
 ```
 
-## Suggested Next Steps:
+
 
 ## Appendix
 
+
+mostly scrap code and abandoned
 one off snow checks
 
 ```{r}
@@ -969,12 +926,13 @@ one off snow checks
 
 
 # quick gut check on era5 snow fall - can add to appendix during cleanup
-df_era_snow <- df_environmental_yr_adj |>
-  filter(
-    yr_season >= df_validation_range[1],
-    yr_season <= df_validation_range[2],
-    adm1_name %in% aoi_adm1
-  ) |>
+df_era_snow <- df_environmental_yr_adj
+  # filter(
+  #   yr_season >= df_validation_range[1],
+  #   yr_season <= df_validation_range[2],
+  #   adm1_name %in% aoi_adm1
+  # ) |>
+ df_era_snow <-  df_env_compare |>
   # this group_by() -> filter() step is just to grab the last dekad per month
   # for ASI & VHI, the rest of the data is monthly time-step so it has no
   # effect on them
@@ -1113,6 +1071,8 @@ df_metrics_simple |>
 
 ### Point System
 
+Abandoned idea for z-score composite aggregation.
+
 Point system - you need 4 points
 
 Feb: SEAS5 : 4 points Mar: - Observational Rainfall (CHIRPS): 2 points - Observed Soil Moisture : 2 points - NDSI or SWE: 2 points April: - Observed Rainfall CHIRPS OR ERA5: 4 points - NDSI: 2 points - SWE: 2 points May: - ASI: 4 points - VHI: 2 points - Soil Moisture: 2 points
@@ -1120,6 +1080,7 @@ Feb: SEAS5 : 4 points Mar: - Observational Rainfall (CHIRPS): 2 points - Observe
 Jun: - ASI: 4 - VHI: 2 - Soil Moisture 2
 
 ```{r}
+#| eval: false
 
 df_ps <- df_env_compare |>
   label_parameters() |>
@@ -1357,6 +1318,7 @@ lp_observational_tile$Mar
 ### Runoff
 
 ```{r}
+#| eval: false
 # i need to have a little look at this runoff var
 
 df_env_filt |>

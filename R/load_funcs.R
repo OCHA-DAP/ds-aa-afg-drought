@@ -13,7 +13,8 @@ box::use(
   )
 
 box::use(
-  ./blob_connect
+  ./blob_connect,
+  ./utils
 )
 
 
@@ -115,10 +116,15 @@ load_compiled_indicators <- function(aoi_adm1) {
     filter_to_validation_range(df_valid = df_validation_set) |>
     dplyr$filter(adm1_name %in% aoi_adm1) |>
     dplyr$group_by(adm1_name, parameter, pub_mo_label = lubridate$month(pub_mo_date,label = T, abbr = T)) |>
-    dplyr$arrange(dplyr$desc(value), .by_group = TRUE) |>
-    dplyr$mutate(rank = dplyr$row_number(), q_rank = rank/(max(rank)+1), rp_max_direction = 1/q_rank) |>
-    dplyr$arrange(value, .by_group = TRUE) |>
-    dplyr$mutate(rank = dplyr$row_number(), q_rank = rank/(max(rank)+1), rp_min_direction = 1/q_rank) |>
+    dplyr$mutate(
+      rp_max_direction = utils$rp_empirical(x= value, direction ="-1", ties_method = "average"),
+      rp_min_direction = utils$rp_empirical(x= value , direction = "1", ties_method = "average")
+    ) |>
+
+    # dplyr$arrange(dplyr$desc(value), .by_group = TRUE) |>
+    # dplyr$mutate(rank = dplyr$row_number(), q_rank = rank/(max(rank)+1), rp_max_direction = 1/q_rank) |>
+    # dplyr$arrange(value, .by_group = TRUE) |>
+    # dplyr$mutate(rank = dplyr$row_number(), q_rank = rank/(max(rank)+1), rp_min_direction = 1/q_rank) |>
     dplyr$ungroup() |>
     dplyr$mutate(
       rp_relevant_direction  = dplyr$case_when(

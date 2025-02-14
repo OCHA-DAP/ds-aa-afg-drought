@@ -1,8 +1,23 @@
 box::use(
-  dplyr,
-  lubridate,
-  loaders =./R/load_funcs
+  dplyr[...],
+  janitor,
+  lubridate[...],
+  cumulus
 )
+
+box::use(
+  loaders =../R/load_funcs,
+  utils = ../R/utils,
+
+)
+
+
+aoi_adm1 <- c(
+  "Takhar",
+  "Sar-e-Pul" ,
+  "Faryab"
+)
+
 
 # need to define range specifically before calculating any z-scores
 asi_validation_date_range <-   c( "1984-01-01","2024-01-01")
@@ -10,7 +25,7 @@ asi_validation_date_range <-   c( "1984-01-01","2024-01-01")
 
 # pull seas forecast -- pulling more data than necessary, but thats okay
 # we will filter in memory -- just to save coding time.
-df_seas5_aoi <- cumulus::pg_load_seas5_historical(
+df_seas5_aoi <- cumulus$pg_load_seas5_historical(
   iso3 = "AFG",
   adm_level = 1,
   adm_name = aoi_adm1,
@@ -20,14 +35,14 @@ df_seas5_aoi <- cumulus::pg_load_seas5_historical(
 
 # set up data w/ standard columns being output from loaders$load_compiled_indicators()
 df_filt <- df_seas5_aoi |>
-  dplyr$rename(
+  rename(
     pub_mo_date = issued_date
   ) |>
-  dplyr$mutate(
-    valid_mo = lubridate$month(valid_date,label =T,abbr=T),
-    pub_mo_label = as.character(lubridate$month(pub_mo_date, label = T,abbr=T)),
+  mutate(
+    valid_mo = month(valid_date,label =T,abbr=T),
+    pub_mo_label = as.character(month(pub_mo_date, label = T,abbr=T)),
     parameter = paste0("SEAS5-",valid_mo),
-    yr_date =lubridate$floor_date(valid_date, "year")
+    yr_date =floor_date(valid_date, "year")
   ) |>
   # were only intereted in the April- May forecasts produced in both April & May
   filter(
@@ -69,7 +84,7 @@ df_era5 <- loaders$load_era5_land_multiband()
 
 # do the same sort of filtering/harmonizations
 df_era5_filt <- df_era5 |>
-  clean_names() |>
+  janitor$clean_names() |>
   filter(
     date >= asi_validation_date_range[1],
     date <= asi_validation_date_range[2],
@@ -83,7 +98,7 @@ df_era5_filt <- df_era5 |>
     pub_mo_date =date + months(1),
 
     pub_mo_label = as.character(month(pub_mo_date, label = T, abbr = T)),
-    yr_date = lubridate$floor_date(date,"year")
+    yr_date = floor_date(date,"year")
   )
 
 
@@ -194,47 +209,16 @@ df_mam_mixed_seas_observ <- bind_rows(
 # necessary for chapter 6... so i'll add them in so we can update plots in
 # chapter 6.
 
-
-df_compiled_indicators |> filter(
-  str_detect(parameter,"SEAS")
-)
-1/rank(desc(c(1,4,3,2)))
-
 df_mam_mixed_w_rp <- df_mam_mixed_seas_observ |>
-  dplyr$group_by(adm1_name, parameter, pub_mo_label) |>
-  dplyr$mutate(
-    rank = rank(zscore,ties.method = "first"),
-    q_rank = rank/(n()+1),
-    rp_relevant_direction = 1/ q_rank
+  group_by(adm1_name, parameter, pub_mo_label) |>
+  mutate(
+    rp_relevant_direction = utils$rp_empirical(zscore,ties_method = "average"),
   ) |>
   ungroup()
 
 # just going to write this out independently
 cumulus$blob_write(
-  df_mam_mixed_seas_observ,
+  df_mam_mixed_w_rp,
   container = "projects",
   name = "ds-aa-afg-drought/processed/vector/df_combined_era5_seas5.parquet"
 )
-
-
-df_compiled_indicators <- loaders$load_compiled_indicators(aoi_adm1 = aoi_adm1)
-# and w/ the larger indicator set
-
-
-df_compiled_indicators_w_mixed <- bind_rows(
-  df_compiled_indicators,
-  df_mam_mixed_w_rp |>
-    rename(
-      value = zscore
-    )
-)
-
-# taking this over to chap 6.
-bind_rows(
-  df_compiled_indicators,
-  df_mam_mixed_seas_observ
-) |>
-  cumulus$blob_write(
-    container = "projects",
-    name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators.parquet"
-  )

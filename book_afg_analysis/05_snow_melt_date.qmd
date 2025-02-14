@@ -206,6 +206,8 @@ girafe(ggobj = p_chirps_winter)
 Below we calculate the mask components independently soley for visualization/communication purposes.
 
 ```{r}
+#|eval: false
+
 # Define complete collection
 complete_col <- ee$ImageCollection("MODIS/061/MOD10A1")$
   select("NDSI_Snow_Cover")
@@ -658,13 +660,12 @@ df_fao_wide <- df_fao |>
     month %in% c("05","06")
   ) |>
   pivot_wider(
-    id_cols = c("country","adm1_code","province","year"),
-    values_from = data,
-    names_from= c("type","mo")
+    id_cols = c("country","adm1_code","adm1_name","year"),
+    values_from = value,
+    names_from= c("parameter","mo")
   ) |>
   rename(
-    yr = year,
-    adm1_name = province
+    yr = year
   )
 ```
 

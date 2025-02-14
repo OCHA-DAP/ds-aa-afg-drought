@@ -8,6 +8,29 @@ box::use(
   glue
 )
 
+
+#' return_period empirical
+#'
+#' @param x
+#' @param direction `character` representing directioality/ polarity supplied
+#'   supplied to rank() function options are "1" and "-1". Default is "1"
+#'   which maintains the same default setting as rank()
+#' @param ties_method `character` representing the method to break ties.
+#'   options are inherited from rank and include “average” (default),
+#'    “first”, “last”, “random”, “max”, “min”
+#'
+#' @returns vector of length x with empirical return period values
+#' @export
+#'
+#' @examples
+rp_empirical <- function(x, direction=c("1","-1"),ties_method = "average"){
+  direction <- as.numeric(rlang::arg_match(direction))
+  rank = rank(x*direction,ties.method = ties_method)
+  q_rank = rank/(length(x)+1)
+  rp = 1/q_rank
+  return(rp)
+}
+
 #' threshold_var
 #' @description
 #' useful utility function doing grouped return period thresholding all in one

@@ -42,12 +42,14 @@ LATEST_SEASON_PREDICTABLE <-  c(3,4)
 RP_THRESHOLD <-  c(3,4,5)
 
 box::use(
+  loaders = ../R/load_funcs,
+  seas5 = ../R/seas5_utils,
   ../R/blob_connect,
   ../R/utils[download_fieldmaps_sf,load_aoi_names],
-  seas5 = ../R/seas5_utils,
+  ../ R/utils,
   ../R/pg
 )
-box::reload(seas5)
+
 box::use(
   dplyr[...],
   forcats[...],
@@ -70,7 +72,6 @@ box::use(
 )
 gghdx()
 ```
-
 
 ```{r}
 lgdf <- cumulus$download_fieldmaps_sf(iso3= "AFG",layer = list("afg_adm0","afg_adm1","afg_adm2"))
@@ -775,6 +776,13 @@ Why are we choosing a 3 year RP? Well we do see that CERF allocatoins since 2008
 
 ```{r}
 
+aoi_adm1 <- c(
+  "Takhar",
+  # "Badakhshan",
+  # "Badghis",
+  "Sar-e-Pul" ,
+  "Faryab"
+  )
 df_fao <- loaders$load_fao_vegetation_data()
 df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_allocations.xlsx") |>
   clean_names() |>
@@ -786,7 +794,7 @@ df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_all
 # w/ rp at 5 u miss 2006 activatoin
 rp_compare <- 4
 
-df_asi_eos <- df_fao |>
+df_asi_eos_full <- df_fao |>
   clean_names() |>
   mutate(
     date= as_date(date),
@@ -810,7 +818,31 @@ df_asi_eos <- df_fao |>
   rename(
     strata = adm1_name
   )
-
+df_asi_eos_shortened <- df_fao |>
+  clean_names() |>
+  mutate(
+    date= as_date(date),
+    yr_season = floor_date(date, "year")
+  ) |>
+  filter(
+    adm1_name %in% aoi_adm1,
+    year (date)<=2024,
+    year(date)>=2006,
+    month(date)==5,
+    dekad ==3,
+    parameter == "asi"
+  ) |>
+    utils$threshold_var(
+    var="value",
+    by= c("adm1_name"),
+    rp_threshold = rp_compare
+  ) |>
+    mutate(
+    yr = year(yr_season)
+  ) |>
+  rename(
+    strata = adm1_name
+  )
 
 
 df_cerf_yr <-  df_cerf |>
@@ -824,12 +856,12 @@ df_cerf_yr <-  df_cerf |>
   )
 ```
 
-
 historical view of end of season ASI vs CERF allocation
+
 ```{r}
 # ASI vs
 bind_rows(
-df_asi_eos,
+df_asi_eos_full,
   df_cerf_yr |>
     mutate(
       strata = "CERF Allocations",
@@ -866,12 +898,50 @@ df_asi_eos,
   labs(
     title = glue("End of Season ASI - Thresholded at {rp_compare} year RP and Historical CERF Activations")
   )
+bind_rows(
+df_asi_eos_shortened,
+  df_cerf_yr |>
+    mutate(
+      strata = "CERF Allocations",
+      value_flag = n>0
+    )
+) |>
+  mutate(
+    value_fill = case_when(
+      value_flag==F ~ "no activations",
+      value_flag == T & strata != "CERF Allocations"~"activation",
+      value_flag == T  & strata == "CERF Allocations" & n ==1~ "1 activation",
+      value_flag == T & strata == "CERF Allocations" & n ==2~ "2 activations",
+      .default = "?"
+
+    ),
+    strata = factor(strata, c("Faryab","Sar-e-Pul","Takhar","CERF Allocations")),
+  ) |>
+  ggplot(
+    aes(x= strata, y= yr, fill = value_fill)
+  )+
+  geom_tile(color = "white") +
+  scale_fill_manual(
+    values = c("no activations"=hdx_hex("grey-medium"),
+               "activation" = hdx_hex("tomato-light"),
+               "1 activation"=hdx_hex("tomato-hdx"),
+               "2 activations"= hdx_hex("tomato-dark"))
+  )+
+  scale_y_reverse(expand= c(0,0), breaks= 1984:2024)+
+  scale_x_discrete(expand= c(0,0))+
+  theme(
+    axis.title = element_blank(),
+    legend.position = "none"
+  )+
+  labs(
+    title = glue("End of Season ASI - Thresholded at {rp_compare} year RP and Historical CERF Activations"),
+    subtitle = "Return periods calculated only from years where CERF data is available 2006-2024"
+  )
 ```
 
-
-
 historical view of Feb SEAS5 prediction for MAM vs CERF allocation
-````{r}
+
+```{r}
 rp_compare <- 3
 
 df_asi_validation <- df_fao |>
@@ -941,8 +1011,7 @@ df_seas5_mam |>
   labs(
     title = glue("Feb SEAS5 Prediction of MAM - Thresholded at {rp_compare} year RP and Historical CERF Activations")
   )
-````
-
+```
 
 quantitative analysis: optimal RP thresholds for prediction of CERF allocation
 
@@ -1050,8 +1119,6 @@ bind_rows(
   )
 
 ```
-
-
 
 ## Remaining Steps
 
