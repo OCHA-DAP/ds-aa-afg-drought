@@ -467,6 +467,18 @@ df_timeseries
 ```
 
 ```python
+blob_name = f"ds-aa-afg-drought/trigger_timeseries/cdi_wt_id_{wt_id}.parquet"
+```
+
+```python
+blob_name
+```
+
+```python
+stratus.upload_parquet_to_blob(df_timeseries.reset_index(), blob_name)
+```
+
+```python
 df_timeseries["year"].nunique() / 14
 ```
 
@@ -476,6 +488,10 @@ df_timeseries["zscore"].min(), df_timeseries["zscore"].max()
 
 ```python
 df_timeseries["zscore_asi_Jun"].min(), df_timeseries["zscore_asi_Jun"].max()
+```
+
+```python
+df_timeseries
 ```
 
 ```python
