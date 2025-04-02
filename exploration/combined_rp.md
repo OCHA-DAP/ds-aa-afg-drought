@@ -112,10 +112,6 @@ total_years = df_combined["year"].nunique()
 ```
 
 ```python
-dff
-```
-
-```python
 dicts = []
 for cdi_rp in df_combined["cdi_rp"].unique():
     dff = df_combined[df_combined["cdi_rp"] >= cdi_rp]
@@ -131,6 +127,10 @@ for cdi_rp in df_combined["cdi_rp"].unique():
     )
 
 df_cdi_rps = pd.DataFrame(dicts)
+```
+
+```python
+dff
 ```
 
 ```python
@@ -216,15 +216,6 @@ df_rps = pd.DataFrame(dicts)
 
 ```python
 df_rps = df_rps.merge(df_seas5_rps).merge(df_cdi_rps)
-```
-
-```python
-total_years
-```
-
-```python
-cols = ["rp_seas5_combined", "rp_cdi_combined"]
-df_rps_acceptable.sort_values(cols).drop_duplicates(subset=cols, keep="last")
 ```
 
 ```python
