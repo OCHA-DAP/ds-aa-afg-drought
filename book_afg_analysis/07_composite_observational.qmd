@@ -820,10 +820,20 @@ ck <- cumulus$blob_read(
 )
 ```
 
+```{r}
+#| eval: false
+
+cumulus$blob_write(
+  ldf_perf$gte_1984_w_mixed_forecast_obs$HISTORICAL_WEIGHTED ,
+  container = "projects",
+  name = "ds-aa-afg-drought/weight_parameter_set/gte1984/historical_weighted_w_mixed_fcast_obsv.parquet"
+)
+```
+
 ### Weighting results
 
-Here we look at the results when we use parameters going back to 1984 and
-include a snow cover variable. These plots were put in the google slides
+Here we look at the results when we use parameters going back to 1984 and include a snow cover variable. These plots were put in the google slides
+
 ```{r}
 
 ldf_top3$gte1984 |>

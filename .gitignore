@@ -208,3 +208,6 @@ book_afg_analysis/_book/*
 
 dash_explore/*
 outputs/*
+
+*.ipynb
+.idea/*
