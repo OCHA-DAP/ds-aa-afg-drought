@@ -5,7 +5,9 @@ box::use(
   stringr,
   tools,
   sf,
-  glue
+  glue,
+  tidyr,
+  cumulus
 )
 
 
@@ -328,4 +330,44 @@ label_parameters <- function(df){
         .default = parameter
       )
     )
+}
+
+
+#' Load design weights
+#'
+#' @returns list of named data.frames. Name reflects date at which the weights
+#'   were considered weights use for trigger mechanism. If new weight
+#'   compositions are decided upon they will be added as new data.frames
+#' @export
+
+design_weights <- function(){
+  list(
+    "20250401" =tidyr$tibble(
+      parameter = c(
+        "era5_land_snow_cover",
+        "cumu_era5_land_total_precipitation_sum",
+        "era5_land_soil_moisture_1m",
+        "mam_mixed_seas_observed",
+        "asi",
+        "vhi"
+      ),
+      weight = c(0.15, 0.05,0.05,0.25,0.25,0.25)
+    )
+  )
+}
+
+
+#' load_window_b_thresholds
+#'
+#' @param version `character` version of thresholds based on date implemented
+#'   in formt YYYYMMDD
+#'
+#' @returns data.frame with window B thresholds
+#' @export
+
+load_window_b_thresholds <- function(version = "20250401"){
+  cumulus$blob_read(
+    container = "projects",
+    name = glue$glue("ds-aa-afg-drought/monitoring_inputs/window_b_cdi_thresholds_{version}.parquet")
+  )
 }
