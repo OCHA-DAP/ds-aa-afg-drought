@@ -10,7 +10,7 @@ box::use(
 
 
 #' @export
-load_window_b_historical_plot_data <- function(version = "20250401"){
+load_window_b_historical_plot_data <- function(version = "20250408"){
   cumulus$blob_read(
     container = "projects",
     # where is this made
@@ -25,7 +25,7 @@ load_window_b_historical_plot_data <- function(version = "20250401"){
 #' @returns data.frame with window B thresholds
 #' @export
 
-load_window_b_thresholds <- function(version = "20250401"){
+load_window_b_thresholds <- function(version = "20250408"){
   cumulus$blob_read(
     container = "projects",
     name = glue$glue("ds-aa-afg-drought/monitoring_inputs/window_b_cdi_thresholds_{version}.parquet")
@@ -40,7 +40,7 @@ load_window_b_thresholds <- function(version = "20250401"){
 #'   updating.
 #' @returns
 #' @export
-load_distribution_params <- function(version = "20250401"){
+load_distribution_params <- function(version = "20250408"){
   cumulus$blob_read(
     container = "projects",
     name = glue$glue("ds-aa-afg-drought/monitoring_inputs/window_b_cdi_distribution_params_{version}.parquet")

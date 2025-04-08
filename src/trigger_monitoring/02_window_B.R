@@ -1,47 +1,41 @@
 
 box::use(
-  # ../R/blob_connect,
-  ../../R/utils,
   loaders = ../../R/load_funcs,
-  # seas5 = ../R/seas5_utils,
-  # loaders = ../R/load_funcs,
   dplyr[...],
   tidyr[...],
   stringr[...],
   glue[...],
-  # glue[...],
-  # janitor[...],
-  # yardstick[...],
   ggplot2[...],
   gghdx[...],
   forcats[...],
-  # ggrepel[...],
-  # lubridate[...],
-  # sf[...],
   readr[...],
   lubridate[...],
   purrr[...],
   ggrepel[...],
-  # patchwork[...],
   cumulus
 )
+
+
 gghdx()
-test_run <- c(T,F)[2]
-year_run <- ifelse(test_run,2024,year(Sys.Date()))
+
+IS_TEST_RUN <- c(T,F)[2]
+YEAR_RUN <- ifelse(IS_TEST_RUN,2024,year(Sys.Date()))
 AOI_ADM1 <- c("Takhar","Sar-e-Pul", "Faryab")
 
-box::reload(utils)
 box::use(
+  ../../R/utils,
   ./R_monitoring/wranglers,
   mload= ./R_monitoring/monitoring
 )
-box::reload(mload)
-box::reload(wranglers)
-df_thresholds <- mload$load_window_b_thresholds()
-df_dist_params <-  mload$load_distribution_params()
+
+
+# todo - standardzie version name
+df_thresholds <- mload$load_window_b_thresholds(version = "20250408")
+df_dist_params <-  mload$load_distribution_params(version = "20250408")
 df_weighting <- utils$design_weights()$`20250401`
 
-dfz_historical_plot <-  mload$load_window_b_historical_plot_data()
+# historical data for plotting
+dfz_historical_plot <-  mload$load_window_b_historical_plot_data(version = "20250408")
 
 
 # Load indicator components -----------------------------------------------
@@ -49,6 +43,8 @@ dfz_historical_plot <-  mload$load_window_b_historical_plot_data()
 ## FAO: ASI & VHI ####
 df_fao <- loaders$load_fao_vegetation_data()
 
+
+# quick check
 df_fao |>
   group_by(
     parameter
@@ -62,12 +58,12 @@ df_fao |>
 df_fao_processed <- wranglers$process_fao_trigger_component(
   df = df_fao,
   aoi = AOI_ADM1,
-  test = test_run
+  test = IS_TEST_RUN
   )
 
 ## ERA5 ####
 
-df_era5_raw <- mload$load_raw_era5_trigger_component(test = test_run)
+df_era5_raw <- mload$load_raw_era5_trigger_component(test = IS_TEST_RUN)
 
 ### Soil Moisture #####
 
@@ -85,7 +81,7 @@ df_era5_snow_cover_processed <- wranglers$process_era5_snowcover_component(df = 
 ## Mixed Forecast Observation  (SEAS5 + ERA5) ####
 
 # load forecast data in
-df_seas5 <- mload$load_seas5_trigger_component(test = test_run)
+df_seas5 <- mload$load_seas5_trigger_component(test = IS_TEST_RUN)
 
 df_mixed_fcast_obs_processed <- wranglers$aggregate_mixed_fcast_obs(
   df_fcast = df_seas5,
@@ -102,6 +98,9 @@ df_cdi_trigger <- bind_rows(
   df_mixed_fcast_obs_processed
 )
 
+
+# here we join the distribution parameters (1984-2024) to calculate z-score of
+# 2025 data
 df_cdi_trigger_indicators <- df_cdi_trigger |>
   left_join(
     df_dist_params
@@ -113,6 +112,13 @@ df_cdi_trigger_indicators <- df_cdi_trigger |>
   left_join(
     df_weighting,by ="parameter"
   )
+
+
+# a quick view - can help understand drivers
+df_cdi_trigger_indicators |>
+  arrange(adm1_name,desc(zscore))
+
+
 
 df_cdi_agg <- df_cdi_trigger_indicators |>
   group_by(
@@ -135,6 +141,8 @@ df_activation_status <- df_cdi_agg |>
 
 
 ## Simple plot - Activation Status ####
+
+# simple visualization of above
 p_cdi <- df_activation_status |>
   ggplot(
     aes(x= adm1_name, y= cdi),
@@ -175,7 +183,7 @@ p_cdi <- df_activation_status |>
   )+
   labs(
     title = "Window B - Combined Drought Indicator",
-    subtitle = glue("April {year_run} Activation Moment"),
+    subtitle = glue("April {YEAR_RUN} Activation Moment"),
     caption = "Horizonal red dashed lines indicate trigger threshold level."
   )+
   theme(
@@ -191,6 +199,36 @@ p_cdi <- df_activation_status |>
   )
 
 
+
+## Historical Line Plot #####
+if(!IS_TEST_RUN){
+  # will have to combine new 2025 indicators in
+  dfz_historical_indicators_w_new <- bind_rows(
+    dfz_historical_plot,
+    # add 2025 indicator values
+    df_cdi_trigger_indicators |>
+      select(pub_mo_date,pub_mo_label,adm1_name,parameter,value, zscore)
+  )
+
+  # To the historical record of indicators (including 2025) add 2025 CDI
+  # calculated indicator as well for plotting
+    dfz_lineplot_prepped <- bind_rows(
+      dfz_historical_indicators_w_new,
+      # just some wrangling of 2025 CDI data so it fits format
+      df_activation_status |>
+        mutate(
+          parameter = "cdi",
+          pub_mo_date = as_date("2025-04-01")
+        ) |>
+        select(adm1_name, pub_mo_label,parameter,pub_mo_date,zscore =cdi,flag)
+    )
+}
+
+if(IS_TEST_RUN){
+  dfz_lineplot_prepped <- dfz_historical_plot
+
+}
+
 pal_historical <- c(
   "CDI" = "black",
   "ASI" = "#FBB4AE",
@@ -200,52 +238,17 @@ pal_historical <- c(
   "Soil moisture" = "#FED9A6",
   "Snow Cover" = "#FFFFCC"
 )
-
-if(!test_run){
-  # will have to combine new 2025 indicators in
-  dfz_plot1 <- bind_rows(
-    dfz_historical_plot,
-    df_cdi_trigger_indicators |>
-      select(pub_mo_date,pub_mo_label,adm1_name,parameter,value, zscore)
-  ) |>
-    bind_rows(
-      df_activation_status |>
-        mutate(
-          parameter = "cdi",
-          pub_mo_date = as_date("2025-04-01")
-        ) |>
-        select(adm1_name, pub_mo_label,parameter,pub_mo_date,zscore =cdi,flag)
-    ) |>
-    mload$label_parameters()
-
-}
-
-
-dfz_plot <- dfz_plot1 |>
+dfz_plot <- dfz_lineplot_prepped |>
+  mload$label_parameters() |>
   mutate(
     parameter_label = fct_relevel(fct_expand(parameter_label,names(pal_historical)),names(pal_historical)),
     yr_season = floor_date(pub_mo_date, "year"),
     yr_label = year(yr_season)
   )
 
-dfz_plot |>
-  mutate(
-    yr_season = floor_date(pub_mo_date, "year")
-  ) |>
-  filter(
-    year(yr_season )==2025
-  ) |>
-  print(n=2021)
-  filter(
-
-  )
-
 # NEED TO DYNAMICALLY SUPPLY COLOR OF CURRENT YEAR POINT.
 # df_activation_status
 
-
-dfz_plot$pub_mo_date |>
-  range(na.rm=T)
 
 
 dfz_plot |>
@@ -301,9 +304,9 @@ dfz_plot |>
   )+
   geom_label(
     data = df_thresholds |> mutate(parameter_label=NA),
-    x= as_date("2025-06-01"),
+    x= as_date("2025-12-01"),
     aes(y = rv, label = round(rv,2)),
-    vjust = -0.5,         # Adjust to position above the line
+    vjust = 0, #-0.5,         # Adjust to position above the line
     hjust = 0,            # Left-align text at 2025 position
     color = hdx_hex("tomato-dark"),     # Match line color
     size = 3
@@ -318,15 +321,7 @@ dfz_plot |>
     size = 3,
     alpha =1
   )+
-  # geom_text_repel(
-  #   data= dfz_plot |>
-  #     filter(parameter == "cdi",year(pub_mo_date)==2025),
-  #   aes(label = yr_label),
-  #   color = "blue",
-  #   vjust= -2,
-  #   size = 3,
-  #   alpha =1
-  # )+
+
   scale_color_manual(values =pal_historical,drop = FALSE)+
   facet_wrap(
     ~adm1_name, scales= "free", ncol =1
@@ -334,7 +329,7 @@ dfz_plot |>
   scale_x_date(
     date_labels = "%%Y",
     date_breaks = "2 years",
-    expand = expansion(mult = c(0,.09)),
+    expand = expansion(mult = c(0,.095)),
     # expand = c(0,0)
   )+
   labs(y= "Indicator anomaly")+
