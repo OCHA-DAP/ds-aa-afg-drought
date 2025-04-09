@@ -12,7 +12,8 @@ box::use(
   lubridate[...],
   purrr[...],
   ggrepel[...],
-  cumulus
+  cumulus,
+  ggfx
 )
 
 
@@ -106,8 +107,8 @@ df_cdi_trigger_indicators <- df_cdi_trigger |>
     df_dist_params
   ) |>
   mutate(
-    zscore=(value - mu)/sigma,
-    zscore = ifelse(parameter != "asi",zscore*-1,zscore)
+    zscore_raw=(value - mu)/sigma,
+    zscore = ifelse(parameter != "asi",zscore_raw*-1,zscore_raw)
   ) |>
   left_join(
     df_weighting,by ="parameter"
@@ -235,9 +236,16 @@ pal_historical <- c(
   "VHI" = "#CCEBC5",
   "Cumulative precip" ="#B3CDE3",
   "MAM precip (mixed obs forecast)" ="#DECBE4",
-  "Soil moisture" = "#FED9A6",
-  "Snow Cover" = "#FFFFCC"
+  # "Soil moisture" = "#FED9A6",
+  "Soil moisture" = "#fec44f",
+  # "Snow Cover" = "#FFFFCC"
+  # "Snow Cover" = "#FFFF4C"
+  "Snow Cover" = "#FFFF90"
+  # "Snow Cover" = 'lightgrey'
+  # "Snow Cover" = "yellow"
+  # "Snow Cover" = "#ede89f"
 )
+
 dfz_plot <- dfz_lineplot_prepped |>
   mload$label_parameters() |>
   mutate(
@@ -245,9 +253,6 @@ dfz_plot <- dfz_lineplot_prepped |>
     yr_season = floor_date(pub_mo_date, "year"),
     yr_label = year(yr_season)
   )
-
-# NEED TO DYNAMICALLY SUPPLY COLOR OF CURRENT YEAR POINT.
-# df_activation_status
 
 
 
@@ -259,57 +264,68 @@ dfz_plot |>
     aes(x = yr_season, y= zscore,group= parameter_label)
 
   )+
-  # indicator components
+
+  ggfx$with_shadow(
   geom_line(
-    # aes(color = parameter_label),
     aes(x = yr_season, y= zscore,group= parameter_label, color =parameter_label),
     alpha=1,
-    linewidth = 0.6
+    linewidth = 1
+  ),
+  sigma = 1.0,
+  x_offset = 0.5,
+  y_offset = 0.25
   )+
-  geom_line(
-    data= dfz_plot |>
-      filter(parameter == "cdi"),
-    aes(x = yr_season, y= zscore,group= parameter_label),
-    color = "black",
-    linewidth = 1.3
+
+  geom_hline(
+    data= df_thresholds,
+    aes(yintercept = rv),
+    color = hdx_hex("tomato-dark"),
+    linetype= "dashed", linewidth = 1
   )+
-  geom_point(
-    data= dfz_plot |>
-      filter(parameter == "cdi",flag),
-    aes(x = yr_season, y= zscore,group= parameter_label),
-    color = hdx_hex("tomato-hdx"),
-    size = 3, alpha = 1
-  )+
+  ggfx$with_shadow(
+    geom_line(
+      data= dfz_plot |>
+        filter(parameter == "cdi"),
+      aes(x = yr_season, y= zscore,group= parameter_label),
+      color = "black",
+      linewidth = 1.3
+    ),
+    sigma = 2,
+    x_offset = 0.5,
+    y_offset = 0.25)+
+
   geom_point(
     data= dfz_plot |>
       filter(parameter == "cdi",year(yr_season)==2025,flag),
     aes(x = yr_season, y= zscore,group= parameter_label),
     # aes(x = yr_season, y= zscore,group= parameter),
-    color = hdx_hex("tomato-dark"),
-    size = 5, alpha = 0.5
+    color = hdx_hex("tomato-light"),
+    size = 7,
+    alpha = 1
   )+
+    geom_point(
+      data= dfz_plot |>
+        filter(parameter == "cdi",flag),
+      aes(x = yr_season, y= zscore,group= parameter_label),
+      color = hdx_hex("tomato-hdx"),
+      size = 3, alpha = 0.7
+    )+
+
   geom_point(
     data= dfz_plot |>
       filter(parameter == "cdi",year(yr_season)==2025,!flag),
     aes(x = yr_season, y= zscore,group= parameter_label),
-    # aes(x = yr_season, y= zscore,group= parameter),
     color = hdx_hex("sapphire-hdx"),
     size = 5, alpha = 1
   )+
-  geom_hline(
-    data= df_thresholds,
-    aes(yintercept = rv),
-    color = hdx_hex("tomato-dark"),
-    linetype= "dashed"
-  )+
   geom_label(
     data = df_thresholds |> mutate(parameter_label=NA),
-    x= as_date("2025-12-01"),
-    aes(y = rv, label = round(rv,2)),
-    vjust = 0, #-0.5,         # Adjust to position above the line
+    x= as_date("1992-11-01"),
+    aes(y = rv, label = paste0("Threshold: " ,round(rv,2))),
+    vjust = -0.5, #-0.5,         # Adjust to position above the line
     hjust = 0,            # Left-align text at 2025 position
     color = hdx_hex("tomato-dark"),     # Match line color
-    size = 3
+    size = 3,alpha=0.5
   )+
   geom_text_repel(
     data= dfz_plot |>
@@ -318,7 +334,7 @@ dfz_plot |>
 
     color = hdx_hex("tomato-hdx"),
     vjust= -2,
-    size = 3,
+    size = 3.5,
     alpha =1
   )+
 
@@ -327,21 +343,30 @@ dfz_plot |>
     ~adm1_name, scales= "free", ncol =1
   )+
   scale_x_date(
-    date_labels = "%%Y",
-    date_breaks = "2 years",
-    expand = expansion(mult = c(0,.095)),
-    # expand = c(0,0)
+    date_labels = "%Y",
+    breaks = seq.Date(
+      from = as.Date("1985-01-01"),
+      to = as.Date("2025-01-01"),
+      by = "5 years"),
+    expand = expansion(mult = c(0,.01)),
   )+
   labs(y= "Indicator anomaly")+
+
   theme(
     axis.title.x = element_blank(),
     axis.title.y = element_text(size=14),
     title = element_text(size=16),
+    legend.key.width = unit(1,"cm"),
     plot.subtitle = element_text(size=16),
     legend.title = element_blank(),
-    legend.text = element_text(size=8),
+    legend.text = element_text(size=12),
     axis.text.y = element_text(angle=90,size=10),
     strip.text = element_text(size= 12),
-    axis.text.x = element_blank(),
+    axis.text.x = element_text(size=10),
     plot.caption = element_text(hjust=0, size =14)
+  )+
+  guides(linetype = guide_legend(override.aes = list(size = 10)))+
+  labs(
+    title = "Drought AA Afghanistan: 2025 April Monitoring",
+    subtitle = "Red dashed line represents 5.2 year RP threshold by province"
   )

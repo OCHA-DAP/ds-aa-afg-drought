@@ -355,19 +355,3 @@ design_weights <- function(){
     )
   )
 }
-
-
-#' load_window_b_thresholds
-#'
-#' @param version `character` version of thresholds based on date implemented
-#'   in formt YYYYMMDD
-#'
-#' @returns data.frame with window B thresholds
-#' @export
-
-load_window_b_thresholds <- function(version = "20250401"){
-  cumulus$blob_read(
-    container = "projects",
-    name = glue$glue("ds-aa-afg-drought/monitoring_inputs/window_b_cdi_thresholds_{version}.parquet")
-  )
-}
