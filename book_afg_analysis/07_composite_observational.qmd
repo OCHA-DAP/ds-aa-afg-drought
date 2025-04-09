@@ -98,13 +98,12 @@ gghdx()
 
 ```
 
-
 ## Heuristic Weighting
 
 Based on the above let's select some indicators and make a weighting
 
 ```{r}
-df_compiled_indicators <- cumulus$blob_read(,
+df_compiled_indicators <- cumulus$blob_read(
   container = "projects",
   name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators_v2.parquet"
 )
@@ -731,7 +730,6 @@ df_parameter_configs <- tibble(
 )
 ```
 
-
 ### Weight implementation
 
 ```{r}
@@ -944,8 +942,8 @@ p_optimal_chosen_compared_to_asi +
 
 ### With mixed forecast observational
 
-- Now let's look at when we include the mixed observational forecast indicators
-- so here are the best performing modesl compared to f1
+-   Now let's look at when we include the mixed observational forecast indicators
+-   so here are the best performing modesl compared to f1
 
 ```{r}
 ldf_top3$gte_1984_w_mixed_forecast_obs |>
@@ -980,9 +978,7 @@ ldf_top3$gte_1984_w_mixed_forecast_obs |>
   )
 ```
 
-
 but let's compare the weights w/ less variance - `pseudo-regularization`
-
 
 ```{r}
 
@@ -1076,8 +1072,6 @@ p_comparison_1984_w_mixed_forecast_obs +
   plot_layout(nrow=2,heights = c(1,0.15))
 ```
 
-
-
 ## Historical timeline
 
 Make tile plot showing when simple indicator - composite indicator - and truth (ASI EOS) would have activated.
@@ -1149,9 +1143,6 @@ bind_rows(
   )
 ```
 
-
-
-
 ```{r}
 ldf_top3$gte2001 |>
   filter(pub_mo_label!="Jun") |>
@@ -1216,10 +1207,9 @@ ldf_top3$gte_1984_no_snow |>
   )
 ```
 
-
 # Check point
 
-some of below probably not running or correct  anymore.
+some of below probably not running or correct anymore.
 
 double check RP'S
 

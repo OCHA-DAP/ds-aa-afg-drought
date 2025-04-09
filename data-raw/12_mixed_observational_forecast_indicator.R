@@ -20,7 +20,7 @@ aoi_adm1 <- c(
 
 
 # need to define range specifically before calculating any z-scores
-asi_validation_date_range <-   c( "1984-01-01","2024-01-01")
+asi_validation_date_range <-   c( "1984-01-01","2024-05-01")
 
 
 # pull seas forecast -- pulling more data than necessary, but thats okay
@@ -78,6 +78,32 @@ df_seas_z <- df_filt |>
 # split so I have 1 df per publication date/activation moments
 ldf_seas5_z <- split(df_seas_z, df_seas_z$pub_mo_label)
 
+# Going to out put mu & sigma to be used in monitoring
+
+df_seas_dist_params <- df_filt |>
+  filter(pub_mo_label == "Apr"  ) |>
+  group_by(
+    iso3,
+    # a little more col name harmonization on the fly in the selects
+    adm1_pcode = pcode,
+    adm1_name =name,
+    pub_mo_label,
+    leadtime
+  ) |>
+  summarise(
+    mu = mean(mean),
+    sigma = sd(mean)
+    # zscore = scale(mean,center=T,scale=T)[,1],
+  ) |>
+  ungroup() |>
+  mutate(
+    parameter = "seas5"
+  )
+
+cumulus$blob_write(
+  df= df_seas_dist_params,
+  name = "ds-aa-afg-drought/monitoring_inputs/window_b_seas5_distribution_params_20250401.parquet"
+)
 
 # grab all the ERA5-LAND data from blob
 df_era5 <- loaders$load_era5_land_multiband()
@@ -138,6 +164,31 @@ df_M_observed <- df_era5_filt |>
     zscore = scale(value,center=T,scale=T)[,1],
   ) |>
   ungroup()
+
+df_M_observed_dist_params <- df_era5_filt |>
+  filter(
+    month(date) == 3
+  ) |>
+  mutate(
+    parameter = "era5_land_precip_M_observed"
+  ) |>
+  group_by(
+    adm1_name,parameter
+  ) |>
+  summarise(
+    mu = mean(value),
+    sigma = sd(value)
+  ) |>
+  ungroup() |>
+  mutate(
+    iso3="AFG",
+    pub_mo_label = "Apr"
+  )
+
+cumulus$blob_write(
+  df= df_M_observed_dist_params,
+  name = "ds-aa-afg-drought/monitoring_inputs/window_b_era5_precip_distribution_params_20250401.parquet"
+)
 
 
 # No we will join the relevant seasonal forecast data.frame to the

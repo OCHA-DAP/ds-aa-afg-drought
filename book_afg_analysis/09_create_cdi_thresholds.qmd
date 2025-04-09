@@ -1,0 +1,300 @@
+---
+title: Threshold & Z-Score Distribution Tables
+
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+## Intro
+
+In this document we create the thresholds to be used during Window B monitoring during the April activation moment.
+
+Here we implement the agreed upon weighting schema for the April activation moment and then calculate the final thresholds for the composite indicator
+
+
+There are 3 outputs created from this script that are used in monitoring
+
+1. threshold table: `ds-aa-afg-drought/monitoring_inputs/window_b_cdi_thresholds_20250408.parquet`
+2. 1984-2024 indicator distribution params: `ds-aa-afg-drought/monitoring_inputs/window_b_cdi_thresholds_20250408.parquet`
+3. historical indicator visualization data set: `ds-aa-afg-drought/monitoring_inputs/window_b_historical_plot_data_20250408.parquet`
+
+```{r}
+box::use(
+  dplyr[...],
+  tidyr[...],
+  stringr[...],
+  ggplot2[...],
+  gghdx[...],
+  readr[...],
+  lubridate[...],
+  purrr[...],
+  cumulus
+)
+box::use(
+    ../R/utils
+)
+
+gghdx()
+write_outputs <- c(T,F)[1]
+```
+
+```{r}
+# agreed province level threshold
+RP_province_target <- 5.2
+```
+
+```{r loadData}
+# agreed weights
+df_weighting <- utils$design_weights()$`20250401`
+
+# historical indicator data: 1984-2024
+df_compiled_indicators <- cumulus$blob_read(
+  container = "projects",
+  name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators_v2.parquet"
+)
+
+# just clean up/filtering to relevant cols data.
+df_historical <-
+  df_compiled_indicators |>
+    select(
+    date,
+    yr_season,
+    pub_mo_date,
+    pub_mo_label,
+    adm1_name,
+    parameter,
+    value
+    ) |>
+  filter(
+    parameter %in% df_weighting$parameter,
+    pub_mo_label == "Apr"
+  )
+
+# quick check - captured them all.
+all(df_weighting$parameter %in% unique(df_historical$parameter))
+
+```
+
+```{r}
+# convert to Z score
+dfz <- df_historical |>
+  group_by(
+    adm1_name,pub_mo_label, parameter
+  ) |>
+  mutate(
+    zscore = scale(value,center=T,scale=T)[,1],
+
+    # set directionality/polarity so higher = dryer
+    zscore = ifelse(parameter != "asi",zscore*-1,zscore)
+  )  |>
+  ungroup() |>
+  # add weights
+  left_join(
+    df_weighting,
+    by ="parameter"
+  )
+```
+
+```{r}
+
+# construct the indicator on historical data
+df_cdi_historical <- dfz |>
+  group_by(yr_season,pub_mo_date,pub_mo_label, adm1_name) |>
+  summarise(
+    cdi = weighted.mean(zscore, w = weight),.groups="drop"
+  )
+```
+
+## Calculate thresholds
+
+For the decided on RP-based threshold of `5.2` we want to calculate/extract:
+
+1.  The province level thresholds
+2.  The overall window B RP
+
+To do this we first calculate the RP values across all the historical data and flag the years that would have crossed thre threshold
+
+```{r}
+
+# calculate empirical RP & flag historical breaches
+df_cdi_historical_rp_flagged <- df_cdi_historical |>
+  group_by(adm1_name, pub_mo_label) |>
+  mutate(
+    rp_empirical = utils$rp_empirical(
+      cdi,
+      ties_method = "average",
+      direction = "-1"
+      ),
+    flag = rp_empirical>=RP_province_target
+  ) |>
+  ungroup() |>
+  mutate(
+      parameter ="cdi",
+      zscore = cdi
+      )
+```
+
+We then extract the exact return value (rv) for a 5.2 year RP drought event
+
+```{r}
+
+df_cdi_thresholds<- df_cdi_historical_rp_flagged |>
+  group_by(adm1_name, pub_mo_label) |>
+  reframe(
+    # interpolating just a bit to get 5.2 value agreed upon as the
+    # value in the data is closer to 5.25
+    rp_func = list(approxfun( rp_empirical, cdi,rule=2)), #interpolation function
+    rp = RP_province_target,
+    rv = map_dbl(rp, rp_func)
+  ) |>
+  select(-rp_func)
+```
+
+Then we calculate the overall RP for window B (i.e any provnce activating).
+
+```{r}
+df_overall_rp <- df_cdi_historical_rp_flagged |>
+  group_by(yr_season, pub_mo_date) |>
+  summarise(
+   flag =  any(flag)
+  ) |>
+  ungroup() |>
+  summarise(
+    ar = mean(flag),
+    rp_from_rate = 1/ar,
+    total_years = n_distinct(yr_season),
+    ar_exp = sum(flag)/(total_years+1),
+    rp_exp = (total_years+1)/sum(flag)
+  )
+
+df_cdi_window_b_thresholds <- df_cdi_thresholds |>
+  mutate(
+    overall_rp = df_overall_rp$rp_exp
+  )
+```
+
+```{r}
+
+# these are stored on blob to be pulled into monitoring script.
+if(write_outputs){
+  cumulus$blob_write(
+    df = df_cdi_window_b_thresholds,
+    container = "projects",name = "ds-aa-afg-drought/monitoring_inputs/window_b_cdi_thresholds_20250408.parquet"
+  )
+}
+```
+
+## Extract Distribution Parameters
+
+We want to lock in our z-score thresholds for 1984-2024 data. We don't want the thresholds or z-scores to be influenced by 2025 or 2026 data. The threshold table we made above reflects the correct thresholds, but during live-monitoring we will be pulling in 2025 and later 2026 data and need to calculate the z-scores. z-scores require the entire historical record so in order to do this based on just 1984-2024 data without including 2025 or 2026 data into the calculations we can simply calculate the parameters necessary to calculate the z-scores
+
+```{r}
+# Just a quick check to sanity check that this will be equivalent to
+# normal z-score func as performed above
+df_manual_zs <- df_historical |>
+  # filter not necessary as data is already filtered, but just to be explicit
+  filter(
+    year(yr_season)>=1984, year(yr_season)<=2024
+  ) |>
+  group_by(
+    pub_mo_label,
+    adm1_name,
+    parameter
+  ) |>
+  mutate(
+    mu = mean(value),
+    sigma = sd(value),
+    zscore = (value -mu)/sigma,
+    zscore = ifelse(parameter != "asi",zscore*-1,zscore)
+  ) |>
+  ungroup()
+
+# join new zscore calcs to old ones.
+dfz_check_comparison <- dfz |>
+  left_join(
+    df_manual_zs |>
+      rename(
+        z_manual = zscore
+      )
+  )
+
+# some floating point type differences, but all.equal show they are
+# REALLY the same.
+all.equal(
+dfz_check_comparison$zscore,
+dfz_check_comparison$z_manual,
+
+)
+
+
+
+# do the calculation again, but this time use `summarise()`
+# to get the unique value per parameter, pub_mo, and province.
+df_distribution_parameters <- df_historical |>
+  # filter not necessary as data is already filtered, but just to be explicit
+  filter(
+    year(yr_season)>=1984, year(yr_season)<=2024
+  ) |>
+  group_by(
+    pub_mo_label,
+    adm1_name,
+    parameter
+  ) |>
+  summarise(
+    mu = mean(value),
+    sigma = sd(value),
+    .groups="drop"
+  )
+
+
+if(write_outputs){
+cumulus$blob_write(
+  df = df_distribution_parameters,
+  container = "projects",
+  name = "ds-aa-afg-drought/monitoring_inputs/window_b_cdi_distribution_params_20250408.parquet"
+    )
+}
+
+```
+
+## Visualization Data-Set
+
+Write out a historical data set that includes all indicator + composite (cdi) z-scores & values.
+
+```{r}
+
+
+dfz_plot <- bind_rows(
+  dfz ,
+  df_cdi_historical_rp_flagged |>
+    rename(
+      value = "cdi"
+    )
+  )
+
+if(write_outputs){
+  cumulus$blob_write(
+  df = dfz_plot,
+  container = "projects",
+  name = "ds-aa-afg-drought/monitoring_inputs/window_b_historical_plot_data_20250408.parquet"
+    )
+}
+```
