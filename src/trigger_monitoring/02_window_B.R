@@ -84,10 +84,61 @@ df_era5_snow_cover_processed <- wranglers$process_era5_snowcover_component(df = 
 # load forecast data in
 df_seas5 <- mload$load_seas5_trigger_component(test = IS_TEST_RUN)
 
+df_mixed_mam_for_table <- wranglers$compile_mixed_fcast_obs_table(
+  df_fcast = df_seas5,
+  df_observed = df_era5_raw
+)
 df_mixed_fcast_obs_processed <- wranglers$aggregate_mixed_fcast_obs(
   df_fcast = df_seas5,
   df_observed = df_era5_raw
   )
+
+box::use(gt)
+df_mixed_mam_for_table |>
+  filter(
+    adm1_name == "Faryab"
+  ) |>
+  mutate(
+    Indicator = case_when(
+      str_detect(parameter, "lt0")~"April Forecast",
+      str_detect(parameter, "lt1")~"May Forecast",
+      .default = "March observational"
+    ),
+    order_by = case_when(
+      str_detect(parameter, "lt0")~2,
+      str_detect(parameter, "lt1")~3,
+      .default = 1
+    ),
+    .after = pub_mo_label,
+    zscore = zscore *-1
+  ) |>
+  arrange(
+    order_by
+  ) |>
+  gt$gt() |>
+  gt$cols_label(
+    adm1_name = "Province",
+    value = "Value",
+    zscore = "Z-score",
+    pub_mo_label = "Publication Month"
+  ) |>
+  gt$cols_hide(
+    columns = c("pub_mo_date",
+                "mu",
+                "order_by",
+                "sigma",
+                "parameter",
+                "pub_mo_label",
+                "adm1_name","value")
+  ) |>
+  gt$fmt_number(columns = c("value","zscore"), decimals =2) |>
+  gt$tab_header(title = "April 2025: Mixed Forecast-Obervational Components",
+                subtitle = "Faryab - Drought Anomalies") |>
+  gt$tab_options(
+    table.font.size = 18,
+    heading.background.color = "#55b284ff"
+  )
+
 
 # Create Composite Indicator ####
 
@@ -118,7 +169,52 @@ df_cdi_trigger_indicators <- df_cdi_trigger |>
 # a quick view - can help understand drivers
 df_cdi_trigger_indicators |>
   arrange(adm1_name,desc(zscore))
+box::use(gt)
+df_cdi_trigger_indicators |>
+  filter(adm1_name == "Faryab") |>
+  select(adm1_name, parameter, zscore,weight) |>
+  arrange(desc(weight)) |>
+  mload$label_parameters() |>
+  select(-parameter) |>
+  select(adm1_name, parameter_label, everything()) |>
 
+  gt$gt() |>
+  gt$cols_label(
+    adm1_name = "Province",
+    parameter_label = "Parameter"
+  ) |>
+  gt$cols_hide("adm1_name") |>
+  gt$tab_header(title = "April 2025: CDI component values",subtitle = "Faryab") |>
+  gt$tab_options(
+    table.font.size = 18,
+    heading.background.color = "#55b284ff"
+  ) |>
+  gt$fmt_number(columns = "zscore",decimals = 2)
+
+
+gt_threshold_table <- df_forecast_status |>
+  select(
+    adm0_es,value,value_empirical,status
+  ) |>
+  gt$gt() |>
+  gt$cols_label(
+    adm0_es="Country",
+    value= "Rainfall (mm)",
+    status = "Status",
+    value_empirical = "Threshold"
+  ) |>
+  gt$fmt_number(columns= c("value","value_empirical"),decimals=0) |>
+  gt$tab_header(
+    email_txt$gt_table_header
+  ) |>
+  gt$tab_footnote(
+    footnote = email_txt$tbl_footnote
+  ) |>
+  gt$tab_options(
+    table.font.size = 14,
+    heading.background.color = "#55b284ff",
+    # table.width = px(500)
+    tab
 
 
 df_cdi_agg <- df_cdi_trigger_indicators |>

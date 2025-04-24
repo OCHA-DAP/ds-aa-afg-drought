@@ -168,6 +168,27 @@ df_cdi_thresholds<- df_cdi_historical_rp_flagged |>
   select(-rp_func)
 ```
 
+```{r}
+#| eval: false
+
+
+z_score_sar <- -0.0260
+z_score_takhar <- -0.0583
+z_score_faryab <- 0.64
+# z_score_faryab <- 0.56
+df_cdi_historical_rp_flagged |>
+  group_by(adm1_name, pub_mo_label) |>
+  reframe(
+    # interpolating just a bit to get 5.2 value agreed upon as the
+    # value in the data is closer to 5.25
+    rp_func = list(approxfun( cdi, rp_empirical,rule=2)), #interpolation function
+    rv1 = z_score_sar,
+    RP = map_dbl(rv1, rp_func)
+  ) |>
+  select(-rp_func)
+```
+
+
 Then we calculate the overall RP for window B (i.e any provnce activating).
 
 ```{r}

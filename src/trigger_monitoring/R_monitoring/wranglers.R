@@ -35,6 +35,7 @@ aggregate_mixed_fcast_obs <-  function(df_fcast, df_observed){
     )
 }
 
+#'@export
 compile_mixed_fcast_obs_table <- function(df_fcast, df_observed){
   df_params  <- mload$load_mixed_fcast_obs_params()
   df_params_era5 <- df_params$era5 |>
