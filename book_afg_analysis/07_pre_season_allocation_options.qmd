@@ -792,7 +792,7 @@ df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_all
 
 # if you do play around w/ this number it does look like it peaks out around 4... which equate to a joint RP of around 3
 # w/ rp at 5 u miss 2006 activatoin
-rp_compare <- 4
+rp_compare <- 5.2
 
 df_asi_eos_full <- df_fao |>
   clean_names() |>
