@@ -10,7 +10,11 @@
 box::use(
   AzureStor,
   readr[write_csv],
-  purrr[map2]
+  purrr[map2],
+  dplyr[...],
+  lubridate[...],
+  janitor[...],
+  cumulus
   )
 
 box::use(
@@ -23,30 +27,37 @@ pc <- blob$load_proj_containers()
 fps <- blob$proj_blob_paths()
 
 
-df_chirps_adm2 <- load_wfp_chirps()
+# download chirps & ndvi data from HDX.
+# once data has been downloaded to blob can set source= "blob" (later in code)
+df_chirps_adm2 <- load_wfp_chirps(
+  adm_level = 2,
+  source= "hdx"
+  )
+
+# this one only built to load from HDX
 df_ndvi_adm2 <- load_wfp_ndvi()
 
 fp_names <- c("DF_ADM2_CHIRPS_WFP","DF_ADM2_NDVI_WFP")
 
+# pre-cumulus code
+box::use(cumulus)
+
 
 map2(fp_names, list(df_chirps_adm2,df_ndvi_adm2),
-    \(fp_name,df){
-      tf <-  tempfile(fileext = ".csv")
-      write_csv(df,tf)
-      AzureStor$upload_blob(
-        container = pc$PROJECTS_CONT,
-        src = tf,
-        dest = fps[[fp_name]]
-      )
-    }
+     \(fp_name,df){
+       cumulus$blob_write(
+         df,
+         name= fps[[fp_name]],
+         container = "projects"
+       )
+     }
 )
 
 
-box::use(
-  ../R/load_funcs
-)
-box::reload(load_funcs)
-df_adm2_chirps <- load_funcs$load_wfp_chirps()
+df_adm2_chirps <- load_wfp_chirps(
+  adm_level = 2,
+  source= "blob"
+  )
 
 df_adm2_yr_mo <- df_adm2_chirps |>
   group_by(
@@ -74,7 +85,7 @@ df_chirps_adm1 <- df_lookup |>
     parameter = "CHIRPS (WFP)"
   )
 
-cumulus$blob_write(df_chirps_adm1,name= fps$DF_ADM2_CHIRPS_WFP, stage="dev")
+cumulus$blob_write(df_chirps_adm1,name= fps$DF_ADM1_CHIRPS_WFP, stage="dev")
 
 
 # df_chirps_gee <- load_funcs$load_chirps()

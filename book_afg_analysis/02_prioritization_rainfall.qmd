@@ -69,8 +69,8 @@ box::use(blob = ../R/blob_connect)
 
 gghdx()
 
-
 # load admin boundaries
+
 gdf_adm1 <- cumulus$download_fieldmaps_sf(iso3= "AFG",layer= "afg_adm1")$afg_adm1 |>
   clean_names() |>
   select(matches("adm\\d_[pe]"))
