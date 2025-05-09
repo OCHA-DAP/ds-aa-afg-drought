@@ -25,6 +25,10 @@ project:
 
 ## Intro
 
+This document explores a wide variety of climate/remote sensing based indicators and evaluates how well they predict end of season drought based on historical analysis. The indicators are evaluated at each relevant publication month as new data becomes available.
+
+By exploring a wide range of indicators we get a general sense of which indicators may be more important and useful. However,given the messy nature of environmental and large number of publication months and inter-provincial differences assessment requires further simplification and dimensional reduction. For accuracy metrics we then opt to use F1 score and look evaluate the best performing indicators by each publication month and province.
+
 ```{r}
 
 aoi_adm1 <- c(
@@ -58,13 +62,13 @@ box::use(
   ggplot2[...],
   ggiraph[...],
   stringr[...],
+  patchwork[...],
+  geoarrow[...],
   cumulus
 
 )
 gghdx()
 ```
-
-
 
 ```{r}
 
@@ -75,7 +79,7 @@ df_compiled_indicators <- cumulus$blob_read(,
 
 df_indicators_flagged <- df_compiled_indicators |>
   mutate(
-    flag = rp_relevant_direction>=3
+    flag = rp_relevant_direction>=5
   )
 
 # get validation set flagged w/ RP breaches
@@ -153,6 +157,21 @@ df_perf_metrics <- df_env_compare |>
 
 ```
 
+## Casting a Wide Net: Exploring 30+ Indicators
+
+-   Below the we look at measured indicators performance. How well does a 5 year RP or greater event measured across each indicator perform in predicting a 5 year RP ASI drought level as measured at the end of March.
+    -   The indicators are broken up into 3 major categories (`pre-season`, `mid-season`, `post-season`), based on when each indicator/trigger moment will become available. Note the months represented in the strips on right represent the month the data will be available. Therefore, they are typically put as 1 month after the date the indicator is monitoring. For example NDVI for March will be fully available in April. This is true for all indicators except for the seasonal forecast (`seas5`) where a forecast for the current month is provided at the start of the month the data is published (5th of month)
+
+### Interpreting plots:
+
+Below the performance metrics are given for each parameter and admin unit. The following metrics are calculated:
+
+-   Accuracy
+-   Precision
+-   Recall
+
+As we are predicting relatively rare events the accuracy metric should be supported by interpretation of precision and recall.
+
 ```{r}
 aoi_adm1 <- set_names(aoi_adm1,aoi_adm1)
 
@@ -217,11 +236,57 @@ p_metrics_seasonal <-
 ```
 
 ```{r}
+#| fig.height: 10
+
+girafe(ggobj= p_metrics_seasonal$Faryab)
+```
+
+```{r}
+#| fig.height: 9
+
+girafe(ggobj= p_metrics_seasonal$`Sar-e-Pul`)
+```
+
+```{r}
+#| fig.height: 9
+
+girafe(ggobj= p_metrics_seasonal$Takhar)
+```
+
+### Initial takeaways
+
+-   All indicators pre-season indicators perform weakly in January across all admin units
+
+-   `SEAS5` (seasonal forecast) is the best pre-season indicator that we have the earliest in `Feb` in most provinces
+
+-   More indicators become better predictors in March (labelled as pre-season, but not really sufficient leadtime for agricultural activities and operational leadtimes received).
+
+-   In March SEAS5 prediction for MAM is still the most predictive preciptiation indicator we have.
+
+-   By March/April, soil moisture looks very promising as well as other combinations with snow indicators and precipitation
+
+-   From April onwards observed precipitation becomes more predictive. With CHIRPS leading over ERA5 by a usually a minor except in Bagdhis where ERA5 is much more performant.
+
+## Performance Simplification (across metrics)
+
+Due to the class imbalance, we are more concerned with the precision & recall balance than accuracy metric. We can further simplify precision & recall with the `f1 score` (harmonic mean of precision and recall) for predicting end of season ASI (dekad 3 may).
+
+```{r}
 aoi_adm1 <- set_names(aoi_adm1,aoi_adm1)
+
+
 
 lp_tile_metrics_seasonal <-
   aoi_adm1 |>
   map(\(adm_tmp){
+    # adm_tmp <- "Faryab"
+    top5_df <- df_perf_metrics |>
+      filter(adm1_name == adm_tmp) |>
+      filter(pub_mo_label %in% c("Jan","Feb","Mar","Apr","May","Jun","Jul")) |>
+      group_by(pub_mo_label) |>
+      slice_max(order_by = f1, n = 5, with_ties = FALSE) |>
+      mutate(top5_flag = TRUE) |>
+      select(pub_mo_label, parameter, top5_flag)
 
     df_temp <- df_perf_metrics |>
       ungroup() |>
@@ -234,9 +299,37 @@ lp_tile_metrics_seasonal <-
           pub_mo_label %in% c("Mar","Apr","May")~"Mid-Season",
           pub_mo_label %in% c("Jun","Jul")~"Post-Season"
         ), levels = c("Pre-Season","Mid-Season","Post-Season")
-        )
+        ),
+        f1_good = f1>=0.6
       ) |>
-      filter(pub_mo_label %in% c("Jan","Feb","Mar","Apr","May","Jun","Jul"))
+      filter(pub_mo_label %in% c("Jan","Feb","Mar","Apr","May","Jun","Jul")) |>
+      left_join(top5_df, by = c("pub_mo_label", "parameter")) |>
+      mutate(
+        top5_flag = ifelse(is.na(top5_flag), FALSE, top5_flag),
+        highlight = f1_good | top5_flag,
+        color_label = case_when(
+          f1_good ~ "1",
+          top5_flag ~ "2",
+          TRUE ~ "3"
+        )
+      )
+  #   group_by(pub_mo_label) |>
+  #    mutate(
+  #   # f1_rank = rank(-f1, ties.method = "first"),  # rank descending
+  #   f1_rank = dense_rank(-f1),  # rank descending
+  #   num_f1_good = sum(f1_good),
+  #   highlight = case_when(
+  #     f1_good ~ TRUE,
+  #     !f1_good & f1_rank <= (3 - num_f1_good) ~ TRUE,
+  #     TRUE ~ FALSE
+  #   ),
+  #   color_label = case_when(
+  #     f1_good ~ "1",
+  #     highlight ~ "2",
+  #     TRUE ~ "3"
+  #   )
+  # ) |>
+  # ungroup()
 
     df_temp |>
       ggplot(
@@ -247,21 +340,33 @@ lp_tile_metrics_seasonal <-
         )
       )+
       geom_tile_interactive(
-        aes(tooltip= glue(
+        aes(
+          tooltip= glue(
           "parameter: {parameter},
-      metric: {f1}
-      value: {scales::label_percent(accuracy = 1)(f1)}")
-        ),alpha=1
+          f1: {scales::label_percent(accuracy = 1)(f1)}")
+          # color= color_label,
+        ),
+        alpha=1
+        # linewidth =1
       )+
-        geom_tile(
-    data = df_temp|>
-      filter(f1>=0.7),
-      # group_by(pub_mo_label) |>
-      # slice_max(
-      #   f1, n= 3
-      # ),
-      fill = NA, color = "red", linewidth = 1
-  )+
+      geom_tile(
+        data= df_temp |>
+          filter(highlight),
+        aes(color= color_label), linewidth = 1, alpha=1
+      )+
+      scale_color_manual(
+        values = c("1" = hdx_hex("tomato-dark"),
+                   "2" = hdx_hex("tomato-light")
+                   ))+
+  #       geom_tile(
+  #   data = df_temp|>
+  #     filter(f1>=0.6),
+  #     # group_by(pub_mo_label) |>
+  #     # slice_max(
+  #     #   f1, n= 3
+  #     # ),
+  #     fill = NA, color = "red", linewidth = 1
+  # )+
       labs(
         title =  "How well do RS parameters (thresholded - 5 year RP) predict cumulative May ASI breaching 5 year RP",
         subtitle =glue("{adm_tmp} Province")
@@ -283,40 +388,42 @@ lp_tile_metrics_seasonal <-
   )
 ```
 
-## Indicator Performance by Trigger/Framework Stage
+```{r}
+#| fig.height: 9
 
--   Below the we look at measured indicators performance. How well does a 5 year RP or greater event measured across each indicator perform in predicting a 5 year RP ASI drought level as measured at the end of March.
-    -   The indicators are broken up into 3 major categories (`pre-season`, `mid-season`, `post-season`), based on when each indicator/trigger moment will become available. Note the months represented in the strips on right represent the month the data will be available. Therefore, they are typically put as 1 month after the date the indicator is monitoring. For example NDVI for March will be fully available in April. This is true for all indicators except for the seasonal forecast (`seas5`) where a forecast for the current month is provided at the start of the month the data is published (5th of month)
-
-**Quick Initial Takeaways:**
-
--   All indicators pre-season indicators perform weakly in January across all admin units
-
--   `SEAS5` (seasonal forecast) is the best pre-season indicator that we have the earliest in `Feb` in most provinces
-
--   More indicators become better predictors in March (labelled as pre-season, but not really sufficient leadtime for agricultural activities and operational leadtimes received).
-
--   In March SEAS5 prediction for MAM is still the most predictive preciptiation indicator we have.
-
--   By March/April, soil moisture looks very promising as well as other combinations with snow indicators and precipitation
-
--   From April onwards observed precipitation becomes more predictive. With CHIRPS leading over ERA5 by a usually a minor except in Bagdhis where ERA5 is much more performant.
-
-### Interpreting plots:
-
-Below the performance metrics are given for each parameter and admin unit. The following metrics are calculated:
-
--   Accuracy
--   Precision
--   Recall
-
-As we are predicting relatively rare events the accuracy metric should be supported by interpretation of precision and recall.
-
-Below we show all trigger moment/months and there `f1 score` (harmonic mean of precision and recall) for predicting end of season ASI (dekad 3 may).
+girafe(ggobj= lp_tile_metrics_seasonal$`Sar-e-Pul`, height_svg = 6)
+```
 
 ```{r}
-gdf_adm1 <- cumulus::download_fieldmaps_sf(iso3= "afg",layer= "afg_adm1")
+#| fig.height: 9
 
+girafe(ggobj = lp_tile_metrics_seasonal$Takhar, height_svg = 6)
+```
+
+```{r}
+#| fig.height: 6
+
+girafe(ggobj = lp_tile_metrics_seasonal$Faryab,height_svg = 6)
+```
+
+## Indicator Consolidation
+
+Casting the wide net reveals some interesting relationship and gives us an indication of what indicators could be useful, but let's try to simplify and distill this further.
+
+As a first step we can remove redundant indicators. For example since we already have NDSI_mean, let's get rid of `NDSI_min`, `NDSI_max` since they just cloud the interpretation. Additionally we have aggregated the top layers of soil moisture into `era5_land_soil_moisture_1m` so we can get rid of the individual soil moisture depth layers
+
+```{r}
+gdf_adm1 <- cumulus::blob_read(
+  name = "ds-aa-afg-drought/raw/vector/afg_admbnda_agcho_adm1.parquet",
+  container = "projects",as_data_frame= FALSE
+) |>
+  st_as_sf()
+
+
+#' NTR: this whole weighting idea never went anywhere and I decide not to use
+#' it. Nonetheless, the non-weighted original results are still calculated
+#' well i SHOULD really simplify code by removing entire thing, but would be good
+#' to rememmber i tried it somewhere.
 df_pin <- cumulus::blob_read(
   name= "ds-aa-afg-drought/raw/vector/HNRP_2025_PiN_Targets_Severity.xlsx",
   container = "projects"
@@ -333,7 +440,7 @@ df_pin_wts <- df_pin |>
     adm1_name = "province"
   )
 
-df_area_wt_table <- gdf_adm1$afg_adm1 |>
+df_area_wt_table <- gdf_adm1 |>
   clean_names() |>
   filter(adm1_en %in% aoi_adm1) %>%
   mutate(
@@ -364,9 +471,6 @@ generalize_f1 <- function(df, aoi, weight=NULL){
         .cols = c("f1","precision","recall"), \(x) mean(x,na.rm=T)
       ),
       .groups="drop"
-      # f1 = mean(f1, na.rm = TRUE),
-      # precision = mean(precision, na.rm = TRUE),
-      # recall = mean(precision, na.rm = TRUE),.groups="drop"
     )
   }
   if(!is.null(weight)){
@@ -377,13 +481,16 @@ generalize_f1 <- function(df, aoi, weight=NULL){
         ),
 
          .groups="drop"
-        # f1 = weighted.mean(f1,w=!!sym(weight),na.rm=T),
       )
   }
   ret
 }
 
-wt_set <- list(NO_WT = NULL, AREA_WT = "area_wt", AREA_FSC_PIN_WT = "area_x_fsc_wt")
+wt_set <- list(
+  NO_WT = NULL,
+  AREA_WT = "area_wt",
+  AREA_FSC_PIN_WT = "area_x_fsc_wt"
+  )
 df_perf_metrics_w_wt <- df_perf_metrics |>
   left_join(df_area_wt_table)
 
@@ -398,21 +505,61 @@ df_perf_metrics_w_wt_filt <- df_perf_metrics_w_wt |>
 
 perf_param <- c("precision","recall","f1")[3]
 
+f1_good_threshold <- 0.6
 lp_f1_combined <- imap(
   wt_set,
   \(wt_temp,nmt){
+
     dft <- generalize_f1(
       df= df_perf_metrics_w_wt_filt,
       aoi =  c("Takhar","Sar-e-Pul","Faryab"),
       weight=wt_temp
     )
+     top5_df <- dft |>
+      group_by(pub_mo_label) |>
+      slice_max(order_by = f1, n = 5, with_ties = FALSE) |>
+      mutate(top5_flag = TRUE) |>
+      select(pub_mo_label, parameter, top5_flag)
+
     dft_filt <-  dft |>
       filter(
         pub_mo_label %in% c("Feb","Mar","Apr","May","Jun")
       ) |>
+      group_by(pub_mo_label) |>
       mutate(
-        f1_gte_0.5 = !!sym(perf_param)>=0.5
-      )
+        f1_good = !!sym(perf_param)>=f1_good_threshold
+        ) |>
+       left_join(top5_df, by = c("pub_mo_label", "parameter")) |>
+      mutate(
+        top5_flag = ifelse(is.na(top5_flag), FALSE, top5_flag),
+        highlight = f1_good | top5_flag,
+        color_label = case_when(
+          f1_good ~ "1",
+          top5_flag ~ "2",
+          TRUE ~ "3"
+        )
+      ) |>
+      ungroup()
+
+    # ,
+    #     # f1_rank = rank( -!!sym(perf_param), ties.method = "mean"),  # rank descending
+    #     f1_rank = dense_rank( -!!sym(perf_param)),  # rank descending
+    #     num_f1_good = sum(f1_good),
+    #     highlight = case_when(
+    #       f1_good ~ TRUE,
+    #       !f1_good & f1_rank <= (3 - num_f1_good) ~ TRUE,
+    #       TRUE ~ FALSE
+    #     ),
+    #     color_label = case_when(
+    #       f1_good ~ "1",
+    #       highlight ~ "2",
+    #       TRUE ~ "3"
+    #     )
+    #   ) |>
+      # ungroup()
+    # mutate(
+    #   f1_gte_0.5 = !!sym(perf_param)>=0.5
+    # )
 
     subtitle_tmp <- switch(nmt,
             "NO_WT"= "Unweighted",
@@ -439,23 +586,35 @@ lp_f1_combined <- imap(
         title =  subtitle_tmp
 
       )+
-      geom_tile(
-        data = dft_filt |>
-          group_by(pub_mo_label) |>
-          slice_max(
-            !!sym(perf_param),
-            n= 5
-          ),
-        aes(color = f1_gte_0.5),
-        fill = NA, show.legend=F,
-        # color = "red",
-        linewidth = 1
-      )+
+      # geom_tile(
+      #   data = dft_filt |>
+      #     group_by(pub_mo_label) |>
+      #     slice_max(
+      #       !!sym(perf_param),
+      #       n= 5
+      #     ),
+      #   # aes(color = f1_gte_0.5),
+      #   fill = NA,
+      #   show.legend=F,
+      #   # color = "red",
+      #   linewidth = 1
+      # )+
       scale_fill_viridis_c()+
+      geom_tile(
+        data= dft_filt |>
+          filter(highlight),
+        aes(color= color_label),linewidth=1
+      )+
+      # scale_color_manual(
+      #   values = c(
+      #     "TRUE"= hdx_hex("tomato-hdx"),
+      #     "FALSE"="grey"
+      #     )
+      # )+
       scale_color_manual(
         values = c(
-          "TRUE"= hdx_hex("tomato-hdx"),
-          "FALSE"="grey"
+          "1"= hdx_hex("tomato-dark"),
+          "2"="grey"
           )
       )+
       theme(
@@ -504,8 +663,349 @@ ldf_f1_combined <- imap(
   list_rbind()
 ```
 
-quick look at ndsi params - later we just decide to go w/ mean
 ```{r}
+
+# lp_f1_combined$NO_WT +
+#   lp_f1_combined$AREA_WT +
+#   lp_f1_combined$AREA_FSC_PIN_WT + plot_layout(nrow = 1)+
+#   plot_annotation(title= "Average F1 Score Across Provinces")
+
+# So just go separate
+# girafe(ggobj =lp_f1_combined$AREA_FSC_PIN_WT)
+girafe(
+  ggobj =lp_f1_combined$NO_WT+
+    labs(
+      title = "Average F1 Score Across Provinces Per Activation Moment"
+    )
+  )
+# girafe(ggobj =lp_f1_combined$AREA_WT)
+
+```
+
+```{r}
+#| eval: false
+#| fig.height: 9
+
+# no longer in AOI
+# lp_tile_metrics_seasonal$Badakhshan
+```
+
+```{r}
+#| eval: false
+
+# this looks like left over code to be removed
+lp_metric <-
+  aoi_adm1 |>
+  map(\(adm_tmp){
+
+    df_perf_metrics |>
+      filter(adm1_name == adm_tmp) |>
+      pivot_longer(cols = precision:accuracy
+      ) |>
+      ggplot(
+        aes(
+          x=reorder(parameter,value),
+          y= value,
+          color = name)
+      )+
+      geom_point_interactive(
+        aes(tooltip= glue(
+          "parameter: {parameter},
+      metric: {name}
+      value: {scales::label_percent(accuracy = 1)(value)}")
+        ),alpha=0.4
+      )+
+      coord_flip()+
+      scale_y_continuous(labels =scales::label_percent())+
+      labs(
+        title =  "How well do RS parameters (thresholded - 5 year RP) predict cumulative May ASI breaching 5 year RP",
+        subtitle =glue("{adm_tmp} Province")
+
+      )+
+      theme(
+        legend.title = element_blank(),
+        axis.text.y= element_text(size=6),
+        axis.title.x= element_blank(),
+        axis.title.y= element_blank(),
+        plot.title = element_text(size =9),
+        plot.subtitle = element_text(size =8)
+      )
+  }
+  )
+
+
+girafe(ggobj = lp_metric$Takhar)
+```
+
+```{r}
+
+df_metrics_simple <- df_perf_metrics |>
+  filter(adm1_name!="Badghis",adm1_name!="Badakhshan") |>
+    filter(
+          pub_mo_label %in% c("Feb","Mar","Apr","May","Jun"),
+          !str_detect(parameter,"runoff_max"),
+
+           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","total_precipitation"),
+          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+        ) |>
+  # filter(!is.nan(f1)) |>
+  utils$label_parameters()
+
+
+
+
+
+df_metrics_filt <-  df_metrics_simple |>
+        filter(
+          pub_mo_label %in% c("Feb","Mar","Apr","May","Jun"),
+          !str_detect(parameter,"runoff_max"),
+
+           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","total_precipitation"),
+          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
+        )
+
+df_top_metrics_label <- df_metrics_filt |>
+  mutate(
+    f1_lgl = f1>0.5
+  ) |>
+  group_by(adm1_name, pub_mo_label) |>
+  mutate(
+    num_gte = sum(f1_lgl)
+  ) |>
+  arrange(
+   adm1_name, pub_mo_label, desc(f1)
+  ) |>
+  mutate(
+    include = row_number(),
+    rank = dense_rank(-f1)
+  ) |>
+  # print(n=25) |>
+  filter(rank %in% c(1:3)
+         # & f1_lgl
+         ) |>
+  ungroup()
+
+# df_top_metrics_label |>
+#   filter(adm1_name == "Sar-e-Pul")
+
+df_metrics_top3 <- df_metrics_filt |>
+        group_by(adm1_name, pub_mo_label) |>
+        slice_max(f1, n= 3, with_ties = T)
+
+
+viridis_colors <- viridisLite::viridis(15, option = "A")
+
+c25 <- c(
+
+  "green4",
+  "#E31A1C",
+  "dodgerblue2",
+  "#6A3D9A", # ndsi purple
+  "#FF7F00", # orange
+  "skyblue2",
+  "gold1",
+  "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70",
+  "khaki2",
+  "maroon",
+  "orchid1",
+  "deeppink1",
+  "blue1", # soil mositure
+  "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+
+
+
+p_ts_f1 <- df_metrics_top3 |>
+  ggplot(
+    aes(
+      x= pub_mo_label, y= f1
+    )
+  )+
+  geom_point(
+    data = df_metrics_filt,
+    alpha=0.5, color = "darkgrey"
+  )+
+  geom_point(
+    aes(color =parameter_label)
+  )+
+  geom_label_repel(
+    data = df_metrics_top3,
+    aes(
+      label = parameter_label,
+      fill = parameter_label
+    ),
+    max.overlaps = 20,
+    color = "black"
+    )+
+  # scale_fill_brewer(palette = "Set3")+
+  scale_fill_manual(values = c25) +
+  labs(
+    # title = "F1 Scores: How well do indicators predict worst end of season ASI values",
+    title = "F1 Scores: By Province & Trigger Moment",
+    subtitle = "Only Top indicators labelled"
+  )+
+  scale_color_manual(values = c25) +
+  facet_wrap(~adm1_name)+
+  theme(
+    panel.grid.major.x = element_line(color = "black"),
+    legend.position = "none"
+
+  )
+```
+
+The below plot displays similar information as the above, but we have kept the provinces separated and show the f1 score of each indicator more clearly on the y-axis. The only indicators that are labelled in this plot are the ones that were ranked with the top 3 f1 scores per activation moment/province. More than 3 labels per vertical activation moment line occurs when there are ties in the top 3 ranking.
+
+```{r}
+#| fig.height: 9
+
+ggplot(
+  df_metrics_filt,
+  aes(
+    x= pub_mo_label, y= f1
+  )
+)+
+  geom_point(
+    alpha=0.5,
+    color = "darkgrey"
+  )+
+
+  geom_point(
+    data= df_top_metrics_label,
+    aes(color =parameter_label)
+  )+
+  geom_label_repel(
+    data =  df_top_metrics_label ,
+    aes(
+      label = parameter_label,
+      fill = parameter_label
+    ),
+    alpha=0.5,
+    size = 1.8,label.padding = 0.1,
+    max.overlaps = 20,
+    color = "black"
+    )+
+  # scale_fill_brewer(palette = "Set3")+
+  scale_fill_manual(values = c25) +
+  scale_color_manual(values = c25)+
+  labs(
+    x = "Activation moment/ publication month",
+    title = "Predictiveness of Indicators by Province and Trigger Timing (F1 Score)",
+    subtitle = "Only Top 3 Ranking Indicators Labelled Per Publication Month and Province"
+  )+
+  facet_wrap(~adm1_name,ncol=1)+
+  theme(
+    panel.grid.major.x = element_line(color = "black"),
+    legend.position = "none",
+    plot.title = element_text(size= 10),
+    plot.subtitle = element_text(size= 10)
+
+  )
+
+```
+
+```{r}
+#| fig.height: 9
+#| eval: false
+
+# -   F1 by pub mo plot w/ out mixed forecat observational
+ggplot(
+  df_metrics_filt |>
+    filter(
+    parameter!="mam_mixed_seas_observed"
+  ),
+  aes(
+    x= pub_mo_label, y= f1
+  )
+)+
+  geom_point(
+    alpha=0.5,
+    color = "darkgrey"
+  )+
+
+  geom_point(
+    data= df_top_metrics_label |>
+      filter(parameter!="mam_mixed_seas_observed"),
+    aes(color =parameter_label)
+  )+
+  geom_label_repel(
+    data =  df_top_metrics_label |>
+      filter(parameter != "mam_mixed_seas_observed") ,
+    aes(
+      label = parameter_label,
+      fill = parameter_label
+    ),
+    alpha=0.5,
+    size = 1.8,label.padding = 0.1,
+    max.overlaps = 20,
+    color = "black"
+    )+
+  # scale_fill_brewer(palette = "Set3")+
+  scale_fill_manual(values = c25) +
+  scale_color_manual(values = c25)+
+  labs(
+    x = "Activation moment/ publication month",
+    title = "Predictiveness of Indicators by Province and Trigger Timing (F1 Score)",
+    subtitle = "Only Top 3 Indicators Labelled Per Publication Month and Province"
+  )+
+  facet_wrap(~adm1_name,ncol=1)+
+  theme(
+    panel.grid.major.x = element_line(color = "black"),
+    legend.position = "none"
+
+  )
+
+```
+
+```{r}
+#| eval: false
+
+# the above plot provides best summary of this chapter in IMO and a decent indication of what is to come. This table further helps some of the accompanying narrartive final indicator selection for April but not sure where to put it
+#  CHIRPS better perf than ERA5 in April, but all other months show ERA5 precip
+# Snow cover NDSI is included, but it was shifted to ERA5 for simplification
+# Many complications with MODIS although it could have been a good option as well.
+# the addition of mixed-seasonal removes ERA 5 snow cover from FAryab plot.
+df_metrics_filt |>
+  group_by(pub_mo_label,parameter,parameter_label) |>
+  summarise(
+    f1 = mean(f1),
+    rank = mean(dense_rank(-f1))
+  ) |>
+  group_by(
+    pub_mo_label
+  ) |>
+  mutate(
+    rank2 = dense_rank(-f1)
+  ) |>
+  arrange(pub_mo_label,rank2) |>
+  slice_max(f1,n=7) |>
+  print(n=33)
+
+
+# faryab w/ best april metrics by far ,  NDSI (MODIS) not as good in others
+df_metrics_filt |>
+  mutate(
+    d_rank = dense_rank(-f1)
+  ) |>
+  filter(
+    pub_mo_label == "Apr"
+  ) |>
+  arrange(adm1_name,desc(f1)) |>
+  print(n=48)
+
+```
+
+## Appendix
+
+```{r}
+#| eval: false
+#| include: false
+
 lp_ndsi_params <- map(
   wt_set,
   \(wt_temp){
@@ -555,347 +1055,9 @@ lp_ndsi_params <- map(
 lp_ndsi_params$NO_WT
 ```
 
-
-```{r}
-# combining with patchwork like this looks terrible when rendered in html
-# box::use(patchwork[...])
-# lp_f1_combined$NO_WT +
-#   lp_f1_combined$AREA_WT +
-#   lp_f1_combined$AREA_FSC_PIN_WT + plot_layout(nrow = 1)+
-#   plot_annotation(title= "Average F1 Score Across Provinces")
-
-# So just go separate
-girafe(ggobj =lp_f1_combined$AREA_FSC_PIN_WT)
-girafe(ggobj =lp_f1_combined$NO_WT)
-girafe(ggobj =lp_f1_combined$AREA_WT)
-
-```
-
-```{r}
-#| fig.height: 9
-
-lp_tile_metrics_seasonal$`Sar-e-Pul`
-```
-
-```{r}
-#| fig.height: 9
-
-lp_tile_metrics_seasonal$Takhar
-```
-
-```{r}
-#| fig.height: 9
-
-lp_tile_metrics_seasonal$Faryab
-```
-
 ```{r}
 #| eval: false
-#| fig.height: 9
-
-# no longer in AOI
-# lp_tile_metrics_seasonal$Badakhshan
-```
-
-```{r}
-girafe(ggobj= p_metrics_seasonal$Faryab)
-```
-
-```{r}
-#| fig.height: 9
-
-girafe(ggobj= p_metrics_seasonal$`Sar-e-Pul`)
-```
-
-```{r}
-#| fig.height: 9
-
-girafe(ggobj= p_metrics_seasonal$Takhar)
-```
-
-```{r}
-lp_metric <-
-  aoi_adm1 |>
-  map(\(adm_tmp){
-
-    df_perf_metrics |>
-      filter(adm1_name == adm_tmp) |>
-      pivot_longer(cols = precision:accuracy
-      ) |>
-      ggplot(
-        aes(
-          x=reorder(parameter,value),
-          y= value,
-          color = name)
-      )+
-      geom_point_interactive(
-        aes(tooltip= glue(
-          "parameter: {parameter},
-      metric: {name}
-      value: {scales::label_percent(accuracy = 1)(value)}")
-        ),alpha=0.4
-      )+
-      coord_flip()+
-      scale_y_continuous(labels =scales::label_percent())+
-      labs(
-        title =  "How well do RS parameters (thresholded - 5 year RP) predict cumulative May ASI breaching 5 year RP",
-        subtitle =glue("{adm_tmp} Province")
-
-      )+
-      theme(
-        legend.title = element_blank(),
-        axis.text.y= element_text(size=6),
-        axis.title.x= element_blank(),
-        axis.title.y= element_blank(),
-        plot.title = element_text(size =9),
-        plot.subtitle = element_text(size =8)
-      )
-  }
-  )
-
-
-girafe(ggobj = lp_metric$Takhar)
-```
-
-Here we can see how closer to the end of season our performance metrics improve.
-
-```{r}
-
-df_metrics_simple <- df_perf_metrics |>
-  filter(adm1_name!="Badghis",adm1_name!="Badakhshan") |>
-    filter(
-          pub_mo_label %in% c("Feb","Mar","Apr","May","Jun"),
-          !str_detect(parameter,"runoff_max"),
-
-           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","total_precipitation"),
-          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
-        ) |>
-  # filter(!is.nan(f1)) |>
-  utils$label_parameters()
-
-
-
-
-
-df_metrics_filt <-  df_metrics_simple |>
-        filter(
-          pub_mo_label %in% c("Feb","Mar","Apr","May","Jun"),
-          !str_detect(parameter,"runoff_max"),
-
-           !parameter %in% c("NDSI_Snow_Cover_min","NDSI_Snow_Cover_max","total_precipitation"),
-          !str_detect(parameter,"era5_land_volumetric_soil_water_layer_\\d")
-        )
-
-df_top_metrics_label <- df_metrics_filt |>
-  mutate(
-    f1_lgl = f1>0.5
-  ) |>
-  group_by(adm1_name, pub_mo_label) |>
-  mutate(
-    num_gte = sum(f1_lgl)
-  ) |>
-  arrange(
-   adm1_name, pub_mo_label, desc(f1)
-  ) |>
-  mutate(
-    include = row_number()
-  ) |>
-  # print(n=25) |>
-  filter(include%in% c(1:3) & f1_lgl) |>
-  ungroup()
-
-# df_top_metrics_label |>
-#   filter(adm1_name == "Sar-e-Pul")
-
-df_metrics_top3 <- df_metrics_filt |>
-        group_by(adm1_name, pub_mo_label) |>
-        slice_max(f1, n= 3, with_ties = T)
-
-
-viridis_colors <- viridisLite::viridis(15, option = "A")
-
-c25 <- c(
-
-  "green4",
-  "#E31A1C",
-  "dodgerblue2",
-  "#6A3D9A", # ndsi purple
-  "#FF7F00", # orange
-  "skyblue2",
-  "gold1",
-  "#FB9A99", # lt pink
-  "palegreen2",
-  "#CAB2D6", # lt purple
-  "#FDBF6F", # lt orange
-  "gray70",
-  "khaki2",
-  "maroon",
-  "orchid1",
-  "deeppink1",
-  "blue1", # soil mositure
-  "steelblue4",
-  "darkturquoise", "green1", "yellow4", "yellow3",
-  "darkorange4", "brown"
-)
-
-
-
-
-
-p_ts_f1 <- df_metrics_top3 |>
-  ggplot(
-    aes(
-      x= pub_mo_label, y= f1
-    )
-  )+
-  geom_point(
-    data = df_metrics_filt,
-    alpha=0.5, color = "darkgrey"
-  )+
-  geom_point(
-    aes(color =parameter_label)
-  )+
-  geom_label_repel(
-    data = df_metrics_top3,
-    aes(
-      label = parameter_label,
-      fill = parameter_label
-    ),
-    max.overlaps = 20,
-    color = "black"
-    )+
-  # scale_fill_brewer(palette = "Set3")+
-  scale_fill_manual(values = c25) +
-  labs(
-    # title = "F1 Scores: How well do indicators predict worst end of season ASI values",
-    title = "F1 Scores: By Province & Trigger Moment",
-    subtitle = "Only Top indicators labelled"
-  )+
-  scale_color_manual(values = c25) +
-  facet_wrap(~adm1_name)+
-  theme(
-    panel.grid.major.x = element_line(color = "black"),
-    legend.position = "none"
-
-  )
-
-box::use(
-  patchwork[...]
-)
-```
-
-## F1 plots of interest
-
-- F1 by pub mo plot  w/ out mixed forecat observational
-
-```{r}
-#| fig.height: 9
-
-ggplot(
-  df_metrics_filt |>
-    filter(
-    parameter!="mam_mixed_seas_observed"
-  ),
-  aes(
-    x= pub_mo_label, y= f1
-  )
-)+
-  geom_point(
-    alpha=0.5,
-    color = "darkgrey"
-  )+
-
-  geom_point(
-    data= df_top_metrics_label |>
-      filter(parameter!="mam_mixed_seas_observed"),
-    aes(color =parameter_label)
-  )+
-  geom_label_repel(
-    data =  df_top_metrics_label |> filter(parameter != "mam_mixed_seas_observed") ,
-    aes(
-      label = parameter_label,
-      fill = parameter_label
-    ),
-    alpha=0.5,
-    max.overlaps = 20,
-    color = "black"
-    )+
-  # scale_fill_brewer(palette = "Set3")+
-  scale_fill_manual(values = c25) +
-  scale_color_manual(values = c25)+
-  labs(
-    x = "Activation moment/ publication month",
-    title = "Predictiveness of Indicators by Province and Trigger Timing (F1 Score)",
-    subtitle = "Only Top 3 Indicators Labelled Per Publication Month and Province"
-  )+
-  facet_wrap(~adm1_name,ncol=1)+
-  theme(
-    panel.grid.major.x = element_line(color = "black"),
-    legend.position = "none"
-
-  )
-
-```
-
-same plot, but w/ mixed forecast indicator included
-
-```{r}
-#| fig.height: 9
-
-ggplot(
-  df_metrics_filt,
-  aes(
-    x= pub_mo_label, y= f1
-  )
-)+
-  geom_point(
-    alpha=0.5,
-    color = "darkgrey"
-  )+
-
-  geom_point(
-    data= df_top_metrics_label,
-    aes(color =parameter_label)
-  )+
-  geom_label_repel(
-    data =  df_top_metrics_label ,
-    aes(
-      label = parameter_label,
-      fill = parameter_label
-    ),
-    alpha=0.5,
-    max.overlaps = 20,
-    color = "black"
-    )+
-  # scale_fill_brewer(palette = "Set3")+
-  scale_fill_manual(values = c25) +
-  scale_color_manual(values = c25)+
-  labs(
-    x = "Activation moment/ publication month",
-    title = "Predictiveness of Indicators by Province and Trigger Timing (F1 Score)",
-    subtitle = "Only Top 3 Indicators Labelled Per Publication Month and Province"
-  )+
-  facet_wrap(~adm1_name,ncol=1)+
-  theme(
-    panel.grid.major.x = element_line(color = "black"),
-    legend.position = "none"
-
-  )
-
-
-
-```
-
-
-
-## Appendix
-
-
-mostly scrap code and abandoned
-one off snow checks
-
-```{r}
-#| eval: false
+#| include: false
 
 
 # quick gut check on era5 snow fall - can add to appendix during cleanup
@@ -1015,6 +1177,7 @@ df_era5_land_rps_wide |>
 
 ```{r}
 #| eval: false
+#| include: false
 
 # dont really like where this plot was going -- probably delete
 df_metrics_simple |>
@@ -1042,18 +1205,16 @@ df_metrics_simple |>
 
 ```
 
-### Point System
-
-Abandoned idea for z-score composite aggregation.
-
-Point system - you need 4 points
-
-Feb: SEAS5 : 4 points Mar: - Observational Rainfall (CHIRPS): 2 points - Observed Soil Moisture : 2 points - NDSI or SWE: 2 points April: - Observed Rainfall CHIRPS OR ERA5: 4 points - NDSI: 2 points - SWE: 2 points May: - ASI: 4 points - VHI: 2 points - Soil Moisture: 2 points
-
-Jun: - ASI: 4 - VHI: 2 - Soil Moisture 2
-
-```{r}
+```{r pointSystem}
 #| eval: false
+#| include: false
+
+# Abandoned idea for z-score composite aggregation.
+# Point system - you need 4 points
+#
+# Feb: SEAS5 : 4 points Mar: - Observational Rainfall (CHIRPS): 2 points - Observed Soil Moisture : 2 points - NDSI or SWE: 2 points April: - Observed Rainfall CHIRPS OR ERA5: 4 points - NDSI: 2 points - SWE: 2 points May: - ASI: 4 points - VHI: 2 points - Soil Moisture: 2 points
+#
+# Jun: - ASI: 4 - VHI: 2 - Soil Moisture 2
 
 df_ps <- df_env_compare |>
   utils$label_parameters() |>
@@ -1288,10 +1449,9 @@ lp_observational_tile$Mar
 
 ```
 
-### Runoff
-
-```{r}
+```{r runOff}
 #| eval: false
+#| include: false
 # i need to have a little look at this runoff var
 
 df_env_filt |>

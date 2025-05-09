@@ -1,5 +1,5 @@
 ---
-title: Composite Indicator
+title: Composite Indicator - Optimization Study
 
 format:
   html:
@@ -9,12 +9,14 @@ format:
     self-contained: true
     embed-resoures: true
     smooth-scroll: true
+    fig-format: "png" # More efficient than SVG for most plots
+    fig-dpi: 96       # Web-resolution is sufficient
 execute:
-  include: true
-  echo: true
+  include: false
+  echo: false
   warning: false
   message: false
-  eval: true
+  eval: false
   results: "asis"
   out.width: "100%"
   code-fold: true
@@ -25,7 +27,22 @@ project:
 
 ## Intro
 
+In this document we explore a method to find optimal weight sets. We create several parameter sets based on promising indicators as explored in the previous chapter. We then run an optimization procedure via a constrained grid search, iterating over all feasible weight combinations at 5% intervals to:
+
+a.  maximize prediction accuracy/performance of end-of-season ASI
+b.  minimize final variance across selected weights.
+
+This optimization was largely done as a proof of concept to evaluate whether or not an optimal weight set could be created that adds value to a much simpler model that just looks at one indicator (ASI).
+
+### Key take-aways
+
+We obtained satisfactory and value-adding results from all parameter combination sets. Therefore, a parameter set can be selected based on contextual criteria rather than marginal performance differences. Therefore the parameters set containing ERA5 Snow Cover rather than MODIS NDSI was selected to :
+
+1.) allow a longer period of historical analysis: 1984 (start of ASI) rather than 2001 start of MODIS, 2.) remove complications that could arise in due to cloud interference in MODIS data set.
+
 ```{r}
+#| echo: true
+#| include: true
 
 aoi_adm1 <- c(
   "Takhar",
@@ -63,11 +80,13 @@ label_parameters <- function(df){
     )
 }
 
-
-
 ```
 
 ```{r}
+#| eval: true
+#| echo: true
+#| include: true
+
 SEASON_OF_INTEREST <- c(3,4,5)
 # LATEST_SEASON_PREDICTABLE <-  c(3,4)
 
@@ -85,6 +104,7 @@ box::use(
   ggplot2[...],
   gghdx[...],
   ggrepel[...],
+  glue[...],
   lubridate[...],
   sf[...],
   readr[...],
@@ -95,14 +115,12 @@ box::use(
 
 gghdx()
 
-
 ```
 
-## Heuristic Weighting
-
-Based on the above let's select some indicators and make a weighting
-
 ```{r}
+#| echo: true
+#| include: true
+
 df_compiled_indicators <- cumulus$blob_read(
   container = "projects",
   name = "ds-aa-afg-drought/processed/vector/df_all_combined_indicators_v2.parquet"
@@ -148,8 +166,8 @@ date_ranges <- df_env_model |>
 ### Weighting Functons
 
 ```{r weightingFuncs}
-
-
+#| echo: true
+#| include: true
 
 #' create_weight_grid
 #' @description
@@ -678,7 +696,15 @@ compare_to_simple_model <- function(df,wt_id_apr, wt_id_may,param_simple){
 }
 ```
 
-```{r decideParameters}
+## Parameter Sets
+
+We create 4 parameter combination sets.
+
+```{r parameterSets}
+#| echo: true
+#| include: true
+#| eval: true
+
 # setup as many sets of parameters as we want
 # subequent code will iterate through each parameter set
 
@@ -702,7 +728,6 @@ params_set_gte_1984_no_snow <- c(
   "era5_land_soil_moisture_1m",
   "cumu_era5_land_total_precipitation_sum",
   "vhi",
-    # "era5_land_snow_cover", # toying w/ adding this or not
   "asi"
 )
 
@@ -711,7 +736,7 @@ params_set_gte_1984_w_mixed_forecast_obs <- c(
   "cumu_era5_land_total_precipitation_sum",
   "vhi",
   "mam_mixed_seas_observed",
-    "era5_land_snow_cover", # toying w/ adding this or not
+    "era5_land_snow_cover",
   "asi"
 )
 
@@ -730,9 +755,31 @@ df_parameter_configs <- tibble(
 )
 ```
 
+```{r}
+#| eval: true
+#| echo: false
+#| include: false
+
+all_params_txt <- glue_collapse(
+  unique(unlist(l_params)), sep = ", ",
+  last = ", and "
+)
+
+```
+
+The different combinations sets are composed of various combinations of `r {all_params_txt}`
+
+The key distinctions are:
+
+1.  whether or no to include snow. And if using snow, whether to use MODIS NDSI or ERA5 Snow Cover.
+2.  After various iterations with working group mixed observational-forecast indicator was created and included in one of the final sets.
+
 ### Weight implementation
 
 ```{r}
+#| eval: false
+#| echo: true
+#| include: true
 
 # run weighting and aggregations
 
@@ -806,6 +853,7 @@ ldf_top3 <- ldf_perf_all_models |>
 
 ```{r}
 #| eval: false
+#| include: false
 
 cumulus$blob_write(
   ldf_perf$gte1984$HISTORICAL_WEIGHTED ,
@@ -820,7 +868,7 @@ ck <- cumulus$blob_read(
 
 ```{r}
 #| eval: false
-
+#| include: false
 cumulus$blob_write(
   ldf_perf$gte_1984_w_mixed_forecast_obs$HISTORICAL_WEIGHTED ,
   container = "projects",
@@ -828,11 +876,19 @@ cumulus$blob_write(
 )
 ```
 
-### Weighting results
+## Weighting results
 
-Here we look at the results when we use parameters going back to 1984 and include a snow cover variable. These plots were put in the google slides
+To evaluate value-add of optimal weight sets, we compare them with a simpler indicator model that only utilizes the ASI for the current month/activation model (a strongly perfoming single indicator). For the sake of brevity simplicity/we will not plot all weight sets explored in the rendered document, but rather display results as a proof of concept.
 
-```{r}
+### Weight Set A:
+
+below we show a comparison of F1 scores for the optimal indicator weighting found in a weight set of ASI, VHI, ERA5 Snow, ERA5 Soil Moisture, & ERA5 Cumulative precipitation.
+
+We see significant gains in performance across provinces and months when compared to a simple ASI model.
+
+```{r gte1984}
+#| echo: true
+#| include: true
 
 ldf_top3$gte1984 |>
   filter(pub_mo_label!="Jun") |>
@@ -875,10 +931,14 @@ pal_indicator_composition <-  c("ASI"="green4",
 
 p_optimal_low_variance_weights <- plot_low_var_optimal(
   ldf_top3$gte1984,
-  pal = pal_indicator_composition,label_wt_id = F
+  pal = pal_indicator_composition,
+  label_wt_id = F
 )+
   coord_flip()
 
+```
+
+```{r}
 
  plot_optimal_compositions(
   ldf_top3$gte1984  |>
@@ -889,7 +949,11 @@ p_optimal_low_variance_weights <- plot_low_var_optimal(
   labs(
       title ="Indicator weighting options that result in max performance"
     )
+```
 
+```{r}
+#| echo: true
+#| include: true
 
 df_compare <- compare_to_simple_model(
   ldf_historical$gte1984,
@@ -899,7 +963,9 @@ df_compare <- compare_to_simple_model(
   )
 
 p_optimal_chosen_compared_to_asi <- df_compare |>
-  pivot_longer(cols = c(".estimate","estimate_simple")) |>
+  pivot_longer(
+    cols = c(".estimate","estimate_simple")
+    ) |>
   mutate(
     name = ifelse(str_detect(name,".estimate"), "Combined Indicator","Simple Model (ASI ONLY)")
   ) |>
@@ -927,25 +993,54 @@ p_optimal_chosen_compared_to_asi <- df_compare |>
 
 p_optimal_chosen_compared_to_asi +
   theme(
-    plot.caption = element_blank(),legend.position = "top"
+    text = element_text(size= 24),
+    plot.caption = element_blank(),
+    legend.position = "top",
+    plot.title = element_text(size= 24),
+    plot.subtitle = element_text(size= 20),
+    legend.text = element_text(size=16)
   )+
   p_optimal_low_variance_weights+
   theme(
+    text = element_text(size= 24),
+    legend.text = element_text(size= 16),
+    legend.key.size = unit(0.5, "cm"),
     axis.title.y= element_blank(),
     axis.text.y= element_blank(),
     strip.text = element_blank(),
     legend.title = element_blank()
   )+
   plot_layout(nrow=2,heights = c(1,0.05))
-
 ```
 
-### With mixed forecast observational
-
--   Now let's look at when we include the mixed observational forecast indicators
--   so here are the best performing modesl compared to f1
-
 ```{r}
+#| include: false
+ggsave(
+  "book_afg_analysis/chap7_composite_indicator_performance_comparison_no_mixed.png",
+  width = 5,
+  height=5,
+  units ="in"
+  )
+```
+
+![](chap7_composite_indicator_performance_comparison_no_mixed.png){width="100%"}
+
+### Weight Set B:
+
+Weight set B utilizes the same indicators as Weight Set A, but includes the Mixed forecast and observational indicator. We also see a value add over the simple ASI indicator model. Additionally we see an increase in `F1` scores for the month of April in 2 out of 3 of the provinces. This hints that the mixed observational forecast may be a useful indicator to keep included.
+
+```{r mixedObserv}
+#| echo: true
+#| include: true
+
+pal_indicator_composition2 <-  c("ASI"="green4",
+                                "VHI"="#CAB2D6",
+                                "NDSI"= "#6A3D9A",
+                                "Precip cumu (ERA)"= "skyblue2",
+                                "era5_land_soil_moisture_1m"= "dodgerblue2",
+                                "Snow Cover (ERA5)"= "white",
+                                "Mixed forecast & obs -MAM"= "orange")
+
 ldf_top3$gte_1984_w_mixed_forecast_obs |>
   filter(pub_mo_label!="Jun") |>
   group_by(pub_mo_label, adm1_name) |>
@@ -978,39 +1073,34 @@ ldf_top3$gte_1984_w_mixed_forecast_obs |>
   )
 ```
 
-but let's compare the weights w/ less variance - `pseudo-regularization`
+```{r lowVarOptimalWtID}
+#| eval: false
+#| echo: false
 
-```{r}
-
-# this is where i get the weight ids for ploting
 plot_low_var_optimal(
   ldf_top3$gte_1984_w_mixed_forecast_obs,
-  pal = pal_indicator_composition,label_wt_id = T
+  pal = pal_indicator_composition2,
+  label_wt_id = F
 )+
   coord_flip()
+```
 
+```{r lowVarOptimal}
+#|eval: false
+#|include: true
 
-
-# but in plot i dont need to show the weight id - so save this too
-p_optimal_low_variance_weights <- plot_low_var_optimal(
+p_optimal_low_variance_weights_w_mixed <-
+  plot_low_var_optimal(
   ldf_top3$gte_1984_w_mixed_forecast_obs,
-  pal = pal_indicator_composition,label_wt_id = F
+  pal = pal_indicator_composition2,
+  label_wt_id = F
 )+
   coord_flip()
+```
 
-
-# there are too many ties -- this takes forecer to render and is unreadable :-)
- # plot_optimal_compositions(
- #  ldf_top3$gte_1984_w_mixed_forecast_obs  |>
- #    filter(pub_mo_label != "Jun"),
- #  label_plot = T,
- #  pal = pal_indicator_composition
- #  ) +
- #  labs(
- #      title ="Indicator weighting options that result in max performance"
- #    )
-
-
+```{r}
+#| echo: true
+#| include: true
 # this takes a minute
 
 df_compare_gte_1984_w_mixed_forecast_obs <- compare_to_simple_model(
@@ -1019,15 +1109,6 @@ df_compare_gte_1984_w_mixed_forecast_obs <- compare_to_simple_model(
   wt_id_may = 12297, #142 & 84 are optimal for May, but dont include soil moisture
   param_simple = "asi"
   )
-
-
-pal_indicator_composition <-  c("ASI"="green4",
-                                "VHI"="#CAB2D6",
-                                "NDSI"= "#6A3D9A",
-                                "Precip cumu (ERA)"= "skyblue2",
-                                "era5_land_soil_moisture_1m"= "dodgerblue2",
-                                "mam_mixed_seas_observed" = "cyan",
-                                "Snow Cover (ERA5)"= "white")
 
 
 
@@ -1060,23 +1141,49 @@ p_comparison_1984_w_mixed_forecast_obs <- df_compare_gte_1984_w_mixed_forecast_o
 
 p_comparison_1984_w_mixed_forecast_obs +
   theme(
-    plot.caption = element_blank(),legend.position = "top"
+    text = element_text(size= 24),
+    plot.caption = element_blank(),
+    legend.position = "top",
+    plot.title = element_text(size= 24),
+    plot.subtitle = element_text(size= 20),
+    legend.text = element_text(size=16)
   )+
-  p_optimal_low_variance_weights+
+  p_optimal_low_variance_weights_w_mixed+
   theme(
+    text = element_text(size= 24),
     axis.title.y= element_blank(),
     axis.text.y= element_blank(),
     strip.text = element_blank(),
-    legend.title = element_blank()
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size=16)
   )+
-  plot_layout(nrow=2,heights = c(1,0.15))
+  plot_layout(nrow=2,heights = c(0.5,0.15))+
+  theme(
+    theme(plot.margin = c(0,0,0,0))
+  )
 ```
+
+```{r}
+#| eval: false
+#| include: false
+
+ggsave(
+  "book_afg_analysis/chap7_composite_indicator_performance_comparison.png",
+  width = 5,
+  height=5,
+  units ="in"
+  )
+```
+
+![](chap7_composite_indicator_performance_comparison.png){width="100%"}
+
+```{r HistoricalTimeline}
 
 ## Historical timeline
 
-Make tile plot showing when simple indicator - composite indicator - and truth (ASI EOS) would have activated.
+# Make tile plot showing when simple indicator - composite indicator - and truth (ASI EOS) would have activated.
 
-```{r}
 simple_model_id <- get_simple_weight_id(
   df= ldf_historical$gte1984,
   param_simple = "asi"
@@ -1207,13 +1314,13 @@ ldf_top3$gte_1984_no_snow |>
   )
 ```
 
+```{r checkPoint}
 # Check point
 
-some of below probably not running or correct anymore.
+# some of below probably not running or correct anymore.
 
-double check RP'S
+# double check RP'S
 
-```{r}
 ldf_historical$gte1984 |>
   group_by(
     adm1_name,
@@ -1724,9 +1831,8 @@ df_wt_combos_long |>
   filter(wt_id  ==346)
 ```
 
-Look at equal weigts
-
 ```{r}
+# Look at equal weigts
 df_conf_metrics |>
   filter(pub_mo_label == "Apr") |>
   filter(
