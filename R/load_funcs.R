@@ -8,7 +8,8 @@ box::use(
   lubridate,
   rlang,
   stringr,
-  utils,
+  # base utils
+  butils= utils,
   glue
   )
 
@@ -24,24 +25,29 @@ bps <- blob_connect$proj_blob_paths()
 load_wfp_chirps <- function(adm_level,source = c("hdx","blob")){
   if(adm_level ==2 & source == "hdx"){
     chirps_url <- "https://data.humdata.org/dataset/3b5e8a5c-e4e0-4c58-9c58-d87e33520e08/resource/a8c98023-e078-4684-ade3-9fdfd66a1361/download/afg-rainfall-adm2-full.csv"
-    utils$download.file(chirps_url, tf <- tempfile("afg-rainfall-adm2-full.csv"))
+    butils$download.file(chirps_url, tf <- tempfile("afg-rainfall-adm2-full.csv"))
     df_chirps_adm2 <- readr$read_csv(tf)
 
     ret <- df_chirps_adm2[-1,] |>
       janitor$clean_names() |>
       readr$type_convert()
   }
-  if(adm_level ==1 & source =="blob"){
+  if(adm_level ==2 & source =="blob"){
     ret <- cumulus$blob_read(name = blob_connect$proj_blob_paths()$DF_ADM2_CHIRPS_WFP, stage= "dev")
   }
+  if(adm_level ==1 & source =="blob"){
+    ret <- cumulus$blob_read(name = blob_connect$proj_blob_paths()$DF_ADM1_CHIRPS_WFP, stage= "dev")
+  }
+
   return(ret)
 
 
 }
 
+#' @export
 load_wfp_ndvi <- function(){
   url <- "https://data.humdata.org/dataset/fa36ae79-984e-4819-b0eb-a79fbb168f6c/resource/d79de660-6e50-418b-a971-e0dfaa02586f/download/afg-ndvi-adm2-full.csv"
-  utils$download.file(url, tf <- tempfile("afg-ndvi-adm2-full.csv"))
+  butils$download.file(url, tf <- tempfile("afg-ndvi-adm2-full.csv"))
   df_adm2 <- readr$read_csv(tf)
 
   df_adm2[-1,] |>

@@ -55,21 +55,20 @@ box::use(
   loaders =../R/load_funcs[...]
 )
 
+# Consolidated imports for consistency
 box::use(
   dplyr[...],
-  forcats[...],
   ggplot2[...],
-  gghdx[...],
-  janitor[...],
   lubridate[...],
   purrr[...],
-  readr[...],
-  scales[...],
-  stringr[...],
-  glue[...],
   tidyr[...],
-  scales
+  stringr[...],
+  readr[...],
+  gghdx[...],
+  janitor[...],
+  scales[...]
 )
+
 gghdx()
 
 
@@ -529,7 +528,7 @@ lps_ndsi_asi$`Snow: value vs Vegetation: may_last_value`
 
 ### SWE vs ASI
 
-We see the same relation ship when we look at SWE - here we have filtered SWE to the same date range as MODIS for comparison (>= 2000)
+We see the same relation ship when we look at SWE - here we have filtered SWE to the same date range as MODIS for comparison (\>= 2000)
 
 ```{r}
 #| fig.height: 8
@@ -547,7 +546,8 @@ lps_swe_asi$`Snow: value vs Vegetation: may_last_value`
 
 ```
 
-We then run it on the full historical record of FLDAS SWE that overlaps w/ ASI >=1984
+We then run it on the full historical record of FLDAS SWE that overlaps w/ ASI \>=1984
+
 ```{r}
 
 lps_swe_asi_full <- map(
@@ -571,7 +571,6 @@ lps_swe_asi_full <- map(
 lps_swe_asi_full$`Snow: value vs Vegetation: may_last_value`
 ```
 
-
 ### Snow Discussion
 
 -   Oddly the Dec & Jan snow indicators seem if anything positively correlated with ASI which is the exact opposite of the hypothesis. The charts above show that higher snow fractions/and snow water equivalents are associated with higher end of season agricultural stress (May & June).
@@ -584,10 +583,10 @@ lps_swe_asi_full$`Snow: value vs Vegetation: may_last_value`
 
 ### Update
 
-When working on the later included `indicator-expansion` chapter, some snow related indicators/bands from ERA5-LAND image collection were extracted.These include 2 bands  specifically:
+When working on the later included `indicator-expansion` chapter, some snow related indicators/bands from ERA5-LAND image collection were extracted.These include 2 bands specifically:
 
-- snow_cover
-- snow_depth_water_equivalent
+-   snow_cover
+-   snow_depth_water_equivalent
 
 The correlations for these two bands from the ERA5-LAND sensor image collection are shown below just for the 5 provinces under initial consideration (data only extracted to these provinces)
 
@@ -636,7 +635,8 @@ lps_era_snow_asi$`Snow: value vs Vegetation: may_last_value`
 lps_era_sdwe_asi$`Snow: value vs Vegetation: may_last_value`
 ```
 
-We then run it on the full historical record of ERA5-LAND that overlaps w/ ASI >=1984
+We then run it on the full historical record of ERA5-LAND that overlaps w/ ASI \>=1984
+
 ```{r}
 lps_era_snow_asi_full <- map(
   set_names(all_feature_combos$label,all_feature_combos$label),

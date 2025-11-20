@@ -13,7 +13,8 @@ box::use(
   purrr[...],
   ggrepel[...],
   cumulus,
-  ggfx
+  ggfx,
+  gt
 )
 
 
@@ -93,7 +94,7 @@ df_mixed_fcast_obs_processed <- wranglers$aggregate_mixed_fcast_obs(
   df_observed = df_era5_raw
   )
 
-box::use(gt)
+
 df_mixed_mam_for_table |>
   filter(
     adm1_name == "Faryab"
@@ -169,7 +170,7 @@ df_cdi_trigger_indicators <- df_cdi_trigger |>
 # a quick view - can help understand drivers
 df_cdi_trigger_indicators |>
   arrange(adm1_name,desc(zscore))
-box::use(gt)
+
 df_cdi_trigger_indicators |>
   filter(adm1_name == "Faryab") |>
   select(adm1_name, parameter, zscore,weight) |>
@@ -191,30 +192,6 @@ df_cdi_trigger_indicators |>
   ) |>
   gt$fmt_number(columns = "zscore",decimals = 2)
 
-
-gt_threshold_table <- df_forecast_status |>
-  select(
-    adm0_es,value,value_empirical,status
-  ) |>
-  gt$gt() |>
-  gt$cols_label(
-    adm0_es="Country",
-    value= "Rainfall (mm)",
-    status = "Status",
-    value_empirical = "Threshold"
-  ) |>
-  gt$fmt_number(columns= c("value","value_empirical"),decimals=0) |>
-  gt$tab_header(
-    email_txt$gt_table_header
-  ) |>
-  gt$tab_footnote(
-    footnote = email_txt$tbl_footnote
-  ) |>
-  gt$tab_options(
-    table.font.size = 14,
-    heading.background.color = "#55b284ff",
-    # table.width = px(500)
-    tab
 
 
 df_cdi_agg <- df_cdi_trigger_indicators |>
@@ -351,7 +328,8 @@ dfz_plot <- dfz_lineplot_prepped |>
   )
 
 
-
+# these sizes look good in screenshot - but will change below
+# for exported png
 dfz_plot |>
   mutate(
     yr_season = floor_date(pub_mo_date, "year")
@@ -466,3 +444,130 @@ dfz_plot |>
     title = "Drought AA Afghanistan: 2025 April Monitoring",
     subtitle = "Red dashed line represents 5.2 year RP threshold by province"
   )
+
+# change sizing for book
+dfz_plot |>
+  mutate(
+    yr_season = floor_date(pub_mo_date, "year")
+  ) |>
+  ggplot(
+    aes(x = yr_season, y= zscore,group= parameter_label)
+
+  )+
+
+  ggfx$with_shadow(
+  geom_line(
+    aes(x = yr_season,
+        y= zscore,
+        group= parameter_label,
+        color =parameter_label),
+    alpha=1,
+    linewidth = 0.5
+  ),
+  sigma = 1.0,
+  x_offset = 0.5,
+  y_offset = 0.25
+  )+
+
+  geom_hline(
+    data= df_thresholds,
+    aes(yintercept = rv),
+    color = hdx_hex("tomato-dark"),
+    linetype= "dashed", linewidth = 0.5
+  )+
+  ggfx$with_shadow(
+    geom_line(
+      data= dfz_plot |>
+        filter(parameter == "cdi"),
+      aes(x = yr_season, y= zscore,group= parameter_label),
+      color = "black",
+      linewidth = 1
+    ),
+    sigma = 2,
+    x_offset = 0.5,
+    y_offset = 0.25)+
+  geom_point(
+    # red (activation) 2025
+    data= dfz_plot |>
+      filter(parameter == "cdi",year(yr_season)==2025,flag),
+    aes(x = yr_season, y= zscore,group= parameter_label),
+    # aes(x = yr_season, y= zscore,group= parameter),
+    color = hdx_hex("tomato-light"),
+    size = 6,
+    alpha = 1
+  )+
+    geom_point(
+      data= dfz_plot |>
+        filter(parameter == "cdi",flag),
+      aes(x = yr_season, y= zscore,group= parameter_label),
+      color = hdx_hex("tomato-hdx"),
+      size = 2.5,
+      alpha = 0.7
+    )+
+
+
+  geom_point(
+    # blue points in 2025
+    data= dfz_plot |>
+      filter(parameter == "cdi",year(yr_season)==2025,!flag),
+    aes(x = yr_season, y= zscore,group= parameter_label),
+    color = hdx_hex("sapphire-hdx"),
+    size = 4, alpha = 1
+  )+
+  geom_label(
+    data = df_thresholds |> mutate(parameter_label=NA),
+    x= as_date("1992-11-01"),
+    aes(y = rv, label = paste0("Threshold: " ,round(rv,2))),
+    vjust = -0.3, #-0.5,         # Adjust to position above the line
+    hjust = 0,            # Left-align text at 2025 position
+    color = hdx_hex("tomato-dark"),     # Match line color
+    size = 5,alpha=0.5,
+    label.padding = unit(0.1,"cm")
+  )+
+  geom_text_repel(
+    data= dfz_plot |>
+      filter(parameter == "cdi",flag) ,
+    aes(label = yr_label),
+
+    color = hdx_hex("tomato-hdx"),
+    vjust= -2,
+    size = 3.5,
+    alpha =1
+  )+
+
+  scale_color_manual(values =pal_historical,drop = FALSE)+
+  facet_wrap(
+    ~adm1_name, scales= "free", ncol =1
+  )+
+  scale_x_date(
+    date_labels = "%Y",
+    breaks = seq.Date(
+      from = as.Date("1985-01-01"),
+      to = as.Date("2025-01-01"),
+      by = "5 years"),
+    expand = expansion(mult = c(0,.03)),
+  )+
+  labs(y= "Indicator anomaly")+
+
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size=14),
+    title = element_text(size=16),
+    legend.key.width = unit(1,"cm"),
+    plot.subtitle = element_text(size=16),
+    legend.title = element_blank(),
+    legend.text = element_text(size=14),
+    axis.text.y = element_text(angle=90,size=10),
+    strip.text = element_text(size= 12),
+    axis.text.x = element_text(size=10),
+    plot.caption = element_text(hjust=0, size =14)
+  )+
+  guides(linetype = guide_legend(override.aes = list(size = 10)))+
+  labs(
+    title = "Drought AA Afghanistan: 2025 April Monitoring",
+    subtitle = "Red dashed line represents 5.2 year RP threshold by province"
+  )
+
+ggsave(
+  "book_afg_analysis/plot_activation_2025.png",width = 5, height = 6, units = "in"
+)

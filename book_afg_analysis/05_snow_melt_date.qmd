@@ -1,6 +1,5 @@
 ---
 title: "Snow Melt Date"
-editor: visual
 format:
   html:
     toc: true
@@ -17,6 +16,9 @@ execute:
   eval: false
   results: "asis"
   out.width: "100%"
+editor: visual
+project:
+  execute-dir: project
 ---
 
 ## Intro

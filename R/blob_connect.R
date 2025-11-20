@@ -10,8 +10,8 @@ box::use(
 #' @export
 load_proj_containers <- function() {
   # storage endpoint
-  sdev <- AzureStor$storage_endpoint(azure_endpoint_url(), sas = Sys.getenv("DSCI_AZ_SAS_DEV"))
-  sprod <- AzureStor$storage_endpoint(azure_endpoint_url(stage = "prod"), sas = Sys.getenv("DSCI_AZ_SAS_PROD"))
+  sdev <- AzureStor$storage_endpoint(azure_endpoint_url(), sas = Sys.getenv("DSCI_AZ_BLOB_DEV_SAS_WRITE"))
+  sprod <- AzureStor$storage_endpoint(azure_endpoint_url(stage = "prod"), sas = Sys.getenv("DSCI_AZ_BLOB_PROD_SAS_WRITE"))
   # storage container
   sc_global <- AzureStor$storage_container(sprod, "raster")
   sc_projects <- AzureStor$storage_container(sdev, "projects")

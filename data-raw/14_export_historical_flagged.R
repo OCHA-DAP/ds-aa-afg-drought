@@ -9,8 +9,16 @@ box::use(
   purrr[...],
   lubridate[...],
   janitor[clean_names],
+  
+  
+)
+
+box::use(
+  mload= ../src/trigger_monitoring/R_monitoring/monitoring,
+  ../R/pg,
+  ../R/utils,
   seas5 = ../R/seas5_utils,
-  ../R/pg
+
 )
 
 # Window B ----------------------------------------------------------------
@@ -18,6 +26,8 @@ box::use(
 dfz_historical <-  mload$load_window_b_historical_plot_data(version = "20250408")
 df_window_b <- dfz_historical |>
   filter(parameter=="cdi") |>
+  arrange(desc(rp_empirical)) |>
+  print(n=100) |>
   group_by(
     yr_date = floor_date(yr_season,"year")
   ) |>
@@ -84,7 +94,7 @@ df_seas5_rps_historical <- df_seas5_mam |>
     pcode,pub_mo,mm
   ) |>
   mutate(
-    rp_emp = utils$rp_empirical(x = mm  , direction="-1"),
+    rp_emp = utils$rp_empirical(x = mm  , direction="1"),
     flag = rp_emp>=prov_threshold
     # rank = row_number(),
     # q_rank = rank/(max(rank)+1),
@@ -92,7 +102,12 @@ df_seas5_rps_historical <- df_seas5_mam |>
 
   ) |>
   arrange(pcode,pub_mo,mm) |>
-  ungroup()
+  ungroup() |>
+  print(n=100)
+
+df_seas5_rps_historical |>
+  filter(leadtime ==2) |>
+  arrange(pcode, desc(rp_emp))
 
 
 df_seas5_rps_historical |>
@@ -122,3 +137,25 @@ df_historical_flagged <- full_join(df_window_a,df_window_b)
 cumulus$blob_write(df = df_historical_flagged,
                    name = "ds-aa-cerf-global-trigger-allocations/aa_historical/yearly/afg_drought_aa_yearly.csv"
                    )
+
+cor(df_historical_flagged[,-1], use = "pairwise.complete.obs")
+
+## 2025-11-20: Updated version for financial risk transfer solution project
+
+df_historical_flagged_update25 <- df_historical_flagged |> 
+  print(n= 45) |> 
+  rename(
+    year =yr_date,
+    afg_drought_v1_wt1 = `AFG (window A)`,
+    afg_drought_v1_wt2 = `AFG (window B)`
+  ) |> 
+  mutate(
+    afg_drought_v1_wt2 = ifelse(year(year)==2025,TRUE,afg_drought_v1_wt2)
+  ) |> 
+  print(n=45)
+
+cumulus$blob_write(
+  df_historical_flagged_update25,
+  name = "ds-aa-cerf-global-trigger-allocations/aa_historical/yearly/v4/afg_drought_v1.csv"
+)
+

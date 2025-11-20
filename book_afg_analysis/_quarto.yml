@@ -1,9 +1,11 @@
 project:
   type: book
 
+jupyter: dsci_playground
+
 book:
   title: "Anticipatory Action - Drought Afghanistan - 2025"
-  author: "OCHA Centre for Humanaitarian Data"
+  author: "OCHA Centre for Humanitarian Data"
   date: "12/10/2024"
   chapters:
     - index.qmd
@@ -13,7 +15,9 @@ book:
     - 04_snow_ndsi_swe.qmd
     - 05_snow_melt_date.qmd
     - 06_indicator_expansion.qmd
-    - 07_pre_season_allocation_options.qmd
+    - 07_composite_observational.qmd
+    - 08_weight_selection.qmd
+    - 09_pre_season_allocation_options.qmd
     - summary.qmd
     - references.qmd
 
@@ -22,5 +26,11 @@ bibliography: references.bib
 format:
   html:
     theme: cosmo
+    number-sections: true
+    number-depth: 3
+    fig-format: "png" # More efficient than SVG for most plots
+    fig-dpi: 96       # Web-resolution is sufficient
+execute:
+  freeze: false
 
 editor: visual
