@@ -9,8 +9,16 @@ box::use(
   purrr[...],
   lubridate[...],
   janitor[clean_names],
+  
+  
+)
+
+box::use(
+  mload= ../src/trigger_monitoring/R_monitoring/monitoring,
+  ../R/pg,
+  ../R/utils,
   seas5 = ../R/seas5_utils,
-  ../R/pg
+
 )
 
 # Window B ----------------------------------------------------------------
@@ -131,3 +139,23 @@ cumulus$blob_write(df = df_historical_flagged,
                    )
 
 cor(df_historical_flagged[,-1], use = "pairwise.complete.obs")
+
+## 2025-11-20: Updated version for financial risk transfer solution project
+
+df_historical_flagged_update25 <- df_historical_flagged |> 
+  print(n= 45) |> 
+  rename(
+    year =yr_date,
+    afg_drought_v1_wt1 = `AFG (window A)`,
+    afg_drought_v1_wt2 = `AFG (window B)`
+  ) |> 
+  mutate(
+    afg_drought_v1_wt2 = ifelse(year(year)==2025,TRUE,afg_drought_v1_wt2)
+  ) |> 
+  print(n=45)
+
+cumulus$blob_write(
+  df_historical_flagged_update25,
+  name = "ds-aa-cerf-global-trigger-allocations/aa_historical/yearly/v4/afg_drought_v1.csv"
+)
+
