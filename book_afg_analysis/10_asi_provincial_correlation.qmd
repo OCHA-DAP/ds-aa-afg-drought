@@ -1944,6 +1944,252 @@ This "asymmetric threshold" approach means:
 - **ASI (observational)**: Set closer to target RP - this is our primary, validated trigger
 - **SEAS5 (forecast)**: Set higher than target - forecast only adds value when it strongly signals drought
 
+## Correlated Bootstrap Simulation: ASI and SEAS5 Joint Triggering
+
+This section examines the correlation between ASI and SEAS5 trigger activations and uses that correlation to simulate joint triggering behavior via correlated bootstrap resampling.
+
+```{r}
+#| label: financial-config
+
+box::use(
+    simstudy[genCorGen]
+)
+
+# ============================================================================
+# CONFIGURATION: Trigger Design Parameters
+# ============================================================================
+# These are PROVINCE-LEVEL thresholds: trigger fires if ANY province exceeds
+
+# SCENARIO 1: Dual trigger design
+config_rp_asi <- 5
+config_rp_seas5 <- 5
+config_payout_asi <- 6.6
+config_payout_seas5 <- 3.4
+
+# SCENARIO 2: Single trigger design (for comparison)
+config_rp_single <- 3
+config_payout_single <- 10  # Full $10M on single ASI trigger
+
+# Simulation settings
+config_n_sim <- 100000
+config_seed <- 42
+```
+
+```{r}
+#| label: calculate-trigger-probabilities
+
+# Calculate empirical trigger probabilities using PROVINCE-LEVEL thresholds
+# A trigger fires if ANY province exceeds the RP threshold in a given year
+
+# Helper function to calculate yearly trigger probability at given RP threshold
+calc_yearly_trigger_prob <- function(df_rp, rp_threshold) {
+    df_rp |>
+        mutate(exceeds = rp >= rp_threshold) |>
+        group_by(year) |>
+        summarise(triggered = as.integer(any(exceeds)), .groups = "drop") |>
+        pull(triggered) |>
+        mean()
+}
+
+# DUAL TRIGGER: ASI and SEAS5 at configured thresholds
+prob_asi_dual <- calc_yearly_trigger_prob(df_asi_rp_list$without_bamyan, config_rp_asi)
+prob_seas5_dual <- calc_yearly_trigger_prob(df_seas5_rp, config_rp_seas5)
+
+# Get joint activation for correlation
+df_joint <- df_asi_rp_list$without_bamyan |>
+    mutate(exceeds = rp >= config_rp_asi) |>
+    group_by(year) |>
+    summarise(asi = as.integer(any(exceeds)), .groups = "drop") |>
+    inner_join(
+        df_seas5_rp |>
+            mutate(exceeds = rp >= config_rp_seas5) |>
+            group_by(year) |>
+            summarise(seas5 = as.integer(any(exceeds)), .groups = "drop"),
+        by = "year"
+    )
+
+cor_asi_seas5 <- cor(df_joint$asi, df_joint$seas5)
+
+# SINGLE TRIGGER: ASI only at 3-yr RP threshold
+prob_asi_single <- calc_yearly_trigger_prob(df_asi_rp_list$without_bamyan, config_rp_single)
+
+cat("=== Trigger Probabilities (Province-Level Thresholds) ===\n\n")
+cat("DUAL TRIGGER DESIGN:\n")
+cat("  ASI @ ", config_rp_asi, "-yr RP:    P = ", round(prob_asi_dual, 3),
+    " (empirical RP = ", round(1/prob_asi_dual, 1), " yr)\n", sep = "")
+cat("  SEAS5 @ ", config_rp_seas5, "-yr RP:  P = ", round(prob_seas5_dual, 3),
+    " (empirical RP = ", round(1/prob_seas5_dual, 1), " yr)\n", sep = "")
+cat("  Correlation:       ", round(cor_asi_seas5, 3), "\n\n", sep = "")
+
+cat("SINGLE TRIGGER DESIGN:\n")
+cat("  ASI @ ", config_rp_single, "-yr RP:    P = ", round(prob_asi_single, 3),
+    " (empirical RP = ", round(1/prob_asi_single, 1), " yr)\n", sep = "")
+```
+
+```{r}
+#| label: simulate-and-compare
+
+# Simulate dual trigger with correlation
+set.seed(config_seed)
+
+corr_matrix <- matrix(c(1, cor_asi_seas5, cor_asi_seas5, 1), nrow = 2,
+                      dimnames = list(c("ASI", "SEAS5"), c("ASI", "SEAS5")))
+
+df_sim_dual <- genCorGen(
+    n = config_n_sim,
+    nvars = 2,
+    params1 = c(prob_asi_dual, prob_seas5_dual),
+    dist = "binary",
+    corMatrix = corr_matrix,
+    cnames = c("ASI", "SEAS5"),
+    method = "ep",
+    wide = TRUE
+) |>
+    as_tibble() |>
+    mutate(
+        total_alloc = ASI * config_payout_asi + SEAS5 * config_payout_seas5
+    )
+
+# Expected values
+expected_dual <- mean(df_sim_dual$total_alloc)
+expected_single <- prob_asi_single * config_payout_single
+
+# Historical CERF
+df_cerf <- cumulus$blob_read(
+    name = "ds-cerf-allocation-patterns/raw/CERF_allocation_by_year.csv",
+    container = "projects",
+    progress_show = FALSE
+) |>
+    filter(
+        Country == "Afghanistan",
+        str_detect(Emergency, regex("drought", ignore_case = TRUE)),
+        Window == "Rapid Response"
+    )
+
+years_cerf <- 2025 - 2006 + 1
+expected_cerf <- sum(df_cerf$`Amount in US$`) / years_cerf / 1e6
+
+# Calculate combined RPs
+# Dual: P(ASI OR SEAS5)
+prob_either_dual <- mean(df_joint$asi | df_joint$seas5)
+rp_combined_dual <- 1 / prob_either_dual
+
+# Single: just ASI at 3-yr threshold
+rp_combined_single <- 1 / prob_asi_single
+
+# CERF: historical frequency
+rp_cerf <- years_cerf / nrow(df_cerf)
+
+# Build comparison
+df_scenarios <- tibble(
+    Scenario = c(
+        str_c("Dual trigger (allocation split)\n(ASI@", config_rp_asi, "yr + SEAS5@", config_rp_seas5, "yr)"),
+        str_c("Single trigger\n(ASI@", config_rp_single, "yr)"),
+        "Historical CERF\n(2006-2025)"
+    ),
+    `Expected Annual` = c(expected_dual, expected_single, expected_cerf),
+    `Combined RP` = c(rp_combined_dual, rp_combined_single, rp_cerf),
+    `Payout per Event` = c(
+        mean(df_sim_dual$total_alloc[df_sim_dual$total_alloc > 0]),
+        config_payout_single,
+        sum(df_cerf$`Amount in US$`) / nrow(df_cerf) / 1e6
+    )
+)
+```
+
+### Expected Annual Spending Comparison
+
+```{r}
+#| label: scenario-comparison-plot
+#| fig-width: 10
+#| fig-height: 6
+
+ggplot(df_scenarios, aes(x = reorder(Scenario, `Expected Annual`), y = `Expected Annual`)) +
+    geom_col(fill = c("#56B4E9", "#009E73", "#E69F00"), width = 0.5) +
+    geom_text(
+        aes(label = paste0("$", round(`Expected Annual`, 2), "M/yr")),
+        vjust = -0.5, fontface = "bold", size = 5
+    ) +
+    geom_label(
+        aes(y = 0.5, label = paste0("Fires every ", round(`Combined RP`, 1), " yrs\n",
+                                     "$", round(`Payout per Event`, 1), "M per event")),
+        size = 3.5, fill = "white", alpha = 0.9, label.size = 0.3
+    ) +
+    scale_y_continuous(
+        limits = c(0, max(df_scenarios$`Expected Annual`) * 1.25),
+        labels = ~paste0("$", .x, "M")
+    ) +
+    labs(
+        title = "Expected Annual Spending: AA Trigger Designs vs Historical CERF",
+        subtitle = "Lower combined RP = more frequent activation, but with smaller per-event payouts",
+        x = "Payout modalities (@nyr = province-level RP threshold)",
+        y = "Expected Annual Spending"
+    ) +
+    theme(
+        axis.title.x = element_text(margin = margin(t = 15))
+    )
+```
+
+```{r}
+#| label: scenario-summary
+
+cat("=== Expected Annual Spending Summary ===\n\n")
+
+cat("SCENARIO 1 - Dual Trigger:\n")
+cat("  Config: ASI@", config_rp_asi, "yr → $", config_payout_asi, "M, SEAS5@", config_rp_seas5, "yr → $", config_payout_seas5, "M\n", sep = "")
+cat("  Expected: $", round(expected_dual, 2), "M/year\n\n", sep = "")
+
+cat("SCENARIO 2 - Single ASI Trigger:\n")
+cat("  Config: ASI@", config_rp_single, "yr → $", config_payout_single, "M\n", sep = "")
+cat("  P(trigger) = ", round(prob_asi_single, 3), " → Expected: $", round(expected_single, 2), "M/year\n\n", sep = "")
+
+cat("SCENARIO 3 - Historical CERF:\n")
+cat("  ", nrow(df_cerf), " drought RR allocations over ", years_cerf, " years\n", sep = "")
+cat("  Expected: $", round(expected_cerf, 2), "M/year\n\n", sep = "")
+
+cat("---\n")
+cat("Single trigger costs $", round(expected_single - expected_dual, 2), "M/year MORE than dual trigger\n", sep = "")
+cat("(", round((expected_single/expected_dual - 1) * 100, 0), "% increase)\n", sep = "")
+```
+
+### Dual Trigger Payout Distribution
+
+```{r}
+#| label: payout-distribution
+#| fig-width: 10
+#| fig-height: 6
+
+df_payout_dist <- df_sim_dual |>
+    count(total_alloc) |>
+    mutate(
+        pct = n / sum(n) * 100,
+        rp = 100 / pct,
+        label = case_when(
+            total_alloc == 0 ~ "$0M\n(no trigger)",
+            total_alloc == config_payout_seas5 ~ paste0("$", config_payout_seas5, "M\n(SEAS5 only)"),
+            total_alloc == config_payout_asi ~ paste0("$", config_payout_asi, "M\n(ASI only)"),
+            total_alloc == (config_payout_asi + config_payout_seas5) ~
+                paste0("$", config_payout_asi + config_payout_seas5, "M\n(both)"),
+            TRUE ~ paste0("$", total_alloc, "M")
+        )
+    )
+
+ggplot(df_payout_dist, aes(x = factor(total_alloc), y = pct)) +
+    geom_col(fill = "#56B4E9", color = "#0072B2", width = 0.6) +
+    geom_text(
+        aes(label = paste0(round(pct, 1), "%\n(1-in-", round(rp, 1), " yr)")),
+        vjust = -0.3, fontface = "bold", size = 4
+    ) +
+    scale_x_discrete(labels = df_payout_dist$label) +
+    scale_y_continuous(limits = c(0, max(df_payout_dist$pct) * 1.2)) +
+    labs(
+        title = "Dual Trigger: Annual Payout Distribution",
+        subtitle = paste0("Expected: $", round(expected_dual, 2), "M/year | Based on ", scales::comma(config_n_sim), " simulated years"),
+        x = NULL,
+        y = "Probability (%)"
+    )
+```
+
 ## Appendix: Extreme Value Analysis with extRemes
 
 This section compares empirical return period estimates to those derived from fitting a Generalized Extreme Value (GEV) distribution using the `extRemes` package. GEV fitting provides confidence bounds on return level estimates, which is particularly valuable for understanding uncertainty around our 3-5 year RP targets.
