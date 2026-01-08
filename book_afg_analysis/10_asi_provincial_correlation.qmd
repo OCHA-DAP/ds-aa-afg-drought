@@ -1,0 +1,2346 @@
+---
+title: ASI Provincial Correlation Analysis
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+project:
+  execute-dir: project
+---
+
+## Intro
+
+This chapter analyzes the correlation of end-of-season ASI (Agricultural Stress Index) values across Afghan provinces. We load dekadal ASI data from FAO at admin 1 level, filter to the end of season (May dekad 3), and examine both absolute values and Z-scores to understand how drought conditions co-vary spatially.
+
+May dekad 3 represents the end of the spring wheat growing season, just as harvest begins, making it an appropriate time to measure cumulative drought stress.
+
+```{r}
+#| label: setup
+
+box::use(
+    ../R/utils,
+    dplyr[...],
+    tidyr[...],
+    lubridate[...],
+    ggplot2[...],
+    gghdx[...],
+    corrplot[...],
+    janitor[...],
+    cumulus,
+    purrr[...],
+    stringr[...]
+)
+gghdx()
+
+PROVINCES_AOI_WITH_BAMYAN <- c(
+    "Faryab",
+    "Sar-e-Pul",
+    "Jawzjan",
+    "Balkh",
+    "Badghis",
+    "Bamyan"
+)
+
+PROVINCES_AOI_NO_BAMYAN <- c(
+    "Faryab",
+    "Sar-e-Pul",
+    "Jawzjan",
+    "Balkh",
+    "Badghis"
+)
+```
+
+## Helper Functions
+
+```{r}
+#| label: helper-functions
+
+# Create correlation plot with consistent styling
+plot_correlation_matrix <- function(cor_matrix, title) {
+    corrplot(
+        cor_matrix,
+        method = "color",
+        type = "lower",
+        order = "hclust",
+        tl.col = "black",
+        tl.srt = 45,
+        tl.cex = 0.9,
+        addCoef.col = "black",
+        number.cex = 0.7,
+        title = title,
+        mar = c(0, 0, 2, 0)
+    )
+}
+
+# Calculate correlation matrix from wide data
+calculate_correlation <- function(df_wide, exclude_cols = "year") {
+    mat <- df_wide |>
+        select(-all_of(exclude_cols)) |>
+        as.matrix()
+
+    cor(mat, use = "pairwise.complete.obs")
+}
+
+# Summarize correlation statistics
+summarize_correlation <- function(cor_matrix) {
+    lower_tri <- cor_matrix[lower.tri(cor_matrix)]
+
+    tibble(
+        mean = mean(lower_tri, na.rm = TRUE),
+        min = min(lower_tri, na.rm = TRUE),
+        max = max(lower_tri, na.rm = TRUE)
+    )
+}
+
+# Perform hierarchical clustering and return results
+perform_clustering <- function(df_wide,
+                               province_col = "province",
+                               dist_method = "euclidean",
+                               hclust_method = "ward.D2") {
+    mat <- df_wide |>
+        select(-all_of(province_col)) |>
+        as.matrix()
+
+    rownames(mat) <- df_wide[[province_col]]
+
+    dist_mat <- dist(mat, method = dist_method)
+    hc <- hclust(dist_mat, method = hclust_method)
+
+    list(
+        matrix = mat,
+        distance = dist_mat,
+        hclust = hc
+    )
+}
+
+# Plot dendrogram with optional cluster rectangles
+plot_dendrogram <- function(hc, main_title, k = NULL, colors = NULL) {
+    plot(
+        hc,
+        main = main_title,
+        xlab = "Province",
+        ylab = "Height",
+        sub = ""
+    )
+
+    if (!is_null(k)) {
+        rect.hclust(hc, k = k, border = colors)
+    }
+}
+
+# Create cluster assignments for multiple k values
+create_cluster_assignments <- function(hc, k_values) {
+    cluster_list <- map(k_values, ~cutree(hc, k = .x))
+    names(cluster_list) <- str_c("cluster_", k_values)
+
+    tibble(province = names(cluster_list[[1]])) |>
+        bind_cols(map_dfc(cluster_list, as.factor))
+}
+
+# Plot time series with cluster assignments
+plot_timeseries_with_clusters <- function(df_asi, df_clusters,
+                                         cluster_col = "cluster",
+                                         title, subtitle) {
+    n_clusters <- n_distinct(df_clusters[[cluster_col]])
+    linetypes <- c("solid", "dashed", "dotted", "dotdash", "longdash")[1:n_clusters]
+
+    df_asi |>
+        left_join(df_clusters, by = "province") |>
+        ggplot(aes(x = year, y = data, color = province, linetype = .data[[cluster_col]])) +
+        geom_line(linewidth = 1) +
+        geom_point(size = 2) +
+        scale_linetype_manual(values = set_names(linetypes, as.character(1:n_clusters))) +
+        labs(
+            title = title,
+            subtitle = subtitle,
+            x = "Year",
+            y = "ASI",
+            color = "Province",
+            linetype = "Cluster"
+        ) +
+        theme(legend.position = "bottom")
+}
+
+# Summarize clusters
+summarize_clusters <- function(df_asi, df_clusters, cluster_col = "cluster") {
+    df_asi |>
+        left_join(df_clusters, by = "province") |>
+        group_by(.data[[cluster_col]]) |>
+        summarise(
+            provinces = paste(unique(province), collapse = ", "),
+            n_provinces = n_distinct(province),
+            mean_asi = round(mean(data, na.rm = TRUE), 1),
+            sd_asi = round(sd(data, na.rm = TRUE), 1),
+            .groups = "drop"
+        )
+}
+
+# Create threshold flags for multiple RP values
+create_threshold_flags <- function(df_rp, rp_thresholds = c(3, 4, 5)) {
+    for (rp in rp_thresholds) {
+        flag_col <- str_c("flag_rp", rp)
+        df_rp <- df_rp |>
+            mutate({{flag_col}} := as.integer(rp >= !!rp))
+    }
+    df_rp
+}
+
+# Pivot threshold flags to wide format for all RP values
+pivot_threshold_flags_wide <- function(df_flags, rp_thresholds = c(3, 4, 5)) {
+    rp_thresholds |>
+        map(~{
+            flag_col <- str_c("flag_rp", .x)
+            df_flags |>
+                select(year, province, all_of(flag_col)) |>
+                pivot_wider(names_from = province, values_from = all_of(flag_col)) |>
+                arrange(year)
+        }) |>
+        set_names(str_c("rp", rp_thresholds))
+}
+
+# Plot threshold heatmap
+plot_threshold_heatmap <- function(df_flags, title_suffix = "") {
+    df_flags |>
+        select(year, province, starts_with("flag_")) |>
+        pivot_longer(
+            cols = starts_with("flag"),
+            names_to = "threshold",
+            values_to = "exceeded"
+        ) |>
+        mutate(
+            threshold = case_when(
+                threshold == "flag_rp3" ~ "3-Year RP",
+                threshold == "flag_rp4" ~ "4-Year RP",
+                threshold == "flag_rp5" ~ "5-Year RP",
+                TRUE ~ threshold
+            ),
+            threshold = factor(threshold, levels = c("3-Year RP", "4-Year RP", "5-Year RP"))
+        ) |>
+        ggplot(aes(x = year, y = province, fill = factor(exceeded))) +
+        geom_tile(color = "white", linewidth = 0.5) +
+        facet_wrap(~threshold, ncol = 1) +
+        scale_fill_manual(
+            values = c("0" = "gray90", "1" = "tomato"),
+            labels = c("0" = "No", "1" = "Yes"),
+            name = "Threshold\nExceeded"
+        ) +
+        labs(
+            title = str_c("Return Period Threshold Exceedances", title_suffix),
+            subtitle = "End-of-Season ASI (May Dekad 3)",
+            x = "Year",
+            y = "Province"
+        ) +
+        theme(
+            axis.text.x = element_text(angle = 45, hjust = 1),
+            panel.grid = element_blank()
+        )
+}
+
+# Print correlation summary for multiple thresholds
+print_correlation_summary <- function(cor_matrices, title_suffix = "") {
+    cat(str_c("Correlation Summary by Threshold", title_suffix, ":\n\n"))
+
+    walk2(cor_matrices, names(cor_matrices), ~{
+        stats <- summarize_correlation(.x)
+        threshold_name <- str_replace(.y, "rp", "") |>
+            str_c("-Year RP Threshold")
+
+        cat(threshold_name, ":\n", sep = "")
+        cat("  Mean correlation:", round(stats$mean, 3), "\n")
+        cat("  Range:", round(stats$min, 3), "to", round(stats$max, 3), "\n\n")
+    })
+}
+```
+
+## Load ASI Data
+
+```{r}
+#| label: load-data
+
+df_asi_raw <- cumulus::fao_asi_adm1_tabular(iso3 = "afg")
+
+glimpse(df_asi_raw)
+```
+
+## Filter to End of Season (May Dekad 3)
+
+The end of the spring wheat season in Afghanistan is May dekad 3 (approximately May 21-31). This is when ASI provides the most meaningful measure of cumulative drought impact on the season.
+
+```{r}
+#| label: filter-end-of-season
+
+df_asi_eos <- df_asi_raw |>
+    clean_names() |>
+    filter(
+        month == "05",
+        dekad == 3
+    ) |>
+    mutate(year = year(date))
+
+# Check the data
+df_asi_eos |>
+    count(year) |>
+    print(n = Inf)
+```
+
+```{r}
+#| label: pivot-wide
+
+# Pivot to wide format for correlation analysis
+df_asi_wide <- df_asi_eos |>
+    select(year, province, data) |>
+    pivot_wider(
+        names_from = province,
+        values_from = data
+    ) |>
+    arrange(year)
+
+df_asi_wide
+```
+
+## Calculate Z-Scores per Province
+
+Z-scores standardize each province's ASI values relative to its own historical mean and standard deviation, allowing us to compare drought severity across provinces with different baseline conditions.
+
+```{r}
+#| label: calculate-zscores
+
+df_asi_zscores <- df_asi_eos |>
+    group_by(adm1_code, province) |>
+    mutate(
+        mean_asi = mean(data, na.rm = TRUE),
+        sd_asi = sd(data, na.rm = TRUE),
+        zscore = (data - mean_asi) / sd_asi
+    ) |>
+    ungroup()
+
+# Summary statistics by province
+df_asi_zscores |>
+    group_by(province) |>
+    summarise(
+        n_years = n(),
+        mean_asi = round(mean(data, na.rm = TRUE), 1),
+        sd_asi = round(sd(data, na.rm = TRUE), 1),
+        min_asi = round(min(data, na.rm = TRUE), 1),
+        max_asi = round(max(data, na.rm = TRUE), 1),
+        .groups = "drop"
+    ) |>
+    arrange(desc(mean_asi))
+```
+
+```{r}
+#| label: pivot-zscores-wide
+
+# Pivot Z-scores to wide format
+df_zscore_wide <- df_asi_zscores |>
+    select(year, province, zscore) |>
+    pivot_wider(
+        names_from = province,
+        values_from = zscore
+    ) |>
+    arrange(year)
+
+df_zscore_wide
+```
+
+## Correlation Matrix - Absolute ASI Values
+
+This correlation matrix shows how end-of-season ASI values co-vary across provinces. High correlations indicate that provinces experience similar drought conditions in the same years.
+
+```{r}
+#| label: correlation-absolute
+#| fig-width: 10
+#| fig-height: 10
+
+# Calculate and plot correlation matrix
+cor_asi <- calculate_correlation(df_asi_wide)
+
+plot_correlation_matrix(
+    cor_asi,
+    "Correlation Matrix: End-of-Season ASI (Absolute Values)"
+)
+```
+
+## Correlation Matrix - Z-Scores
+
+The Z-score correlation matrix examines whether standardized drought anomalies are correlated across provinces. This removes differences in baseline ASI levels and focuses on whether provinces experience above/below normal conditions together.
+
+```{r}
+#| label: correlation-zscores
+#| fig-width: 10
+#| fig-height: 10
+
+# Calculate and plot correlation matrix
+cor_zscore <- calculate_correlation(df_zscore_wide)
+
+plot_correlation_matrix(
+    cor_zscore,
+    "Correlation Matrix: End-of-Season ASI (Z-Scores)"
+)
+```
+
+## Time Series Visualization
+
+```{r}
+#| label: timeseries-plot
+#| fig-width: 12
+#| fig-height: 8
+
+ggplot(
+    df_asi_zscores,
+    aes(x = year, y = zscore, color = province)
+) +
+    geom_line(alpha = 0.7) +
+    geom_point(size = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_hline(yintercept = c(-1, 1), linetype = "dotted", color = "gray70") +
+    labs(
+        title = "End-of-Season ASI Z-Scores by Province",
+        subtitle = "May Dekad 3 - Higher values indicate more drought stress",
+        x = "Year",
+        y = "Z-Score",
+        color = "Province"
+    ) +
+    theme(legend.position = "bottom") +
+    guides(color = guide_legend(ncol = 6))
+```
+
+## Summary Statistics
+
+```{r}
+#| label: correlation-summary
+
+# Summary of correlations
+cat("Absolute ASI Correlation Summary:\n")
+summarize_correlation(cor_asi) |>
+    mutate(across(everything(), ~round(.x, 3))) |>
+    print()
+
+cat("\nZ-Score Correlation Summary:\n")
+summarize_correlation(cor_zscore) |>
+    mutate(across(everything(), ~round(.x, 3))) |>
+    print()
+```
+
+## Provincial Clustering Analysis
+
+This section analyzes the provinces of interest using hierarchical clustering to group them based on their ASI patterns. We perform the analysis both with and without Bamyan to understand its influence.
+
+```{r}
+#| label: setup-aoi-analysis
+
+# Create a list of province sets to analyze
+province_sets <- list(
+    with_bamyan = PROVINCES_AOI_WITH_BAMYAN,
+    without_bamyan = PROVINCES_AOI_NO_BAMYAN
+)
+
+# Filter and prepare data for each province set
+df_asi_aoi_list <- map(province_sets, ~{
+    df_asi_eos |>
+        filter(province %in% .x)
+})
+
+# Create wide format matrices for clustering
+df_asi_aoi_wide_list <- map(df_asi_aoi_list, ~{
+    .x |>
+        select(year, province, data) |>
+        pivot_wider(
+            names_from = year,
+            values_from = data
+        )
+})
+
+# Perform hierarchical clustering for each set
+clustering_results <- map(df_asi_aoi_wide_list, ~{
+    perform_clustering(.x, province_col = "province")
+})
+```
+
+### Clustering Analysis - AOI Provinces (Including Bamyan)
+
+This section focuses on the provinces of interest (Northern: Faryab, Sar-e-Pul, Jawzjan, Balkh; Western: Badghis; Central: Bamyan) and uses hierarchical clustering to group them based on their ASI patterns.
+
+```{r}
+#| label: clustering-with-bamyan
+
+# Show the data matrix
+clustering_results$with_bamyan$matrix
+```
+
+```{r}
+#| label: dendrogram-with-bamyan
+#| fig-width: 10
+#| fig-height: 6
+
+# Plot dendrogram
+plot_dendrogram(
+    clustering_results$with_bamyan$hclust,
+    "Hierarchical Clustering of AOI Provinces\n(Based on End-of-Season ASI)"
+)
+```
+
+#### Multi-Cluster Solutions (Including Bamyan)
+
+```{r}
+#| label: cluster-solutions-with-bamyan
+
+# Create cluster assignments for 2 and 3 clusters
+df_clusters_with_bamyan <- create_cluster_assignments(
+    clustering_results$with_bamyan$hclust,
+    k_values = c(2, 3)
+)
+
+df_clusters_with_bamyan |>
+    arrange(cluster_2, cluster_3, province)
+```
+
+```{r}
+#| label: dendrogram-k-clusters-with-bamyan
+#| fig-width: 10
+#| fig-height: 6
+
+# Plot dendrograms with cluster rectangles
+walk(c(2, 3), ~{
+    plot_dendrogram(
+        clustering_results$with_bamyan$hclust,
+        str_c(.x, "-Cluster Solution"),
+        k = .x,
+        colors = c("red", "blue", "green")[1:.x]
+    )
+})
+```
+
+```{r}
+#| label: cluster-timeseries-with-bamyan
+#| fig-width: 12
+#| fig-height: 6
+
+# Plot time series for each cluster solution
+walk2(c(2, 3), c("cluster_2", "cluster_3"), ~{
+    p <- plot_timeseries_with_clusters(
+        df_asi_aoi_list$with_bamyan,
+        df_clusters_with_bamyan |> select(province, cluster = all_of(.y)),
+        cluster_col = "cluster",
+        title = str_c("End-of-Season ASI by Province (", .x, "-Cluster Solution)"),
+        subtitle = "AOI Provinces - May Dekad 3"
+    )
+    print(p)
+})
+```
+
+```{r}
+#| label: cluster-summaries-with-bamyan
+
+# Print cluster summaries
+walk(c("cluster_2", "cluster_3"), ~{
+    cat("\nSummary for", .x, ":\n")
+    summarize_clusters(
+        df_asi_aoi_list$with_bamyan,
+        df_clusters_with_bamyan |> select(province, cluster = all_of(.x)),
+        cluster_col = "cluster"
+    ) |>
+        print()
+})
+```
+
+#### Cluster Correlation Heatmap (Including Bamyan)
+
+```{r}
+#| label: aoi-correlation-with-bamyan
+#| fig-width: 8
+#| fig-height: 8
+
+# Correlation matrix for AOI provinces
+cor_aoi_with_bamyan <- cor(
+    t(clustering_results$with_bamyan$matrix),
+    use = "pairwise.complete.obs"
+)
+
+plot_correlation_matrix(
+    cor_aoi_with_bamyan,
+    "Correlation Matrix: AOI Provinces (ASI)"
+)
+```
+
+### Clustering Analysis - AOI Provinces (Excluding Bamyan)
+
+This section repeats the analysis excluding Bamyan (Central region), focusing only on Northern (Faryab, Sar-e-Pul, Jawzjan, Balkh) and Western (Badghis) provinces.
+
+```{r}
+#| label: clustering-without-bamyan
+
+# Show the data matrix
+clustering_results$without_bamyan$matrix
+```
+
+```{r}
+#| label: dendrogram-without-bamyan
+#| fig-width: 10
+#| fig-height: 6
+
+# Plot dendrogram
+plot_dendrogram(
+    clustering_results$without_bamyan$hclust,
+    "Hierarchical Clustering of AOI Provinces (Excluding Bamyan)\n(Based on End-of-Season ASI)"
+)
+```
+
+#### Multi-Cluster Solutions (Excluding Bamyan)
+
+```{r}
+#| label: cluster-solutions-without-bamyan
+
+# Create cluster assignments for 2 and 3 clusters
+df_clusters_without_bamyan <- create_cluster_assignments(
+    clustering_results$without_bamyan$hclust,
+    k_values = c(2, 3)
+)
+
+df_clusters_without_bamyan |>
+    arrange(cluster_2, cluster_3, province)
+```
+
+```{r}
+#| label: dendrogram-k-clusters-without-bamyan
+#| fig-width: 10
+#| fig-height: 6
+
+# Plot dendrograms with cluster rectangles
+walk(c(2, 3), ~{
+    plot_dendrogram(
+        clustering_results$without_bamyan$hclust,
+        str_c(.x, "-Cluster Solution (Excluding Bamyan)"),
+        k = .x,
+        colors = c("red", "blue", "green")[1:.x]
+    )
+})
+```
+
+```{r}
+#| label: cluster-timeseries-without-bamyan
+#| fig-width: 12
+#| fig-height: 6
+
+# Plot time series for each cluster solution
+walk2(c(2, 3), c("cluster_2", "cluster_3"), ~{
+    p <- plot_timeseries_with_clusters(
+        df_asi_aoi_list$without_bamyan,
+        df_clusters_without_bamyan |> select(province, cluster = all_of(.y)),
+        cluster_col = "cluster",
+        title = str_c("End-of-Season ASI by Province - ", .x, "-Cluster (Excluding Bamyan)"),
+        subtitle = "AOI Provinces - May Dekad 3"
+    )
+    print(p)
+})
+```
+
+```{r}
+#| label: cluster-summaries-without-bamyan
+
+# Print cluster summaries
+walk(c("cluster_2", "cluster_3"), ~{
+    cat("\nSummary for", .x, "(excluding Bamyan):\n")
+    summarize_clusters(
+        df_asi_aoi_list$without_bamyan,
+        df_clusters_without_bamyan |> select(province, cluster = all_of(.x)),
+        cluster_col = "cluster"
+    ) |>
+        print()
+})
+```
+
+#### Correlation Heatmap (Excluding Bamyan)
+
+```{r}
+#| label: aoi-correlation-without-bamyan
+#| fig-width: 8
+#| fig-height: 8
+
+# Correlation matrix for AOI provinces
+cor_aoi_without_bamyan <- cor(
+    t(clustering_results$without_bamyan$matrix),
+    use = "pairwise.complete.obs"
+)
+
+plot_correlation_matrix(
+    cor_aoi_without_bamyan,
+    "Correlation Matrix: AOI Provinces (Excluding Bamyan)"
+)
+```
+
+## Return Period Threshold Analysis
+
+This section calculates empirical return periods for end-of-season ASI by province and examines correlations based on threshold exceedance. Higher ASI values indicate more drought stress, so we use `direction = "-1"` (higher values = rarer events = higher RP).
+
+We perform this analysis for both province sets (with and without Bamyan).
+
+```{r}
+#| label: calculate-rp-both-sets
+
+# Calculate return periods for both province sets
+df_asi_rp_list <- map(df_asi_aoi_list, ~{
+    .x |>
+        group_by(province) |>
+        mutate(
+            rp = utils$rp_empirical(x = data, direction = "-1", ties_method = "average")
+        ) |>
+        ungroup()
+})
+
+# View return periods for provinces with Bamyan
+df_asi_rp_list$with_bamyan |>
+    select(year, province, data, rp) |>
+    arrange(province, desc(rp)) |>
+    print(n = 30)
+```
+
+### Binary Threshold Flags
+
+Create binary indicators for whether each province-year exceeds 3-year, 4-year, and 5-year return period thresholds.
+
+```{r}
+#| label: binary-thresholds-both-sets
+
+# Create threshold flags for both sets
+df_asi_flags_list <- map(df_asi_rp_list, ~{
+    create_threshold_flags(.x, rp_thresholds = c(3, 4, 5))
+})
+
+# Summary of threshold exceedances by province (with Bamyan)
+df_asi_flags_list$with_bamyan |>
+    group_by(province) |>
+    summarise(
+        n_years = n(),
+        n_rp3 = sum(flag_rp3),
+        n_rp4 = sum(flag_rp4),
+        n_rp5 = sum(flag_rp5),
+        pct_rp3 = round(100 * mean(flag_rp3), 1),
+        pct_rp4 = round(100 * mean(flag_rp4), 1),
+        pct_rp5 = round(100 * mean(flag_rp5), 1),
+        .groups = "drop"
+    ) |>
+    arrange(province)
+```
+
+```{r}
+#| label: threshold-years
+
+# Show which years exceeded each threshold by province
+df_asi_flags_list$with_bamyan |>
+    filter(flag_rp3 == 1) |>
+    select(year, province, data, rp, flag_rp3, flag_rp4, flag_rp5) |>
+    arrange(year, province)
+```
+
+### Correlation by Threshold Exceedance
+
+Calculate correlations between provinces based on whether they exceed thresholds in the same years. High correlation means provinces tend to experience severe drought (threshold exceedance) together.
+
+```{r}
+#| label: pivot-flags-wide-both-sets
+
+# Pivot threshold flags to wide format for both sets
+df_flag_wide_list <- map(df_asi_flags_list, ~{
+    pivot_threshold_flags_wide(.x, rp_thresholds = c(3, 4, 5))
+})
+```
+
+#### With Bamyan - Threshold Correlations
+
+```{r}
+#| label: correlation-rp-with-bamyan
+#| fig-width: 8
+#| fig-height: 8
+
+# Calculate correlations for each threshold
+cor_rp_with_bamyan <- map(df_flag_wide_list$with_bamyan, ~{
+    calculate_correlation(.x, exclude_cols = "year")
+})
+
+# Plot correlation matrices for each threshold
+walk2(
+    cor_rp_with_bamyan,
+    c("3-Year", "4-Year", "5-Year"),
+    ~plot_correlation_matrix(.x, str_c("Correlation: ", .y, " RP Threshold Exceedance"))
+)
+```
+
+#### Without Bamyan - Threshold Correlations
+
+```{r}
+#| label: correlation-rp-without-bamyan
+#| fig-width: 8
+#| fig-height: 8
+
+# Calculate correlations for each threshold
+cor_rp_without_bamyan <- map(df_flag_wide_list$without_bamyan, ~{
+    calculate_correlation(.x, exclude_cols = "year")
+})
+
+# Plot correlation matrices for each threshold
+walk2(
+    cor_rp_without_bamyan,
+    c("3-Year", "4-Year", "5-Year"),
+    ~plot_correlation_matrix(.x, str_c("Correlation: ", .y, " RP Threshold (Excluding Bamyan)"))
+)
+```
+
+### Clustering on Threshold Exceedance
+
+Cluster provinces based on their pattern of threshold exceedances across all years.
+
+```{r}
+#| label: threshold-cluster-setup-both-sets
+
+# Prepare matrices and perform clustering for 3-year RP threshold
+clustering_rp3_results <- map(df_asi_flags_list, ~{
+    df_wide <- .x |>
+        select(year, province, flag_rp3) |>
+        pivot_wider(names_from = year, values_from = flag_rp3)
+
+    perform_clustering(df_wide, province_col = "province", dist_method = "binary")
+})
+```
+
+#### Clustering - With Bamyan
+
+```{r}
+#| label: dendrogram-rp3-with-bamyan
+#| fig-width: 10
+#| fig-height: 6
+
+plot_dendrogram(
+    clustering_rp3_results$with_bamyan$hclust,
+    "Clustering on 3-Year RP Threshold Exceedance Pattern",
+    k = 2,
+    colors = c("red", "blue")
+)
+```
+
+```{r}
+#| label: cluster-rp3-assignments-with-bamyan
+
+# Create cluster assignments
+df_clusters_rp3_with_bamyan <- create_cluster_assignments(
+    clustering_rp3_results$with_bamyan$hclust,
+    k_values = c(2, 3)
+)
+
+df_clusters_rp3_with_bamyan |>
+    arrange(cluster_2, cluster_3, province)
+```
+
+#### Clustering - Without Bamyan
+
+```{r}
+#| label: dendrogram-rp3-without-bamyan
+#| fig-width: 10
+#| fig-height: 6
+
+plot_dendrogram(
+    clustering_rp3_results$without_bamyan$hclust,
+    "Clustering on 3-Year RP Threshold (Excluding Bamyan)",
+    k = 2,
+    colors = c("red", "blue")
+)
+```
+
+```{r}
+#| label: cluster-rp3-assignments-without-bamyan
+
+# Create cluster assignments
+df_clusters_rp3_without_bamyan <- create_cluster_assignments(
+    clustering_rp3_results$without_bamyan$hclust,
+    k_values = c(2, 3)
+)
+
+df_clusters_rp3_without_bamyan |>
+    arrange(cluster_2, cluster_3, province)
+```
+
+### Threshold Exceedance Heatmaps
+
+```{r}
+#| label: threshold-heatmap-with-bamyan
+#| fig-width: 12
+#| fig-height: 6
+
+# Visualize threshold exceedances as heatmap
+plot_threshold_heatmap(
+    df_asi_flags_list$with_bamyan,
+    title_suffix = " by Province and Year"
+)
+```
+
+```{r}
+#| label: threshold-heatmap-without-bamyan
+#| fig-width: 12
+#| fig-height: 5
+
+# Visualize threshold exceedances as heatmap (excluding Bamyan)
+plot_threshold_heatmap(
+    df_asi_flags_list$without_bamyan,
+    title_suffix = " (Excluding Bamyan)"
+)
+```
+
+### Comparison: ASI Clustering vs Threshold Clustering
+
+```{r}
+#| label: compare-clustering
+
+# Compare clustering results for provinces with Bamyan
+df_compare_clusters <- df_clusters_with_bamyan |>
+    select(province, cluster_asi = cluster_2) |>
+    left_join(
+        df_clusters_rp3_with_bamyan |> select(province, cluster_rp3 = cluster_2),
+        by = "province"
+    )
+
+df_compare_clusters |>
+    arrange(cluster_asi, cluster_rp3)
+```
+
+### Correlation Summaries by Threshold
+
+```{r}
+#| label: correlation-summary-thresholds
+
+# Print correlation summaries for provinces with Bamyan
+print_correlation_summary(cor_rp_with_bamyan)
+
+cat("\n")
+
+# Print correlation summaries for provinces without Bamyan
+print_correlation_summary(cor_rp_without_bamyan, title_suffix = " (Excluding Bamyan)")
+```
+
+## Combined Return Period Analysis
+
+This section examines the effective return period when triggering on ANY province exceeding a threshold. For each provincial RP threshold (3-10 years), we determine which years had at least one province exceed that threshold, then empirically calculate the overall return period of that combined event.
+
+This answers the question: "If we activate when any province crosses RP X, how often does that combined trigger fire?"
+
+```{r}
+#| label: combined-rp-calculation
+
+# Define thresholds to evaluate
+rp_thresholds <- 3:10
+
+# Function to calculate combined RP for a given province set
+calculate_combined_rp <- function(df_rp, thresholds = 3:10) {
+
+    # For each threshold, determine years with any province exceeding
+    map_dfr(thresholds, ~{
+        threshold <- .x
+
+        # Flag years where any province exceeds this threshold
+        df_year_flags <- df_rp |>
+            mutate(exceeds = rp >= threshold) |>
+            group_by(year) |>
+            summarise(
+                any_exceeds = any(exceeds),
+                n_provinces_exceeding = sum(exceeds),
+                provinces_exceeding = paste(province[exceeds], collapse = ", "),
+                .groups = "drop"
+            )
+
+        # Count years with any exceedance
+        n_years_total <- nrow(df_year_flags)
+        n_years_exceeding <- sum(df_year_flags$any_exceeds)
+
+        # Calculate empirical combined RP
+        # RP = total years / number of exceedances
+        combined_rp <- if (n_years_exceeding > 0) {
+            n_years_total / n_years_exceeding
+        } else {
+            Inf
+        }
+
+        tibble(
+            provincial_rp_threshold = threshold,
+            n_years_total = n_years_total,
+            n_years_any_exceeds = n_years_exceeding,
+            pct_years_exceeding = round(100 * n_years_exceeding / n_years_total, 1),
+            combined_rp_empirical = round(combined_rp, 2)
+        )
+    })
+}
+
+# Calculate combined RP for both province sets
+combined_rp_results <- map(df_asi_rp_list, ~{
+    calculate_combined_rp(.x, thresholds = rp_thresholds)
+})
+```
+
+### Combined RP Results - With Bamyan
+
+```{r}
+#| label: combined-rp-with-bamyan
+
+combined_rp_results$with_bamyan
+```
+
+### Combined RP Results - Without Bamyan
+
+```{r}
+#| label: combined-rp-without-bamyan
+
+combined_rp_results$without_bamyan
+```
+
+### Comparison Plot
+
+```{r}
+#| label: combined-rp-comparison-plot
+#| fig-width: 10
+#| fig-height: 6
+
+# Combine results for plotting
+df_combined_rp_plot <- bind_rows(
+    combined_rp_results$with_bamyan |> mutate(province_set = "With Bamyan (6 provinces)"),
+    combined_rp_results$without_bamyan |> mutate(province_set = "Without Bamyan (5 provinces)")
+)
+
+# Function to find x value where line crosses target y (linear interpolation)
+find_intersection <- function(df, target_y) {
+    # Find the two points bracketing the target
+    df_sorted <- df |> arrange(provincial_rp_threshold)
+
+    for (i in 1:(nrow(df_sorted) - 1)) {
+        y1 <- df_sorted$combined_rp_empirical[i]
+        y2 <- df_sorted$combined_rp_empirical[i + 1]
+
+        if ((y1 <= target_y & y2 >= target_y) | (y1 >= target_y & y2 <= target_y)) {
+            x1 <- df_sorted$provincial_rp_threshold[i]
+            x2 <- df_sorted$provincial_rp_threshold[i + 1]
+            # Linear interpolation
+            x_intersect <- x1 + (target_y - y1) * (x2 - x1) / (y2 - y1)
+            return(x_intersect)
+        }
+    }
+    return(NA)
+}
+
+# Find intersections for both province sets at y=3 and y=4
+intersections <- df_combined_rp_plot |>
+    group_by(province_set) |>
+    group_split() |>
+    map_dfr(~{
+        tibble(
+            province_set = unique(.x$province_set),
+            y3_x = find_intersection(.x, 3),
+            y4_x = find_intersection(.x, 4)
+        )
+    })
+
+# Create labels dataframe for intersection points
+df_intersect_labels <- bind_rows(
+    intersections |>
+        filter(!is.na(y3_x)) |>
+        transmute(province_set, x = y3_x, y = 3, label = round(y3_x, 1)),
+    intersections |>
+        filter(!is.na(y4_x)) |>
+        transmute(province_set, x = y4_x, y = 4, label = round(y4_x, 1))
+)
+
+ggplot(
+    df_combined_rp_plot,
+    aes(x = provincial_rp_threshold, y = combined_rp_empirical, color = province_set)
+) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 3) +
+    geom_hline(yintercept = 3, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_hline(yintercept = 4, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_point(
+        data = df_intersect_labels,
+        aes(x = x, y = y),
+        size = 4, shape = 21, fill = "white", stroke = 1.5,
+        show.legend = FALSE
+    ) +
+    geom_label(
+        data = df_intersect_labels,
+        aes(x = x, y = y, label = label),
+        vjust = -1, size = 3.5, fontface = "bold",
+        label.size = 0.3,
+        show.legend = FALSE
+    ) +
+    annotate("text", x = 1, y = 3, label = "3-yr RP", hjust = 0, vjust = -0.5, size = 3, color = "gray30") +
+    annotate("text", x = 1, y = 4, label = "4-yr RP", hjust = 0, vjust = -0.5, size = 3, color = "gray30") +
+    scale_x_continuous(breaks = seq(2, 20, by = 2), limits = c(NA, 20)) +
+    scale_y_continuous(breaks = seq(0, 10, by = 1)) +
+    labs(
+        title = "Combined Return Period vs Provincial Threshold",
+        subtitle = "Empirical RP when ANY province exceeds the threshold\nHorizontal dashed lines at 3 and 4 year combined RP targets",
+        x = "Provincial RP Threshold (years)",
+        y = "Combined Empirical RP (years)",
+        color = "Province Set"
+    ) +
+    theme(legend.position = "bottom")
+```
+
+### Detailed Year-by-Year Exceedances
+
+```{r}
+#| label: combined-rp-yearly-detail
+
+# Function to get detailed yearly exceedances
+get_yearly_exceedance_detail <- function(df_rp, thresholds = c(3, 5, 7, 10)) {
+
+    map_dfr(thresholds, ~{
+        threshold <- .x
+
+        df_rp |>
+            mutate(exceeds = rp >= threshold) |>
+            group_by(year) |>
+            summarise(
+                n_provinces_exceeding = sum(exceeds),
+                provinces_exceeding = paste(province[exceeds], collapse = ", "),
+                .groups = "drop"
+            ) |>
+            filter(n_provinces_exceeding > 0) |>
+            mutate(rp_threshold = threshold) |>
+            select(rp_threshold, year, n_provinces_exceeding, provinces_exceeding)
+    })
+}
+
+# Show detail for key thresholds (with Bamyan)
+cat("Years with threshold exceedances (With Bamyan):\n\n")
+get_yearly_exceedance_detail(df_asi_rp_list$with_bamyan) |>
+    arrange(rp_threshold, year) |>
+    print(n = 50)
+```
+
+```{r}
+#| label: combined-rp-yearly-detail-nb
+
+# Show detail for key thresholds (without Bamyan)
+cat("Years with threshold exceedances (Without Bamyan):\n\n")
+get_yearly_exceedance_detail(df_asi_rp_list$without_bamyan) |>
+    arrange(rp_threshold, year) |>
+    print(n = 50)
+```
+
+### Summary Table
+
+```{r}
+#| label: combined-rp-summary-table
+
+# Create a comparison table
+df_combined_rp_wide <- df_combined_rp_plot |>
+    select(provincial_rp_threshold, province_set, combined_rp_empirical) |>
+    pivot_wider(
+        names_from = province_set,
+        values_from = combined_rp_empirical
+    )
+
+df_combined_rp_wide |>
+    mutate(
+        rp_reduction_pct = round(
+            100 * (1 - `With Bamyan (6 provinces)` / `Without Bamyan (5 provinces)`),
+            1
+        )
+    )
+```
+
+The `rp_reduction_pct` column shows how much more frequently the combined trigger fires when including Bamyan (negative values mean the combined RP is lower/more frequent with Bamyan included).
+
+```{r}
+
+seas5 <- cumulus::pg_load_seas5_historical(
+  iso3 = "afg",
+  adm_level = 1, 
+  adm_name = c(PROVINCES_AOI_WITH_BAMYAN)
+)
+all(PROVINCES_AOI_WITH_BAMYAN %in% seas5$name)
+
+seas5_valid_mam <- cumulus::seas5_aggregate_forecast(df =seas5,
+                                  value = "mean",
+                                  valid_months = c(3,4,5),
+                                   by = c("iso3", "pcode", "name","issued_date")
+  )
+
+seas5_moment <- seas5_valid_mam |>
+  filter(leadtime==0)
+```
+
+## SEAS5 Rainfall Forecast Analysis
+
+This section calculates return periods for SEAS5 March-published rainfall forecasts (valid for MAM season). Lower rainfall = higher drought risk = higher RP, so we use `direction = "1"`.
+
+```{r}
+#| label: seas5-prep
+
+# Extract year from issued_date for joining with ASI
+df_seas5_rp <- seas5_moment |>
+    mutate(
+        year = year(issued_date)
+    ) |>
+    group_by(name) |>
+    mutate(
+        # direction = "1" means lower values get higher RP
+        rp = utils$rp_empirical(x = mean, direction = "1", ties_method = "average")
+    ) |>
+    ungroup() |>
+    rename(province = name)
+
+# View the SEAS5 return periods
+df_seas5_rp |>
+    select(year, province, mean, rp) |>
+    arrange(province, desc(rp)) |>
+    print(n = 30)
+```
+
+### SEAS5 Threshold Flags
+
+```{r}
+#| label: seas5-threshold-flags
+
+# Create threshold flags for SEAS5
+df_seas5_flags <- df_seas5_rp |>
+    mutate(
+        flag_rp3 = as.integer(rp >= 3),
+        flag_rp4 = as.integer(rp >= 4),
+        flag_rp5 = as.integer(rp >= 5)
+    )
+
+# Summary of threshold exceedances
+df_seas5_flags |>
+    group_by(province) |>
+    summarise(
+        n_years = n(),
+        n_rp3 = sum(flag_rp3),
+        n_rp4 = sum(flag_rp4),
+        n_rp5 = sum(flag_rp5),
+        pct_rp3 = round(100 * mean(flag_rp3), 1),
+        pct_rp4 = round(100 * mean(flag_rp4), 1),
+        pct_rp5 = round(100 * mean(flag_rp5), 1),
+        .groups = "drop"
+    ) |>
+    arrange(province)
+```
+
+### SEAS5 Combined RP (Forecast Only)
+
+```{r}
+#| label: seas5-combined-rp
+
+# Calculate combined RP for SEAS5 alone
+combined_rp_seas5 <- calculate_combined_rp(df_seas5_rp, thresholds = rp_thresholds)
+
+combined_rp_seas5
+```
+
+## Combined ASI + SEAS5 Return Period Analysis
+
+This section examines the effective return period when combining both:
+1. **ASI observational trigger**: ANY province exceeds ASI RP threshold (end of season)
+2. **SEAS5 forecast trigger**: ANY province forecast exceeds rainfall RP threshold (March publication)
+
+We calculate the combined RP when EITHER trigger fires.
+
+```{r}
+#| label: combined-asi-seas5-calculation
+
+# Function to calculate combined RP across ASI and SEAS5
+calculate_combined_rp_asi_seas5 <- function(df_asi_rp, df_seas5_rp, thresholds = 3:10) {
+
+    map_dfr(thresholds, ~{
+        threshold <- .x
+
+        # Get years where ASI exceeds threshold for any province
+        df_asi_years <- df_asi_rp |>
+            mutate(exceeds = rp >= threshold) |>
+            group_by(year) |>
+            summarise(
+                asi_any_exceeds = any(exceeds),
+                asi_n_provinces = sum(exceeds),
+                .groups = "drop"
+            )
+
+        # Get years where SEAS5 exceeds threshold for any province
+        df_seas5_years <- df_seas5_rp |>
+            mutate(exceeds = rp >= threshold) |>
+            group_by(year) |>
+            summarise(
+                seas5_any_exceeds = any(exceeds),
+                seas5_n_provinces = sum(exceeds),
+                .groups = "drop"
+            )
+
+        # Join and calculate combined trigger
+        df_combined <- df_asi_years |>
+            inner_join(df_seas5_years, by = "year") |>
+            mutate(
+                either_exceeds = asi_any_exceeds | seas5_any_exceeds,
+                both_exceed = asi_any_exceeds & seas5_any_exceeds
+            )
+
+        n_years_total <- nrow(df_combined)
+        n_asi_only <- sum(df_combined$asi_any_exceeds & !df_combined$seas5_any_exceeds)
+        n_seas5_only <- sum(df_combined$seas5_any_exceeds & !df_combined$asi_any_exceeds)
+        n_both <- sum(df_combined$both_exceed)
+        n_either <- sum(df_combined$either_exceeds)
+
+        tibble(
+            provincial_rp_threshold = threshold,
+            n_years_total = n_years_total,
+            n_asi_only = n_asi_only,
+            n_seas5_only = n_seas5_only,
+            n_both = n_both,
+            n_either = n_either,
+            combined_rp_asi_only = round(n_years_total / sum(df_combined$asi_any_exceeds), 2),
+            combined_rp_seas5_only = round(n_years_total / sum(df_combined$seas5_any_exceeds), 2),
+            combined_rp_either = round(if_else(n_either > 0, n_years_total / n_either, Inf), 2)
+        )
+    })
+}
+
+# Calculate for both province sets
+combined_rp_asi_seas5_results <- map(df_asi_rp_list, ~{
+    calculate_combined_rp_asi_seas5(.x, df_seas5_rp, thresholds = rp_thresholds)
+})
+```
+
+### Combined Results - With Bamyan
+
+```{r}
+#| label: combined-asi-seas5-with-bamyan
+
+combined_rp_asi_seas5_results$with_bamyan
+```
+
+### Combined Results - Without Bamyan
+
+```{r}
+#| label: combined-asi-seas5-without-bamyan
+
+combined_rp_asi_seas5_results$without_bamyan
+```
+
+### Comparison Plot: ASI vs SEAS5 vs Combined
+
+```{r}
+#| label: combined-asi-seas5-plot
+#| fig-width: 12
+#| fig-height: 6
+
+# Prepare data for plotting (with Bamyan)
+df_plot_combined <- combined_rp_asi_seas5_results$with_bamyan |>
+    select(provincial_rp_threshold, combined_rp_asi_only, combined_rp_seas5_only, combined_rp_either) |>
+    pivot_longer(
+        cols = starts_with("combined_rp"),
+        names_to = "trigger_type",
+        values_to = "combined_rp"
+    ) |>
+    mutate(
+        trigger_type = case_when(
+            trigger_type == "combined_rp_asi_only" ~ "ASI Only (Any Province)",
+            trigger_type == "combined_rp_seas5_only" ~ "SEAS5 Only (Any Province)",
+            trigger_type == "combined_rp_either" ~ "ASI OR SEAS5 (Either)"
+        ),
+        trigger_type = factor(trigger_type, levels = c(
+            "ASI Only (Any Province)",
+            "SEAS5 Only (Any Province)",
+            "ASI OR SEAS5 (Either)"
+        ))
+    )
+
+# Function to find x value where line crosses target y (linear interpolation)
+find_intersection_asi_seas5 <- function(df, target_y) {
+    df_sorted <- df |> arrange(provincial_rp_threshold)
+    for (i in 1:(nrow(df_sorted) - 1)) {
+        y1 <- df_sorted$combined_rp[i]
+        y2 <- df_sorted$combined_rp[i + 1]
+        if ((y1 <= target_y & y2 >= target_y) | (y1 >= target_y & y2 <= target_y)) {
+            x1 <- df_sorted$provincial_rp_threshold[i]
+            x2 <- df_sorted$provincial_rp_threshold[i + 1]
+            x_intersect <- x1 + (target_y - y1) * (x2 - x1) / (y2 - y1)
+            return(x_intersect)
+        }
+    }
+    return(NA)
+}
+
+# Find intersections for all trigger types at y=3 and y=4
+intersections_asi_seas5 <- df_plot_combined |>
+    group_by(trigger_type) |>
+    group_split() |>
+    map_dfr(~{
+        tibble(
+            trigger_type = unique(.x$trigger_type),
+            y3_x = find_intersection_asi_seas5(.x, 3),
+            y4_x = find_intersection_asi_seas5(.x, 4)
+        )
+    })
+
+# Create labels dataframe for intersection points
+df_intersect_labels_asi_seas5 <- bind_rows(
+    intersections_asi_seas5 |>
+        filter(!is.na(y3_x)) |>
+        transmute(trigger_type, x = y3_x, y = 3, label = round(y3_x, 1)),
+    intersections_asi_seas5 |>
+        filter(!is.na(y4_x)) |>
+        transmute(trigger_type, x = y4_x, y = 4, label = round(y4_x, 1))
+)
+
+ggplot(
+    df_plot_combined,
+    aes(x = provincial_rp_threshold, y = combined_rp, color = trigger_type)
+) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 3) +
+    geom_hline(yintercept = 3, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_hline(yintercept = 4, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_point(
+        data = df_intersect_labels_asi_seas5,
+        aes(x = x, y = y),
+        size = 4, shape = 21, fill = "white", stroke = 1.5,
+        show.legend = FALSE
+    ) +
+    geom_label(
+        data = df_intersect_labels_asi_seas5,
+        aes(x = x, y = y, label = label),
+        vjust = -1, size = 3.5, fontface = "bold",
+        label.size = 0.3,
+        show.legend = FALSE
+    ) +
+    annotate("text", x = 1, y = 3, label = "3-yr RP", hjust = 0, vjust = -0.5, size = 3, color = "gray30") +
+    annotate("text", x = 1, y = 4, label = "4-yr RP", hjust = 0, vjust = -0.5, size = 3, color = "gray30") +
+    scale_x_continuous(breaks = seq(2, 20, by = 2), limits = c(NA, 20)) +
+    scale_y_continuous(breaks = seq(0, 10, by = 1)) +
+    scale_color_manual(values = c(
+        "ASI Only (Any Province)" = "#E69F00",
+        "SEAS5 Only (Any Province)" = "#56B4E9",
+        "ASI OR SEAS5 (Either)" = "#009E73"
+    )) +
+    labs(
+        title = "Combined Return Period: ASI vs SEAS5 vs Both (With Bamyan)",
+        subtitle = "Empirical RP when trigger fires\nHorizontal dashed lines at 3 and 4 year combined RP targets",
+        x = "Provincial RP Threshold (years)",
+        y = "Combined Empirical RP (years)",
+        color = "Trigger Type"
+    ) +
+    theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: combined-asi-seas5-plot-nb
+#| fig-width: 12
+#| fig-height: 6
+
+# Same plot without Bamyan
+df_plot_combined_nb <- combined_rp_asi_seas5_results$without_bamyan |>
+    select(provincial_rp_threshold, combined_rp_asi_only, combined_rp_seas5_only, combined_rp_either) |>
+    pivot_longer(
+        cols = starts_with("combined_rp"),
+        names_to = "trigger_type",
+        values_to = "combined_rp"
+    ) |>
+    mutate(
+        trigger_type = case_when(
+            trigger_type == "combined_rp_asi_only" ~ "ASI Only (Any Province)",
+            trigger_type == "combined_rp_seas5_only" ~ "SEAS5 Only (Any Province)",
+            trigger_type == "combined_rp_either" ~ "ASI OR SEAS5 (Either)"
+        ),
+        trigger_type = factor(trigger_type, levels = c(
+            "ASI Only (Any Province)",
+            "SEAS5 Only (Any Province)",
+            "ASI OR SEAS5 (Either)"
+        ))
+    )
+
+# Find intersections for all trigger types at y=3 and y=4
+intersections_nb <- df_plot_combined_nb |>
+    group_by(trigger_type) |>
+    group_split() |>
+    map_dfr(~{
+        tibble(
+            trigger_type = unique(.x$trigger_type),
+            y3_x = find_intersection_asi_seas5(.x, 3),
+            y4_x = find_intersection_asi_seas5(.x, 4)
+        )
+    })
+
+# Create labels dataframe for intersection points
+df_intersect_labels_nb <- bind_rows(
+    intersections_nb |>
+        filter(!is.na(y3_x)) |>
+        transmute(trigger_type, x = y3_x, y = 3, label = round(y3_x, 1)),
+    intersections_nb |>
+        filter(!is.na(y4_x)) |>
+        transmute(trigger_type, x = y4_x, y = 4, label = round(y4_x, 1))
+)
+
+ggplot(
+    df_plot_combined_nb,
+    aes(x = provincial_rp_threshold, y = combined_rp, color = trigger_type)
+) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 3) +
+    geom_hline(yintercept = 3, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_hline(yintercept = 4, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_point(
+        data = df_intersect_labels_nb,
+        aes(x = x, y = y),
+        size = 4, shape = 21, fill = "white", stroke = 1.5,
+        show.legend = FALSE
+    ) +
+    geom_label(
+        data = df_intersect_labels_nb,
+        aes(x = x, y = y, label = label),
+        vjust = -1, size = 3.5, fontface = "bold",
+        label.size = 0.3,
+        show.legend = FALSE
+    ) +
+    annotate("text", x = 2.5, y = 3, label = "3-yr RP", hjust = 0, vjust = -0.5, size = 3, color = "gray30") +
+    annotate("text", x = 2.5, y = 4, label = "4-yr RP", hjust = 0, vjust = -0.5, size = 3, color = "gray30") +
+    scale_x_continuous(breaks = seq(3, 12, by = 2), limits = c(2, 12)) +
+    scale_y_continuous(breaks = seq(1, 9, by = 1), limits = c(1, 9)) +
+    scale_color_manual(values = c(
+        "ASI Only (Any Province)" = "#E69F00",
+        "SEAS5 Only (Any Province)" = "#56B4E9",
+        "ASI OR SEAS5 (Either)" = "#009E73"
+    )) +
+    labs(
+        title = "Combined Return Period: ASI vs SEAS5 vs Both (Without Bamyan)",
+        subtitle = "Empirical RP when trigger fires\nHorizontal dashed lines at 3 and 4 year combined RP targets",
+        x = "Provincial RP Threshold (years)",
+        y = "Combined Empirical RP (years)",
+        color = "Trigger Type"
+    ) +
+    theme(legend.position = "bottom")
+```
+
+### Year-by-Year Trigger Comparison
+
+```{r}
+#| label: asi-seas5-yearly-comparison
+
+# Detailed year-by-year comparison at key thresholds
+get_yearly_trigger_detail <- function(df_asi_rp, df_seas5_rp, threshold = 5) {
+
+    df_asi <- df_asi_rp |>
+        mutate(asi_exceeds = rp >= threshold) |>
+        group_by(year) |>
+        summarise(
+            asi_triggered = any(asi_exceeds),
+            asi_provinces = paste(province[asi_exceeds], collapse = ", "),
+            .groups = "drop"
+        )
+
+    df_seas5 <- df_seas5_rp |>
+        mutate(seas5_exceeds = rp >= threshold) |>
+        group_by(year) |>
+        summarise(
+            seas5_triggered = any(seas5_exceeds),
+            seas5_provinces = paste(province[seas5_exceeds], collapse = ", "),
+            .groups = "drop"
+        )
+
+    df_asi |>
+        inner_join(df_seas5, by = "year") |>
+        filter(asi_triggered | seas5_triggered) |>
+        mutate(
+            trigger_type = case_when(
+                asi_triggered & seas5_triggered ~ "Both",
+                asi_triggered ~ "ASI Only",
+                seas5_triggered ~ "SEAS5 Only"
+            )
+        ) |>
+        select(year, trigger_type, asi_provinces, seas5_provinces)
+}
+
+# Show detail for 5-year RP threshold
+cat("Years triggering at 5-Year RP Threshold (With Bamyan):\n\n")
+get_yearly_trigger_detail(df_asi_rp_list$with_bamyan, df_seas5_rp, threshold = 5) |>
+    print(n = 30)
+```
+
+### Summary Comparison Table
+
+```{r}
+#| label: asi-seas5-summary-table
+
+# Create summary comparison
+df_summary <- combined_rp_asi_seas5_results$with_bamyan |>
+    select(
+        provincial_rp_threshold,
+        n_years_total,
+        n_asi_only,
+        n_seas5_only,
+        n_both,
+        n_either,
+        combined_rp_asi_only,
+        combined_rp_seas5_only,
+        combined_rp_either
+    ) |>
+    mutate(
+        rp_reduction_pct = round(
+            100 * (1 - combined_rp_either / combined_rp_asi_only),
+            1
+        )
+    )
+
+df_summary
+```
+
+The `rp_reduction_pct` shows how much more frequently the combined trigger (ASI OR SEAS5) fires compared to ASI alone. Higher values indicate the forecast adds more "triggering power".
+
+## Threshold Optimization: Targeting Combined RP
+
+This section explores different combinations of ASI and SEAS5 thresholds to achieve a target combined RP of 3-5 years. The key insight is that we can use different thresholds for each indicator - for example, keeping ASI close to our target while using a higher SEAS5 threshold to reduce false positives from the forecast.
+
+```{r}
+#| label: threshold-optimization-setup
+
+# Define threshold ranges to explore
+asi_thresholds <- 3:10
+seas5_thresholds <- 3:15
+
+# Function to calculate combined RP for specific ASI and SEAS5 thresholds
+calculate_combined_rp_grid <- function(df_asi_rp, df_seas5_rp,
+                                        asi_thresholds, seas5_thresholds) {
+
+    # Pre-calculate year-level exceedances for each threshold
+    asi_year_flags <- map(asi_thresholds, ~{
+        threshold <- .x
+        df_asi_rp |>
+            mutate(exceeds = rp >= threshold) |>
+            group_by(year) |>
+            summarise(asi_exceeds = any(exceeds), .groups = "drop")
+    }) |>
+        set_names(asi_thresholds)
+
+    seas5_year_flags <- map(seas5_thresholds, ~{
+        threshold <- .x
+        df_seas5_rp |>
+            mutate(exceeds = rp >= threshold) |>
+            group_by(year) |>
+            summarise(seas5_exceeds = any(exceeds), .groups = "drop")
+    }) |>
+        set_names(seas5_thresholds)
+
+    # Calculate combined RP for each combination
+    expand_grid(
+        asi_threshold = asi_thresholds,
+        seas5_threshold = seas5_thresholds
+    ) |>
+        pmap_dfr(function(asi_threshold, seas5_threshold) {
+            df_combined <- asi_year_flags[[as.character(asi_threshold)]] |>
+                inner_join(
+                    seas5_year_flags[[as.character(seas5_threshold)]],
+                    by = "year"
+                ) |>
+                mutate(either_exceeds = asi_exceeds | seas5_exceeds)
+
+            n_years <- nrow(df_combined)
+            n_asi <- sum(df_combined$asi_exceeds)
+            n_seas5 <- sum(df_combined$seas5_exceeds)
+            n_either <- sum(df_combined$either_exceeds)
+
+            tibble(
+                asi_threshold = asi_threshold,
+                seas5_threshold = seas5_threshold,
+                n_years = n_years,
+                n_asi_fires = n_asi,
+                n_seas5_fires = n_seas5,
+                n_either_fires = n_either,
+                rp_asi = round(n_years / n_asi, 2),
+                rp_seas5 = round(n_years / n_seas5, 2),
+                rp_combined = round(if_else(n_either > 0, n_years / n_either, Inf), 2)
+            )
+        })
+}
+
+# Calculate grid for both province sets
+rp_grid_with_bamyan <- calculate_combined_rp_grid(
+    df_asi_rp_list$with_bamyan,
+    df_seas5_rp,
+    asi_thresholds,
+    seas5_thresholds
+)
+
+rp_grid_without_bamyan <- calculate_combined_rp_grid(
+    df_asi_rp_list$without_bamyan,
+    df_seas5_rp,
+    asi_thresholds,
+    seas5_thresholds
+)
+```
+
+### Heatmap: Combined RP by Threshold Combination (With Bamyan)
+
+```{r}
+#| label: combined-threshold-heatmap-with-bamyan
+#| fig-width: 12
+#| fig-height: 8
+
+# Find the boundary for RP >= 3
+# Get the factor levels to map thresholds to positions
+asi_levels <- sort(unique(rp_grid_with_bamyan$asi_threshold))
+seas5_levels <- sort(unique(rp_grid_with_bamyan$seas5_threshold))
+
+# Find minimum thresholds that achieve RP >= 3
+tiles_over_3 <- rp_grid_with_bamyan |>
+    filter(rp_combined >= 3)
+
+# Get the minimum position (lower-left corner of the region)
+min_asi_pos <- which(asi_levels == min(tiles_over_3$asi_threshold)) - 0.5
+min_seas5_pos <- which(seas5_levels == min(tiles_over_3$seas5_threshold)) - 0.5
+
+# Max positions (upper-right corner)
+max_asi_pos <- length(asi_levels) + 0.5
+max_seas5_pos <- length(seas5_levels) + 0.5
+
+ggplot(
+    rp_grid_with_bamyan,
+    aes(x = factor(asi_threshold), y = factor(seas5_threshold), fill = rp_combined)
+) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = round(rp_combined, 1)), size = 3) +
+    annotate(
+        "rect",
+        xmin = min_asi_pos, xmax = max_asi_pos,
+        ymin = min_seas5_pos, ymax = max_seas5_pos,
+        fill = NA, color = "black", linewidth = 2, linetype = "solid"
+    ) +
+    scale_fill_gradient2(
+        low = "#d73027",
+        mid = "#ffffbf",
+        high = "#1a9850",
+        midpoint = 3,
+        limits = c(1, 4),
+        oob = scales::squish,
+        name = "Combined\nRP (years)"
+    ) +
+    labs(
+        title = "Combined Return Period by ASI and SEAS5 Thresholds (With Bamyan)",
+        subtitle = "Green = less frequent triggering (higher RP), Red = more frequent (lower RP)\nBlack rectangle = RP ≥ 3 years",
+        x = "ASI Provincial RP Threshold",
+        y = "SEAS5 Provincial RP Threshold"
+    ) +
+    theme_minimal() +
+    theme(
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 10)
+    )
+```
+
+### Heatmap: Combined RP by Threshold Combination (Without Bamyan)
+
+```{r}
+#| label: combined-threshold-heatmap-without-bamyan
+#| fig-width: 12
+#| fig-height: 8
+
+# Filter tiles with RP >= 3 for border highlighting
+tiles_over_3_nb <- rp_grid_without_bamyan |>
+    filter(rp_combined >= 3)
+
+ggplot(
+    rp_grid_without_bamyan,
+    aes(x = factor(asi_threshold), y = factor(seas5_threshold), fill = rp_combined)
+) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_tile(
+        data = tiles_over_3_nb,
+        aes(x = factor(asi_threshold), y = factor(seas5_threshold)),
+        fill = NA, color = "black", linewidth = 1.5
+    ) +
+    geom_text(aes(label = round(rp_combined, 1)), size = 3) +
+    scale_fill_gradient2(
+        low = "#d73027",
+        mid = "#ffffbf",
+        high = "#1a9850",
+        midpoint = 3,
+        limits = c(1, 4),
+        oob = scales::squish,
+        name = "Combined\nRP (years)"
+    ) +
+    labs(
+        title = "Combined Return Period by ASI and SEAS5 Thresholds (Without Bamyan)",
+        subtitle = "Green = less frequent triggering (higher RP), Red = more frequent (lower RP)\nBlack border = RP ≥ 3 years",
+        x = "ASI Provincial RP Threshold",
+        y = "SEAS5 Provincial RP Threshold"
+    ) +
+    theme_minimal() +
+    theme(
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 10)
+    )
+```
+
+### Combinations Achieving Target RP (3-5 years)
+
+```{r}
+#| label: target-rp-combinations
+
+# Filter to combinations achieving target RP
+target_min <- 3
+target_max <- 5
+
+df_target_combos_with_bamyan <- rp_grid_with_bamyan |>
+    filter(rp_combined >= target_min & rp_combined <= target_max) |>
+    arrange(desc(seas5_threshold), asi_threshold) |>
+    mutate(
+        seas5_premium = seas5_threshold - asi_threshold,
+        province_set = "With Bamyan"
+    )
+
+df_target_combos_without_bamyan <- rp_grid_without_bamyan |>
+    filter(rp_combined >= target_min & rp_combined <= target_max) |>
+    arrange(desc(seas5_threshold), asi_threshold) |>
+    mutate(
+        seas5_premium = seas5_threshold - asi_threshold,
+        province_set = "Without Bamyan"
+    )
+
+cat("Combinations achieving 3-5 year combined RP (With Bamyan):\n\n")
+df_target_combos_with_bamyan |>
+    select(asi_threshold, seas5_threshold, seas5_premium, rp_combined, n_either_fires) |>
+    print(n = 30)
+
+cat("\n\nCombinations achieving 3-5 year combined RP (Without Bamyan):\n\n")
+df_target_combos_without_bamyan |>
+    select(asi_threshold, seas5_threshold, seas5_premium, rp_combined, n_either_fires) |>
+    print(n = 30)
+```
+
+### Optimization Plot: ASI Threshold vs SEAS5 Premium
+
+This plot shows how much higher the SEAS5 threshold can be set relative to ASI while still achieving the target RP. Higher SEAS5 premium means the forecast only adds value in more extreme situations.
+
+```{r}
+#| label: optimization-plot
+#| fig-width: 12
+#| fig-height: 6
+
+# Combine target combos
+df_target_all <- bind_rows(
+    df_target_combos_with_bamyan,
+    df_target_combos_without_bamyan
+)
+
+if (nrow(df_target_all) > 0) {
+    ggplot(
+        df_target_all,
+        aes(x = asi_threshold, y = seas5_threshold,
+            color = province_set, size = rp_combined)
+    ) +
+        geom_point(alpha = 0.7) +
+        geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+        annotate("text", x = 9, y = 9.5, label = "Equal thresholds",
+                 color = "gray50", size = 3, hjust = 1) +
+        scale_size_continuous(range = c(2, 6), name = "Combined RP") +
+        scale_color_manual(values = c(
+            "With Bamyan" = "#E69F00",
+            "Without Bamyan" = "#56B4E9"
+        )) +
+        labs(
+            title = "Threshold Combinations Achieving 3-5 Year Combined RP",
+            subtitle = "Points above dashed line = SEAS5 threshold higher than ASI\nLarger points = higher combined RP (less frequent triggering)",
+            x = "ASI Provincial RP Threshold",
+            y = "SEAS5 Provincial RP Threshold",
+            color = "Province Set"
+        ) +
+        coord_equal(xlim = c(3, 10), ylim = c(3, 15)) +
+        theme(legend.position = "bottom")
+}
+```
+
+### Recommended Configurations
+
+```{r}
+#| label: recommended-configs
+
+# Find "optimal" configs: maximize SEAS5 threshold while keeping ASI reasonable
+find_optimal_configs <- function(df_target, target_rp = 4) {
+
+    # For each ASI threshold, find the highest SEAS5 threshold that still works
+    df_target |>
+        group_by(asi_threshold) |>
+        filter(seas5_threshold == max(seas5_threshold)) |>
+        ungroup() |>
+        arrange(asi_threshold) |>
+        mutate(
+            recommendation = case_when(
+                asi_threshold <= 4 & seas5_premium >= 3 ~ "Good - Low ASI, High SEAS5 buffer",
+                asi_threshold <= 5 & seas5_premium >= 2 ~ "Moderate - Balanced approach",
+                TRUE ~ "Conservative"
+            )
+        )
+}
+
+cat("Recommended configurations (With Bamyan):\n")
+cat("For each ASI threshold, showing the maximum SEAS5 threshold that achieves target RP\n\n")
+
+if (nrow(df_target_combos_with_bamyan) > 0) {
+    find_optimal_configs(df_target_combos_with_bamyan) |>
+        select(asi_threshold, seas5_threshold, seas5_premium, rp_combined, recommendation) |>
+        print()
+} else {
+    cat("No combinations found in target range.\n")
+}
+
+cat("\n\nRecommended configurations (Without Bamyan):\n\n")
+
+if (nrow(df_target_combos_without_bamyan) > 0) {
+    find_optimal_configs(df_target_combos_without_bamyan) |>
+        select(asi_threshold, seas5_threshold, seas5_premium, rp_combined, recommendation) |>
+        print()
+} else {
+    cat("No combinations found in target range.\n")
+}
+```
+
+### Trade-off Curves
+
+```{r}
+#| label: tradeoff-curves
+#| fig-width: 12
+#| fig-height: 6
+
+# For fixed SEAS5 thresholds, show how combined RP changes with ASI threshold
+df_curves <- rp_grid_with_bamyan |>
+    filter(seas5_threshold %in% c(5, 7, 10, 15)) |>
+    mutate(seas5_label = str_c("SEAS5 ≥ ", seas5_threshold, "-yr RP"))
+
+ggplot(df_curves, aes(x = asi_threshold, y = rp_combined, color = seas5_label)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = c(3, 5), linetype = "dashed", color = "gray50", alpha = 0.7) +
+    annotate("rect", xmin = 2.5, xmax = 10.5, ymin = 3, ymax = 5,
+             fill = "green", alpha = 0.1) +
+    annotate("text", x = 10, y = 4, label = "Target\nzone", size = 3, hjust = 1) +
+    scale_x_continuous(breaks = asi_thresholds) +
+    labs(
+        title = "Combined RP Trade-off Curves (With Bamyan)",
+        subtitle = "Each curve shows combined RP as ASI threshold varies, for fixed SEAS5 thresholds\nGreen zone = target 3-5 year RP",
+        x = "ASI Provincial RP Threshold",
+        y = "Combined Empirical RP (years)",
+        color = "SEAS5 Threshold"
+    ) +
+    theme(legend.position = "bottom")
+```
+
+### Key Insight
+
+The trade-off curves show that by setting a higher SEAS5 threshold (e.g., 10+ year RP), we can:
+1. Keep the ASI threshold closer to our target (e.g., 4-5 year RP)
+2. Still benefit from the forecast adding coverage for years the forecast correctly predicts drought
+3. Avoid the forecast triggering too frequently on its own
+
+This "asymmetric threshold" approach means:
+- **ASI (observational)**: Set closer to target RP - this is our primary, validated trigger
+- **SEAS5 (forecast)**: Set higher than target - forecast only adds value when it strongly signals drought
+
+## Appendix: Extreme Value Analysis with extRemes
+
+This section compares empirical return period estimates to those derived from fitting a Generalized Extreme Value (GEV) distribution using the `extRemes` package. GEV fitting provides confidence bounds on return level estimates, which is particularly valuable for understanding uncertainty around our 3-5 year RP targets.
+
+```{r}
+#| label: extremes-setup
+
+box::use(
+    extRemes[...]
+)
+
+# Target return periods for comparison
+target_rps <- c(3, 4, 5, 6, 7, 10)
+target_rps <- c(3:100)
+```
+
+### Data Summary
+
+First, let's verify the ASI data range to ensure our return levels make sense.
+
+```{r}
+#| label: data-summary-check
+
+# Check the data range
+df_asi_aoi_list$with_bamyan |>
+    group_by(province) |>
+    summarise(
+        n = n(),
+        min = min(data, na.rm = TRUE),
+        max = max(data, na.rm = TRUE),
+        mean = round(mean(data, na.rm = TRUE), 1),
+        sd = round(sd(data, na.rm = TRUE), 1),
+        .groups = "drop"
+    )
+```
+
+### Fit Gumbel Distribution per Province
+
+For ASI, higher values indicate more drought stress. We use the **Gumbel distribution** (GEV with shape=0) rather than full GEV because:
+1. With short records (~20 years), MLE estimates of the GEV shape parameter are unstable
+2. Positive shape parameters cause unbounded extrapolation (return levels in thousands for data in 0-99 range)
+3. Gumbel provides more conservative, bounded extrapolation appropriate for our 3-5 year RP targets
+
+```{r}
+#| label: fit-gumbel-per-province
+
+# Function to fit Gumbel and extract return levels with CI
+fit_gumbel_return_levels <- function(df_province, province_name, return_periods = target_rps) {
+
+    # Extract ASI values (already annual maxima - end of season)
+    asi_values <- df_province$data
+
+    # Fit Gumbel distribution (GEV with shape=0, more stable for short records)
+    fit <- tryCatch({
+        fevd(asi_values, type = "Gumbel", method = "MLE")
+    }, error = function(e) {
+        message(str_c("Gumbel fit failed for ", province_name, ": ", e$message))
+        return(NULL)
+    })
+
+    if (is.null(fit)) {
+        return(tibble(
+            province = province_name,
+            return_period = return_periods,
+            return_level = NA_real_,
+            ci_lower = NA_real_,
+            ci_upper = NA_real_,
+            method = "Gumbel"
+        ))
+    }
+
+    # Calculate return levels for each return period
+    map_dfr(return_periods, ~{
+        rp <- .x
+
+        # Get return level with CI using ci.fevd() function
+        ci_result <- tryCatch({
+            ci.fevd(fit, return.period = rp, alpha = 0.05, type = "return.level")
+        }, error = function(e) {
+            # Fallback: just get point estimate (return in same order: lower, estimate, upper)
+            rl_point <- as.numeric(return.level(fit, return.period = rp))
+            return(c(NA, rl_point, NA))
+        })
+
+        # ci() returns: lower, estimate, upper (as named vector)
+        tibble(
+            province = province_name,
+            return_period = rp,
+            return_level = as.numeric(ci_result[2]),
+            ci_lower = as.numeric(ci_result[1]),
+            ci_upper = as.numeric(ci_result[3]),
+            method = "Gumbel"
+        )
+    })
+}
+
+# Fit Gumbel for each province (with Bamyan set)
+df_gumbel_results <- df_asi_aoi_list$with_bamyan |>
+    group_by(province) |>
+    group_split() |>
+    map_dfr(~fit_gumbel_return_levels(.x, unique(.x$province)))
+
+df_gumbel_results
+```
+
+### Diagnostic: Gumbel Fit for Example Province
+
+```{r}
+#| label: gumbel-diagnostic
+#| fig-width: 10
+#| fig-height: 8
+
+# Fit Gumbel for first province and show diagnostic plots
+example_province <- PROVINCES_AOI_WITH_BAMYAN[1]
+example_data <- df_asi_aoi_list$with_bamyan |>
+    filter(province == example_province)
+
+example_fit <- fevd(example_data$data, type = "Gumbel", method = "MLE")
+
+# Show fit summary
+summary(example_fit)
+
+# Diagnostic plots
+plot(example_fit)
+```
+
+### Calculate Empirical Return Levels for Comparison
+
+```{r}
+#| label: empirical-return-levels
+
+# Function to get empirical return levels (quantiles)
+# Only calculates for return periods up to the record length (n)
+get_empirical_return_levels <- function(df_province, province_name, return_periods = target_rps) {
+
+    asi_values <- df_province$data
+    n <- length(asi_values)
+
+    # Only calculate empirical estimates for RPs <= record length
+    valid_rps <- return_periods[return_periods <= n]
+
+    # For each RP, calculate the corresponding quantile
+    # RP = 1/p, so p = 1/RP, and we want the (1-p) quantile for upper tail
+    map_dfr(valid_rps, ~{
+        rp <- .x
+        p <- 1 - 1/rp  # probability of non-exceedance
+
+        # Empirical quantile
+        rl_empirical <- quantile(asi_values, probs = p, na.rm = TRUE)
+
+        # Bootstrap confidence interval
+        boot_rls <- replicate(1000, {
+            boot_sample <- sample(asi_values, size = n, replace = TRUE)
+            quantile(boot_sample, probs = p, na.rm = TRUE)
+        })
+
+        tibble(
+            province = province_name,
+            return_period = rp,
+            return_level = as.numeric(rl_empirical),
+            ci_lower = quantile(boot_rls, 0.025),
+            ci_upper = quantile(boot_rls, 0.975),
+            method = "Empirical"
+        )
+    })
+}
+
+# Calculate empirical return levels for each province
+set.seed(42)
+df_empirical_results <- df_asi_aoi_list$with_bamyan |>
+    group_by(province) |>
+    group_split() |>
+    map_dfr(~get_empirical_return_levels(.x, unique(.x$province)))
+
+df_empirical_results
+```
+
+### Comparison: Gumbel vs Empirical Return Levels
+
+```{r}
+#| label: compare-methods
+
+# Combine results
+df_comparison <- bind_rows(
+    df_gumbel_results,
+    df_empirical_results
+) |>
+    filter(!is.na(return_level))
+
+# Wide format for direct comparison
+df_comparison_wide <- df_comparison |>
+    select(province, return_period, return_level, method) |>
+    pivot_wider(
+        names_from = method,
+        values_from = return_level,
+        names_prefix = "rl_"
+    ) |>
+    mutate(
+        difference = rl_Gumbel - rl_Empirical,
+        pct_diff = round(100 * difference / rl_Empirical, 1)
+    )
+
+df_comparison_wide |>
+    filter(return_period %in% c(3, 4, 5)) |>
+    arrange(province, return_period)
+```
+
+### Visualization: Return Level Comparison
+
+```{r}
+#| label: return-level-plot
+#| fig-width: 12
+#| fig-height: 8
+
+ggplot(
+    df_comparison |> filter(return_period <= 100),
+    aes(x = return_period, y = return_level, color = method)
+) +
+    geom_line(linewidth = 1) +
+    geom_ribbon(
+        aes(ymin = ci_lower, ymax = ci_upper, fill = method),
+        alpha = 0.2,
+        color = NA
+    ) +
+    facet_wrap(~province, scales = "free_y", ncol = 3) +
+    scale_x_continuous(breaks = c(3, 5, 10, 20, 41, 50, 100)) +
+    scale_y_continuous(breaks = seq(0, 100, by = 10)) +
+    geom_vline(xintercept = c(3, 5, 10, 41), linetype = "dashed", color = "gray50", alpha = 0.7) +
+    scale_color_manual(values = c("Gumbel" = "#E69F00", "Empirical" = "#56B4E9")) +
+    scale_fill_manual(values = c("Gumbel" = "#E69F00", "Empirical" = "#56B4E9")) +
+    labs(
+        title = "Return Level Comparison: Gumbel vs Empirical Estimates (Extrapolated to 100 years)",
+        subtitle = "Shaded regions show 95% confidence intervals\nVertical dashed lines at 3, 5, 10, and 41 year return periods\nEmpirical estimates stop at record length (~41 years)",
+        x = "Return Period (years)",
+        y = "ASI Return Level",
+        color = "Method",
+        fill = "Method"
+    ) +
+    theme(legend.position = "bottom")
+```
+
+### Focus on 3-5 Year RP Range
+
+```{r}
+#| label: target-rp-comparison
+#| fig-width: 12
+#| fig-height: 6
+
+df_target_range <- df_comparison |>
+    filter(return_period %in% c(3, 4, 5))
+
+ggplot(
+    df_target_range,
+    aes(x = factor(return_period), y = return_level, color = method)
+) +
+    geom_point(size = 3, position = position_dodge(width = 0.3)) +
+    geom_errorbar(
+        aes(ymin = ci_lower, ymax = ci_upper),
+        width = 0.2,
+        position = position_dodge(width = 0.3)
+    ) +
+    facet_wrap(~province, scales = "free_y", ncol = 3) +
+    scale_color_manual(values = c("Gumbel" = "#E69F00", "Empirical" = "#56B4E9")) +
+    labs(
+        title = "Return Levels at Target RPs (3-5 years): Gumbel vs Empirical",
+        subtitle = "Error bars show 95% confidence intervals",
+        x = "Return Period (years)",
+        y = "ASI Return Level",
+        color = "Method"
+    ) +
+    theme(legend.position = "bottom")
+```
+
+### Confidence Interval Width Comparison
+
+```{r}
+#| label: ci-width-comparison
+
+df_ci_summary <- df_comparison |>
+    filter(return_period %in% c(3, 4, 5)) |>
+    mutate(
+        ci_width = ci_upper - ci_lower,
+        ci_pct = round(100 * ci_width / return_level, 1)
+    ) |>
+    select(province, return_period, method, return_level, ci_lower, ci_upper, ci_width, ci_pct)
+
+df_ci_summary |>
+    arrange(province, return_period, method)
+```
+
+### Summary Table: Method Comparison at Key RPs
+
+```{r}
+#| label: summary-comparison-table
+
+df_summary_table <- df_comparison |>
+    filter(return_period %in% c(3, 4, 5)) |>
+    group_by(province, return_period) |>
+    summarise(
+        rl_empirical = return_level[method == "Empirical"],
+        ci_empirical = str_c(
+            round(ci_lower[method == "Empirical"], 1), "-",
+            round(ci_upper[method == "Empirical"], 1)
+        ),
+        rl_gumbel = return_level[method == "Gumbel"],
+        ci_gumbel = str_c(
+            round(ci_lower[method == "Gumbel"], 1), "-",
+            round(ci_upper[method == "Gumbel"], 1)
+        ),
+        .groups = "drop"
+    ) |>
+    mutate(
+        difference = round(rl_gumbel - rl_empirical, 1),
+        agreement = case_when(
+            abs(difference) < 2 ~ "Good",
+            abs(difference) < 5 ~ "Moderate",
+            TRUE ~ "Poor"
+        )
+    )
+
+df_summary_table |>
+    arrange(return_period, province)
+```
+
+### Gumbel Parameter Estimates
+
+```{r}
+#| label: gumbel-parameters
+
+# Extract Gumbel parameters for each province
+get_gumbel_params <- function(df_province, province_name) {
+
+    asi_values <- df_province$data
+
+    fit <- tryCatch({
+        fevd(asi_values, type = "Gumbel", method = "MLE")
+    }, error = function(e) {
+        return(NULL)
+    })
+
+    if (is.null(fit)) {
+        return(tibble(
+            province = province_name,
+            location = NA_real_,
+            scale = NA_real_
+        ))
+    }
+
+    params <- fit$results$par
+
+    tibble(
+        province = province_name,
+        location = round(params["location"], 2),
+        scale = round(params["scale"], 2)
+    )
+}
+
+df_gumbel_params <- df_asi_aoi_list$with_bamyan |>
+    group_by(province) |>
+    group_split() |>
+    map_dfr(~get_gumbel_params(.x, unique(.x$province)))
+
+df_gumbel_params
+```
+
+### Key Findings
+
+```{r}
+#| label: key-findings
+
+cat("Key Findings - Empirical vs Gumbel Return Period Estimates:\n\n")
+
+# Calculate average difference
+avg_diff <- df_comparison_wide |>
+    filter(return_period %in% c(3, 4, 5)) |>
+    summarise(
+        mean_abs_diff = round(mean(abs(difference), na.rm = TRUE), 2),
+        mean_pct_diff = round(mean(abs(pct_diff), na.rm = TRUE), 1)
+    )
+
+cat("1. Average absolute difference between methods: ", avg_diff$mean_abs_diff, " ASI units\n")
+cat("2. Average percentage difference: ", avg_diff$mean_pct_diff, "%\n\n")
+
+cat("3. Confidence interval comparison:\n")
+df_ci_summary |>
+    group_by(method) |>
+    summarise(
+        mean_ci_width = round(mean(ci_width, na.rm = TRUE), 1),
+        mean_ci_pct = round(mean(ci_pct, na.rm = TRUE), 1),
+        .groups = "drop"
+    ) |>
+    print()
+
+cat("\n4. For trigger design at 3-5 year RP:\n")
+cat("   - Both methods generally agree within confidence intervals\n")
+cat("   - Gumbel provides parametric uncertainty quantification with stable extrapolation\n")
+cat("   - Empirical bootstrap provides non-parametric alternative\n")
+cat("   - With limited data (~20 years), Gumbel is preferred over full GEV\n")
+cat("     (GEV shape parameter unstable, can cause unrealistic extrapolation)\n")
+```
