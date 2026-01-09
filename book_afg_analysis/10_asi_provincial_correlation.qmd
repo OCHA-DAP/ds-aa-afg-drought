@@ -2038,7 +2038,10 @@ df_yearly_comparison <- tibble(year = years_compare) |>
     mutate(
         cerf_allocation = !is.na(cerf_amount),
         cerf_amount = replace_na(cerf_amount, 0),
-        across(c(asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr), ~replace_na(.x, FALSE))
+        across(c(asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr), ~replace_na(.x, FALSE)),
+        # Joint triggers (either must fire)
+        any_joint = asi_any_5yr | seas5_any_7yr,
+        grouped_joint = asi_grouped_4yr | seas5_grouped_5yr
     )
 ```
 
@@ -2050,7 +2053,7 @@ df_yearly_comparison <- tibble(year = years_compare) |>
 # Prepare data for heatmap
 df_heatmap <- df_yearly_comparison |>
     filter(year >= 2000) |>  # Focus on years with CERF data available
-    select(year, asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr, cerf_allocation) |>
+    select(year, asi_any_5yr, seas5_any_7yr, any_joint, asi_grouped_4yr, seas5_grouped_5yr, grouped_joint, cerf_allocation) |>
     pivot_longer(
         cols = -year,
         names_to = "indicator",
@@ -2060,15 +2063,19 @@ df_heatmap <- df_yearly_comparison |>
         indicator = case_when(
             indicator == "asi_any_5yr" ~ "ASI Any Province ≥5yr RP",
             indicator == "seas5_any_7yr" ~ "SEAS5 Any Province ≥7yr RP",
+            indicator == "any_joint" ~ "Any Province Joint (ASI|SEAS5)",
             indicator == "asi_grouped_4yr" ~ "ASI Grouped ≥4yr RP",
             indicator == "seas5_grouped_5yr" ~ "SEAS5 Grouped ≥5yr RP",
+            indicator == "grouped_joint" ~ "Grouped Joint (ASI|SEAS5)",
             indicator == "cerf_allocation" ~ "CERF Allocation"
         ),
         indicator = factor(indicator, levels = c(
             "ASI Any Province ≥5yr RP",
             "SEAS5 Any Province ≥7yr RP",
+            "Any Province Joint (ASI|SEAS5)",
             "ASI Grouped ≥4yr RP",
             "SEAS5 Grouped ≥5yr RP",
+            "Grouped Joint (ASI|SEAS5)",
             "CERF Allocation"
         ))
     )
@@ -2114,7 +2121,7 @@ ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = triggered)) +
 # Summary table
 df_yearly_comparison |>
     filter(year >= 2006, cerf_allocation) |>
-    select(year, asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr, cerf_amount) |>
+    select(year, asi_any_5yr, seas5_any_7yr, any_joint, asi_grouped_4yr, seas5_grouped_5yr, grouped_joint, cerf_amount) |>
     mutate(cerf_amount_millions = paste0("$", round(cerf_amount / 1e6, 1), "M")) |>
     select(-cerf_amount)
 ```
