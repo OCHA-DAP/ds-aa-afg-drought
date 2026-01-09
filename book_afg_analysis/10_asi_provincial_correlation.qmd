@@ -2046,13 +2046,75 @@ df_yearly_comparison <- tibble(year = years_compare) |>
 ```
 
 ```{r}
+#| label: cerf-metrics-calculation
+
+# Calculate precision/recall/F1 for each indicator (2006-2025)
+df_metrics_input <- df_yearly_comparison |>
+    filter(year >= 2006, year <= 2025)
+
+calc_metrics <- function(predicted, actual) {
+    tp <- sum(predicted & actual)
+    fp <- sum(predicted & !actual)
+    fn <- sum(!predicted & actual)
+
+    precision <- if ((tp + fp) > 0) tp / (tp + fp) else NA
+    recall <- if ((tp + fn) > 0) tp / (tp + fn) else NA
+    f1 <- if (!is.na(precision) & !is.na(recall) & (precision + recall) > 0) {
+        2 * precision * recall / (precision + recall)
+    } else NA
+
+    tibble(precision = precision, recall = recall, f1 = f1)
+}
+
+df_metrics <- tibble(
+    indicator_var = c("asi_any_5yr", "seas5_any_7yr", "asi_grouped_4yr", "seas5_grouped_5yr", "any_joint", "grouped_joint"),
+    indicator_label = c(
+        "ASI Any Province ≥5yr RP",
+        "SEAS5 Any Province ≥7yr RP",
+        "ASI Grouped ≥4yr RP",
+        "SEAS5 Grouped ≥5yr RP",
+        "Any Province Joint (ASI|SEAS5)",
+        "Grouped Joint (ASI|SEAS5)"
+    )
+) |>
+    rowwise() |>
+    mutate(
+        metrics = list(calc_metrics(
+            df_metrics_input[[indicator_var]],
+            df_metrics_input$cerf_allocation
+        ))
+    ) |>
+    unnest(metrics) |>
+    ungroup() |>
+    mutate(
+        label_with_metrics = paste0(
+            indicator_label, "\n",
+            "P:", round(precision, 2), " R:", round(recall, 2), " F1:", round(f1, 2)
+        )
+    )
+
+# Display metrics table
+df_metrics |>
+    select(indicator_label, precision, recall, f1) |>
+    mutate(across(c(precision, recall, f1), ~round(.x, 3)))
+```
+
+```{r}
 #| label: cerf-comparison-heatmap
 #| fig-width: 14
 #| fig-height: 10
 
-# Prepare data for heatmap
+# Create label lookup for indicators with metrics
+label_lookup <- df_metrics |>
+    select(indicator_label, label_with_metrics) |>
+    deframe()
+
+# Add CERF (no metrics for itself)
+label_lookup["CERF Allocation"] <- "CERF Allocation"
+
+# Prepare data for heatmap (full historical record)
 df_heatmap <- df_yearly_comparison |>
-    filter(year >= 2000) |>  # Focus on years with CERF data available
+    filter(year >= 1987) |>  # Full SEAS5 record
     select(year, asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr, any_joint, grouped_joint, cerf_allocation) |>
     pivot_longer(
         cols = -year,
@@ -2093,11 +2155,22 @@ df_heatmap <- df_yearly_comparison |>
 
 # Add CERF amounts for labeling
 df_cerf_labels <- df_yearly_comparison |>
-    filter(year >= 2000, cerf_amount > 0) |>
+    filter(year >= 1987, cerf_amount > 0) |>
     mutate(
         indicator = factor("CERF Allocation", levels = levels(df_heatmap$indicator)),
         label = paste0("$", round(cerf_amount / 1e6, 1), "M")
     )
+
+# Create metrics labels for top axis annotation
+df_top_labels <- df_metrics |>
+    mutate(
+        metrics_label = paste0("P:", round(precision, 2), " R:", round(recall, 2), " F1:", round(f1, 2))
+    ) |>
+    select(indicator_label, metrics_label) |>
+    add_row(indicator_label = "CERF Allocation", metrics_label = "(reference)")
+
+# Get max year for positioning top labels
+max_year <- max(df_heatmap$year)
 
 ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = fill_group)) +
     geom_tile(color = "white", linewidth = 0.5) +
@@ -2106,6 +2179,19 @@ ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = fill_group)) +
         aes(x = indicator, y = factor(year), label = label),
         inherit.aes = FALSE,
         color = "white", size = 3, fontface = "bold"
+    ) +
+    # Add metrics labels at top
+    geom_text(
+        data = df_top_labels,
+        aes(
+            x = indicator_label,
+            y = Inf,
+            label = metrics_label
+        ),
+        inherit.aes = FALSE,
+        vjust = -0.5,
+        size = 2.8,
+        color = "gray30"
     ) +
     scale_fill_manual(
         values = c(
@@ -2121,16 +2207,18 @@ ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = fill_group)) +
         name = "Triggered/\nAllocated"
     ) +
     scale_y_discrete(limits = rev) +
+    coord_cartesian(clip = "off") +
     labs(
         title = "Yearly Comparison: Trigger Configurations vs CERF Allocations",
-        subtitle = "Red = individual indicators, Green = joint triggers & CERF allocations",
+        subtitle = "Metrics (P=Precision, R=Recall, F1) calculated from 2006-2025 for predicting CERF allocation\nRed = individual indicators, Green = joint triggers & CERF allocations",
         x = "Indicator",
         y = "Year"
     ) +
     theme_minimal() +
     theme(
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        panel.grid = element_blank()
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+        panel.grid = element_blank(),
+        plot.margin = margin(t = 30, r = 10, b = 10, l = 10)
     )
 ```
 
