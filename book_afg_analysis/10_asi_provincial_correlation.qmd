@@ -2161,17 +2161,17 @@ df_cerf_labels <- df_yearly_comparison |>
         label = paste0("$", round(cerf_amount / 1e6, 1), "M")
     )
 
-# Create metrics labels for top axis annotation (stacked vertically)
-df_top_labels <- df_metrics |>
+# Create x-axis labels with metrics included
+x_labels_with_metrics <- df_metrics |>
     mutate(
-        metrics_label = paste0(
-            "P:", round(precision, 2), "\n",
-            "R:", round(recall, 2), "\n",
-            "F1:", round(f1, 2)
+        label_with_metrics = paste0(
+            indicator_label, "\n",
+            "(F1:", round(f1, 2), ")"
         )
     ) |>
-    select(indicator_label, metrics_label) |>
-    add_row(indicator_label = "CERF Allocation", metrics_label = "")
+    select(indicator_label, label_with_metrics) |>
+    add_row(indicator_label = "CERF Allocation", label_with_metrics = "CERF Allocation") |>
+    deframe()
 
 ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = fill_group)) +
     geom_tile(color = "white", linewidth = 0.5) +
@@ -2180,20 +2180,6 @@ ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = fill_group)) +
         aes(x = indicator, y = factor(year), label = label),
         inherit.aes = FALSE,
         color = "white", size = 3, fontface = "bold"
-    ) +
-    # Add metrics labels at top
-    geom_text(
-        data = df_top_labels,
-        aes(
-            x = indicator_label,
-            y = Inf,
-            label = metrics_label
-        ),
-        inherit.aes = FALSE,
-        vjust = 1.1,
-        size = 2.5,
-        lineheight = 0.9,
-        color = "gray30"
     ) +
     scale_fill_manual(
         values = c(
@@ -2208,19 +2194,18 @@ ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = fill_group)) +
         ),
         name = "Triggered/\nAllocated"
     ) +
+    scale_x_discrete(labels = x_labels_with_metrics) +
     scale_y_discrete(limits = rev) +
-    coord_cartesian(clip = "off") +
     labs(
         title = "Yearly Comparison: Trigger Configurations vs CERF Allocations",
-        subtitle = "Metrics calculated from 2006-2025 | Red = individual indicators, Green = joint triggers & CERF",
-        x = "Indicator",
+        subtitle = "F1 scores (2006-2025) shown for predicting CERF allocation | Red = individual, Green = joint/CERF",
+        x = NULL,
         y = "Year"
     ) +
     theme_minimal() +
     theme(
-        axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
-        panel.grid = element_blank(),
-        plot.margin = margin(t = 50, r = 10, b = 10, l = 10)
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+        panel.grid = element_blank()
     )
 ```
 
