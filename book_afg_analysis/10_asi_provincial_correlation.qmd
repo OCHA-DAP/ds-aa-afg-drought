@@ -1833,6 +1833,281 @@ ggplot(
     )
 ```
 
+## Grouped Analysis - Area-Weighted Provincial Aggregate
+
+This section presents an alternative approach: instead of triggering when ANY province exceeds a threshold, we calculate an area-weighted average across all 5 provinces (without Bamyan) and determine when that grouped value exceeds thresholds. This approach reflects more widespread drought conditions across the region.
+
+We use SEAS5 pixel counts (`n_upsampled_pixels`) as a proxy for provincial area to weight the averaging.
+
+```{r}
+#| label: grouped-analysis-setup
+
+# Get pixel counts for area weighting
+conn <- cumulus::pg_con()
+df_pixels <- dplyr::tbl(conn, "polygon") |>
+    filter(
+        iso3 == "AFG",
+        adm_level == 1,
+        name %in% PROVINCES_AOI_NO_BAMYAN
+    ) |>
+    select(
+        province = name,
+        n_pixels = seas5_n_upsampled_pixels
+    ) |>
+    collect()
+
+# Grouped ASI (area-weighted average)
+df_asi_grouped <- df_asi_eos |>
+    filter(province %in% PROVINCES_AOI_NO_BAMYAN) |>
+    left_join(df_pixels, by = "province") |>
+    group_by(year) |>
+    summarise(
+        asi_grouped = weighted.mean(data, w = n_pixels, na.rm = TRUE),
+        .groups = "drop"
+    ) |>
+    mutate(
+        rp = utils$rp_empirical(x = asi_grouped, direction = "-1", ties_method = "average")
+    )
+
+# Grouped SEAS5 (area-weighted average)
+df_pixels_seas5 <- df_pixels |> rename(name = province)
+
+df_seas5_grouped <- seas5_moment |>
+    filter(name %in% PROVINCES_AOI_NO_BAMYAN) |>
+    left_join(df_pixels_seas5, by = "name") |>
+    mutate(year = year(issued_date)) |>
+    group_by(year) |>
+    summarise(
+        seas5_grouped = weighted.mean(mean, w = n_pixels, na.rm = TRUE),
+        .groups = "drop"
+    ) |>
+    mutate(
+        rp = utils$rp_empirical(x = seas5_grouped, direction = "1", ties_method = "average")
+    )
+
+# Combined grouped data
+df_grouped_combined <- df_asi_grouped |>
+    select(year, asi_rp = rp) |>
+    inner_join(
+        df_seas5_grouped |> select(year, seas5_rp = rp),
+        by = "year"
+    )
+```
+
+### Heatmap: Combined RP by Threshold Combination (Grouped Approach)
+
+This heatmap shows the combined return period for different combinations of ASI and SEAS5 thresholds using the grouped (area-weighted) approach. The trigger fires when EITHER the grouped ASI OR grouped SEAS5 exceeds its respective threshold.
+
+```{r}
+#| label: grouped-threshold-heatmap
+#| fig-width: 12
+#| fig-height: 8
+
+# Define threshold ranges
+asi_thresholds_grouped <- 3:7
+seas5_thresholds_grouped <- 3:7
+
+# Calculate combined RP for each threshold combination using grouped data
+rp_grid_grouped <- expand_grid(
+    asi_threshold = asi_thresholds_grouped,
+    seas5_threshold = seas5_thresholds_grouped
+) |>
+    pmap_dfr(function(asi_threshold, seas5_threshold) {
+        n_either <- df_grouped_combined |>
+            filter(asi_rp >= asi_threshold | seas5_rp >= seas5_threshold) |>
+            nrow()
+
+        n_asi <- sum(df_grouped_combined$asi_rp >= asi_threshold)
+        n_seas5 <- sum(df_grouped_combined$seas5_rp >= seas5_threshold)
+
+        total_years <- nrow(df_grouped_combined)
+
+        tibble(
+            asi_threshold = asi_threshold,
+            seas5_threshold = seas5_threshold,
+            n_years = total_years,
+            n_asi_fires = n_asi,
+            n_seas5_fires = n_seas5,
+            n_either_fires = n_either,
+            rp_combined = if(n_either > 0) round(total_years / n_either, 2) else Inf
+        )
+    })
+
+# Filter tiles with RP >= 3 for border highlighting
+tiles_over_3_grouped <- rp_grid_grouped |>
+    filter(rp_combined >= 3)
+
+ggplot(
+    rp_grid_grouped,
+    aes(x = factor(asi_threshold), y = factor(seas5_threshold), fill = rp_combined)
+) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_tile(
+        data = tiles_over_3_grouped,
+        aes(x = factor(asi_threshold), y = factor(seas5_threshold)),
+        fill = NA, color = "black", linewidth = 1.5
+    ) +
+    geom_text(aes(label = round(rp_combined, 1)), size = 3) +
+    scale_fill_gradient2(
+        low = "#d73027",
+        mid = "#ffffbf",
+        high = "#1a9850",
+        midpoint = 3,
+        limits = c(1, 6),
+        oob = scales::squish,
+        name = "Combined\nRP (years)"
+    ) +
+    labs(
+        title = "Combined Return Period by ASI and SEAS5 Thresholds (Grouped Approach)",
+        subtitle = "Green = less frequent triggering (higher RP), Red = more frequent (lower RP)\nBlack border = RP ≥ 3 years",
+        x = "ASI Grouped RP Threshold",
+        y = "SEAS5 Grouped RP Threshold"
+    ) +
+    theme_minimal() +
+    theme(
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 10)
+    )
+```
+
+## Yearly Comparison to CERF
+
+This section compares different trigger configurations against historical CERF drought allocations to Afghanistan.
+
+```{r}
+#| label: cerf-comparison-setup
+
+# Load CERF allocation data
+df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_allocations.xlsx") |>
+    clean_names() |>
+    mutate(
+        allocation_date = as_date(allocation_date),
+        year = year(allocation_date)
+    ) |>
+    group_by(year) |>
+    summarise(
+        cerf_amount = sum(amount_in_us),
+        cerf_n_allocations = n(),
+        .groups = "drop"
+    )
+
+# Get overlapping years for comparison
+years_compare <- 1987:2025  # SEAS5 starts 1987
+
+# Build comparison dataframe
+df_yearly_comparison <- tibble(year = years_compare) |>
+    # ANY province ASI >= 5-year RP
+    left_join(
+        df_asi_rp_list$without_bamyan |>
+            group_by(year) |>
+            summarise(asi_any_5yr = any(rp >= 5), .groups = "drop"),
+        by = "year"
+    ) |>
+    # ANY province SEAS5 >= 7-year RP
+    left_join(
+        df_seas5_rp |>
+            filter(province %in% PROVINCES_AOI_NO_BAMYAN) |>
+            group_by(year) |>
+            summarise(seas5_any_7yr = any(rp >= 7), .groups = "drop"),
+        by = "year"
+    ) |>
+    # Grouped ASI >= 4-year RP
+    left_join(
+        df_asi_grouped |>
+            transmute(year, asi_grouped_4yr = rp >= 4),
+        by = "year"
+    ) |>
+    # Grouped SEAS5 >= 5-year RP
+    left_join(
+        df_seas5_grouped |>
+            transmute(year, seas5_grouped_5yr = rp >= 5),
+        by = "year"
+    ) |>
+    # CERF allocations
+    left_join(df_cerf, by = "year") |>
+    mutate(
+        cerf_allocation = !is.na(cerf_amount),
+        cerf_amount = replace_na(cerf_amount, 0),
+        across(c(asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr), ~replace_na(.x, FALSE))
+    )
+```
+
+```{r}
+#| label: cerf-comparison-heatmap
+#| fig-width: 14
+#| fig-height: 10
+
+# Prepare data for heatmap
+df_heatmap <- df_yearly_comparison |>
+    filter(year >= 2000) |>  # Focus on years with CERF data available
+    select(year, asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr, cerf_allocation) |>
+    pivot_longer(
+        cols = -year,
+        names_to = "indicator",
+        values_to = "triggered"
+    ) |>
+    mutate(
+        indicator = case_when(
+            indicator == "asi_any_5yr" ~ "ASI Any Province ≥5yr RP",
+            indicator == "seas5_any_7yr" ~ "SEAS5 Any Province ≥7yr RP",
+            indicator == "asi_grouped_4yr" ~ "ASI Grouped ≥4yr RP",
+            indicator == "seas5_grouped_5yr" ~ "SEAS5 Grouped ≥5yr RP",
+            indicator == "cerf_allocation" ~ "CERF Allocation"
+        ),
+        indicator = factor(indicator, levels = c(
+            "ASI Any Province ≥5yr RP",
+            "SEAS5 Any Province ≥7yr RP",
+            "ASI Grouped ≥4yr RP",
+            "SEAS5 Grouped ≥5yr RP",
+            "CERF Allocation"
+        ))
+    )
+
+# Add CERF amounts for labeling
+df_cerf_labels <- df_yearly_comparison |>
+    filter(year >= 2000, cerf_amount > 0) |>
+    mutate(
+        indicator = factor("CERF Allocation", levels = levels(df_heatmap$indicator)),
+        label = paste0("$", round(cerf_amount / 1e6, 1), "M")
+    )
+
+ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = triggered)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(
+        data = df_cerf_labels,
+        aes(x = indicator, y = factor(year), label = label),
+        color = "white", size = 3, fontface = "bold"
+    ) +
+    scale_fill_manual(
+        values = c("FALSE" = "gray90", "TRUE" = "tomato"),
+        labels = c("FALSE" = "No", "TRUE" = "Yes"),
+        name = "Triggered/\nAllocated"
+    ) +
+    scale_y_discrete(limits = rev) +
+    labs(
+        title = "Yearly Comparison: Trigger Configurations vs CERF Allocations",
+        subtitle = "Comparing different trigger approaches against historical CERF drought allocations",
+        x = "Indicator",
+        y = "Year"
+    ) +
+    theme_minimal() +
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+    )
+```
+
+```{r}
+#| label: cerf-comparison-table
+
+# Summary table
+df_yearly_comparison |>
+    filter(year >= 2006, cerf_allocation) |>
+    select(year, asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr, cerf_amount) |>
+    mutate(cerf_amount_millions = paste0("$", round(cerf_amount / 1e6, 1), "M")) |>
+    select(-cerf_amount)
+```
+
 ### Combinations Achieving Target RP (3-5 years)
 
 ```{r}
