@@ -2086,6 +2086,7 @@ ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = triggered)) +
     geom_text(
         data = df_cerf_labels,
         aes(x = indicator, y = factor(year), label = label),
+        inherit.aes = FALSE,
         color = "white", size = 3, fontface = "bold"
     ) +
     scale_fill_manual(
