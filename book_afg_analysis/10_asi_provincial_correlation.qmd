@@ -226,6 +226,7 @@ plot_threshold_heatmap <- function(df_flags, title_suffix = "") {
         ) |>
         ggplot(aes(x = year, y = province, fill = factor(exceeded))) +
         geom_tile(color = "white", linewidth = 0.5) +
+    scale_x_continuous(breaks=1984:2025)+
         facet_wrap(~threshold, ncol = 1) +
         scale_fill_manual(
             values = c("0" = "gray90", "1" = "tomato"),
@@ -739,6 +740,58 @@ df_asi_flags_list$with_bamyan |>
     filter(flag_rp3 == 1) |>
     select(year, province, data, rp, flag_rp3, flag_rp4, flag_rp5) |>
     arrange(year, province)
+```
+
+## Review of 2025
+
+This section provides a quick visual summary of 2025 ASI threshold exceedances in context of the historical record for the provinces monitored in 2025.
+
+```{r}
+#| label: review-2025-heatmap
+#| fig-width: 14
+#| fig-height: 5
+
+# Get provinces used in 2025 monitoring
+provinces_2025 <- utils$load_aoi_names()
+
+# Calculate RP and threshold flags for 2025 monitoring provinces
+df_asi_2025_review <- df_asi_eos |>
+    filter(province %in% provinces_2025) |>
+    group_by(province) |>
+    mutate(
+        rp = utils$rp_empirical(x = data, direction = "-1", ties_method = "average"),
+        flag_rp5 = as.integer(rp >= 5)
+    ) |>
+    ungroup()
+
+# Plot RP=5 threshold exceedances with 2025 highlighted
+df_asi_2025_review |>
+    select(year, province, flag_rp5) |>
+    mutate(exceeded = factor(flag_rp5, levels = c(0, 1))) |>
+    ggplot(aes(x = year, y = province, fill = exceeded)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    annotate(
+        "rect",
+        xmin = 2024.5, xmax = 2025.5,
+        ymin = -Inf, ymax = Inf,
+        fill = NA, color = "black", linewidth = 1.5
+    ) +
+    scale_x_continuous(breaks = seq(1985, 2025, by = 5)) +
+    scale_fill_manual(
+        values = c("0" = "gray90", "1" = "tomato"),
+        labels = c("0" = "No", "1" = "Yes"),
+        name = "Threshold\nExceeded"
+    ) +
+    labs(
+        title = "5-Year Return Period Threshold Exceedances",
+        subtitle = str_c("End-of-Season ASI (May Dekad 3) | 2025 highlighted\nProvinces: ", paste(provinces_2025, collapse = ", ")),
+        x = "Year",
+        y = "Province"
+    ) +
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+    )
 ```
 
 ### Correlation by Threshold Exceedance
