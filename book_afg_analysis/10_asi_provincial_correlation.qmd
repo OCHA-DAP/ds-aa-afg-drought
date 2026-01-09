@@ -2053,7 +2053,7 @@ df_yearly_comparison <- tibble(year = years_compare) |>
 # Prepare data for heatmap
 df_heatmap <- df_yearly_comparison |>
     filter(year >= 2000) |>  # Focus on years with CERF data available
-    select(year, asi_any_5yr, seas5_any_7yr, any_joint, asi_grouped_4yr, seas5_grouped_5yr, grouped_joint, cerf_allocation) |>
+    select(year, asi_any_5yr, seas5_any_7yr, asi_grouped_4yr, seas5_grouped_5yr, any_joint, grouped_joint, cerf_allocation) |>
     pivot_longer(
         cols = -year,
         names_to = "indicator",
@@ -2063,21 +2063,32 @@ df_heatmap <- df_yearly_comparison |>
         indicator = case_when(
             indicator == "asi_any_5yr" ~ "ASI Any Province ≥5yr RP",
             indicator == "seas5_any_7yr" ~ "SEAS5 Any Province ≥7yr RP",
-            indicator == "any_joint" ~ "Any Province Joint (ASI|SEAS5)",
             indicator == "asi_grouped_4yr" ~ "ASI Grouped ≥4yr RP",
             indicator == "seas5_grouped_5yr" ~ "SEAS5 Grouped ≥5yr RP",
+            indicator == "any_joint" ~ "Any Province Joint (ASI|SEAS5)",
             indicator == "grouped_joint" ~ "Grouped Joint (ASI|SEAS5)",
             indicator == "cerf_allocation" ~ "CERF Allocation"
         ),
         indicator = factor(indicator, levels = c(
             "ASI Any Province ≥5yr RP",
             "SEAS5 Any Province ≥7yr RP",
-            "Any Province Joint (ASI|SEAS5)",
             "ASI Grouped ≥4yr RP",
             "SEAS5 Grouped ≥5yr RP",
+            "Any Province Joint (ASI|SEAS5)",
             "Grouped Joint (ASI|SEAS5)",
             "CERF Allocation"
-        ))
+        )),
+        # Create fill groups: individual indicators (red) vs joint/cerf (green)
+        is_joint_or_cerf = indicator %in% c(
+            "Any Province Joint (ASI|SEAS5)",
+            "Grouped Joint (ASI|SEAS5)",
+            "CERF Allocation"
+        ),
+        fill_group = case_when(
+            !triggered ~ "not_triggered",
+            triggered & !is_joint_or_cerf ~ "individual_triggered",
+            triggered & is_joint_or_cerf ~ "joint_triggered"
+        )
     )
 
 # Add CERF amounts for labeling
@@ -2088,7 +2099,7 @@ df_cerf_labels <- df_yearly_comparison |>
         label = paste0("$", round(cerf_amount / 1e6, 1), "M")
     )
 
-ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = triggered)) +
+ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = fill_group)) +
     geom_tile(color = "white", linewidth = 0.5) +
     geom_text(
         data = df_cerf_labels,
@@ -2097,14 +2108,22 @@ ggplot(df_heatmap, aes(x = indicator, y = factor(year), fill = triggered)) +
         color = "white", size = 3, fontface = "bold"
     ) +
     scale_fill_manual(
-        values = c("FALSE" = "gray90", "TRUE" = "tomato"),
-        labels = c("FALSE" = "No", "TRUE" = "Yes"),
+        values = c(
+            "not_triggered" = "gray90",
+            "individual_triggered" = "tomato",
+            "joint_triggered" = "seagreen"
+        ),
+        labels = c(
+            "not_triggered" = "No",
+            "individual_triggered" = "Yes (Individual)",
+            "joint_triggered" = "Yes (Joint/CERF)"
+        ),
         name = "Triggered/\nAllocated"
     ) +
     scale_y_discrete(limits = rev) +
     labs(
         title = "Yearly Comparison: Trigger Configurations vs CERF Allocations",
-        subtitle = "Comparing different trigger approaches against historical CERF drought allocations",
+        subtitle = "Red = individual indicators, Green = joint triggers & CERF allocations",
         x = "Indicator",
         y = "Year"
     ) +
