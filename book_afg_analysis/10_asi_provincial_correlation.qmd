@@ -56,6 +56,30 @@ PROVINCES_AOI_NO_BAMYAN <- c(
     "Balkh",
     "Badghis"
 )
+
+# Load CERF Rapid Response drought allocations for Afghanistan
+df_cerf <- cumulus$blob_read(
+    name = "ds-cerf-allocation-patterns/raw/CERF_allocation_by_year.csv",
+    container = "projects",
+    progress_show = FALSE
+) |>
+    filter(
+        Country == "Afghanistan",
+        str_detect(Emergency, regex("drought", ignore_case = TRUE)),
+        Window == "Rapid Response"
+    ) |>
+    mutate(
+        year = year(mdy(`Allocation date`))
+    )
+
+# Summarize by year for comparison plots
+df_cerf_yearly <- df_cerf |>
+    group_by(year) |>
+    summarise(
+        cerf_amount = sum(`Amount in US$`),
+        cerf_n_allocations = n(),
+        .groups = "drop"
+    )
 ```
 
 ## Helper Functions
@@ -1977,21 +2001,7 @@ This section compares different trigger configurations against historical CERF d
 ```{r}
 #| label: cerf-comparison-setup
 
-# Load CERF allocation data
-df_cerf <- cumulus::blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_allocations.xlsx") |>
-    clean_names() |>
-    mutate(
-        allocation_date = as_date(allocation_date),
-        year = year(allocation_date)
-    ) |>
-    group_by(year) |>
-    summarise(
-        cerf_amount = sum(amount_in_us),
-        cerf_n_allocations = n(),
-        .groups = "drop"
-    )
-
-# Get overlapping years for comparison
+# Get overlapping years for comparison (CERF data loaded at top of script)
 years_compare <- 1987:2025  # SEAS5 starts 1987
 
 # Build comparison dataframe
@@ -2024,7 +2034,7 @@ df_yearly_comparison <- tibble(year = years_compare) |>
         by = "year"
     ) |>
     # CERF allocations
-    left_join(df_cerf, by = "year") |>
+    left_join(df_cerf_yearly, by = "year") |>
     mutate(
         cerf_allocation = !is.na(cerf_amount),
         cerf_amount = replace_na(cerf_amount, 0),
@@ -2382,18 +2392,7 @@ df_sim_dual <- genCorGen(
 expected_dual <- mean(df_sim_dual$total_alloc)
 expected_single <- prob_asi_single * config_payout_single
 
-# Historical CERF
-df_cerf <- cumulus$blob_read(
-    name = "ds-cerf-allocation-patterns/raw/CERF_allocation_by_year.csv",
-    container = "projects",
-    progress_show = FALSE
-) |>
-    filter(
-        Country == "Afghanistan",
-        str_detect(Emergency, regex("drought", ignore_case = TRUE)),
-        Window == "Rapid Response"
-    )
-
+# Historical CERF (df_cerf loaded at top of script)
 years_cerf <- 2025 - 2006 + 1
 expected_cerf <- sum(df_cerf$`Amount in US$`) / years_cerf / 1e6
 
