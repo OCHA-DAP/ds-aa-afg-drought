@@ -36,7 +36,8 @@ box::use(
     janitor[...],
     cumulus,
     purrr[...],
-    stringr[...]
+    stringr[...],
+    tibble[deframe]
 )
 gghdx()
 
@@ -1235,7 +1236,7 @@ The `rp_reduction_pct` column shows how much more frequently the combined trigge
 
 seas5 <- cumulus::pg_load_seas5_historical(
   iso3 = "afg",
-  adm_level = 1, 
+  adm_level = 1,
   adm_name = c(PROVINCES_AOI_WITH_BAMYAN)
 )
 all(PROVINCES_AOI_WITH_BAMYAN %in% seas5$name)
