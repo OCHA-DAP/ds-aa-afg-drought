@@ -5,9 +5,9 @@ format:
     toc: true
     toc-depth: 3
     code-fold: true
-    self-contained: true
-    embed-resoures: true
     smooth-scroll: true
+    fig-format: "png"
+    fig-dpi: 144
 execute:
   include: true
   echo: true
@@ -16,8 +16,6 @@ execute:
   eval: true
   results: "asis"
   out.width: "100%"
-  code-fold: true
-editor: visual
 project:
   execute-dir: project
 ---
@@ -49,16 +47,21 @@ Working group feedback:
 
 ```{r libsData}
 box::use(
-  dplyr[...],
-  ggplot2[...],
-  lubridate[...],
-  purrr[...],
-  tidyr[...],
-  stringr[...],
-  readr[...],
-  gghdx[...],
-  janitor[...],
-  scales[...]
+    dplyr[...],
+    ggplot2[...],
+    lubridate[...],
+    purrr[...],
+    tidyr[...],
+    stringr[...],
+    readr[...],
+    gghdx[...],
+    janitor[...],
+    scales[...],
+    sf[...],
+    geoarrow[...],
+    forcats[...],
+    ggfx[...],
+    patchwork[...]
 )
 
 box::use(ggiraph)
@@ -70,15 +73,30 @@ box::use(blob = .. / R / blob_connect)
 gghdx()
 
 # load admin boundaries
-
-gdf_adm1 <- cumulus$download_fieldmaps_sf(iso3 = "AFG", layer = "afg_adm1")$afg_adm1 |>
+gdf_adm1 <- cumulus::blob_read(
+    name = "ds-aa-afg-drought/raw/vector/afg_admbnda_agcho_adm1.parquet",
+    container = "projects", as_data_frame = FALSE
+) |>
+    st_as_sf() |>
     clean_names() |>
     select(matches("adm\\d_[pe]"))
 
-
-gdf_adm2 <- cumulus$download_fieldmaps_sf(iso3 = "AFG", layer = "afg_adm2")$afg_adm2 |>
+gdf_adm2 <- cumulus::blob_read(
+    name = "ds-aa-afg-drought/raw/vector/afg_admbnda_agcho_adm2.parquet",
+    container = "projects", as_data_frame = FALSE
+) |>
+    st_as_sf() |>
     clean_names() |>
     select(matches("adm\\d_[pe]"))
+
+# gdf_adm1 <- cumulus$download_fieldmaps_sf(iso3 = "AFG", layer = "afg_adm1")$afg_adm1 |>
+#     clean_names() |>
+#     select(matches("adm\\d_[pe]"))
+#
+#
+# gdf_adm2 <- cumulus$download_fieldmaps_sf(iso3 = "AFG", layer = "afg_adm2")$afg_adm2 |>
+#     clean_names() |>
+#     select(matches("adm\\d_[pe]"))
 
 # load chirps rainfall
 fps <- blob$proj_blob_paths()
@@ -336,6 +354,7 @@ ggplot() +
 ```{r chirpsBarplot}
 #| echo: false
 #| include: false
+
 df_chirps_adm1_anomaly |>
     filter(year(yr_date) %in% c(2020:2023)) |>
     group_by(
@@ -417,14 +436,7 @@ ipc_get_areas_current_sf <- function(country) {
         list_rbind()
 }
 
-ipc_fill_pal <- c(
-    "0" = "#FFFFFF",
-    "1" = "#CDFACD",
-    "2" = "#FAE61E",
-    "3" = "#E67800",
-    "4" = "#C80000",
-    "5" = "#640000"
-)
+
 ```
 
 ### Latest IPC classification
@@ -432,7 +444,10 @@ ipc_fill_pal <- c(
 Below we plot the latest IPC phase classifications produced:
 
 ```{r}
-#| label: fig-plot_ipc_latest
+#| echo: true
+#| eval: false
+
+# having trouble with these API's during knitting. Therefore, I wrote output from this cell to to blob in next hidden chunk.
 
 gdf_ipc_sf_current <- ipc_get_areas_current_sf(country = "AF")
 
@@ -446,9 +461,12 @@ latest_analysis_id <- gdf_ipc_sf_current |>
     unique()
 
 
+# hard codig this to id from Oct 2024 - was probably an earlier one when
+# i first ran analysis - but this one still has same message
+latest_analysis_id <- 72104327
+
 
 # could put warning if latest_analysis_id > 1 -- here
-
 gdf_ipc_sf_projected_latest <- ripc$ipc_get_areas(
     id = latest_analysis_id,
     period = "P",
@@ -469,7 +487,58 @@ gdf_ipc_sf_latest <- bind_rows(
     mutate(
         ipc_period_label = if_else(ipc_period == "C", "Current", "Projected")
     )
+```
 
+
+```{r}
+#| eval: false
+#| include: false
+
+# writing this out in case API goes down
+
+cumulus$blob_write(
+    gdf_ipc_sf_latest,
+    container = "projects",
+    name = "ds-aa-afg-drought/processed/vector/afg_gdf_ipc_sf_oct24_latest.parquet"
+)
+cumulus$blob_write(
+    gdf_ipc_sf_current,
+    container = "projects",
+    name = "ds-aa-afg-drought/processed/vector/afg_gdf_ipc_sf_oct24_current.parquet"
+)
+
+```
+
+```{r}
+#| eval: true
+#| echo: false
+
+gdf_ipc_sf_latest <- cumulus$blob_read(
+    name = "ds-aa-afg-drought/processed/vector/afg_gdf_ipc_sf_oct24.parquet",
+    as_data_frame = FALSE
+) |>
+    st_as_sf()
+
+gdf_ipc_sf_current <- cumulus$blob_read(
+    name = "ds-aa-afg-drought/processed/vector/afg_gdf_ipc_sf_oct24_current.parquet",
+    as_data_frame = FALSE
+) |>
+    st_as_sf()
+
+```
+
+
+```{r}
+#| label: fig-plot_ipc_latest
+
+ipc_fill_pal <- c(
+    "0" = "#FFFFFF",
+    "1" = "#CDFACD",
+    "2" = "#FAE61E",
+    "3" = "#E67800",
+    "4" = "#C80000",
+    "5" = "#640000"
+)
 
 gdf_ipc_sf_latest_poly <- gdf_ipc_sf_latest |>
     filter(
@@ -477,7 +546,13 @@ gdf_ipc_sf_latest_poly <- gdf_ipc_sf_latest |>
     ) |>
     st_as_sf() |>
     mutate(
-        overall_phase = fct_relevel(fct_expand(as_factor(overall_phase), "0", "1", "2", "3", "4", "5"), "0", "1", "2", "3", "4", "5")
+        overall_phase = fct_relevel(
+            fct_expand(
+                as_factor(overall_phase),
+                "0", "1", "2", "3", "4", "5"
+            ),
+            "0", "1", "2", "3", "4", "5"
+        )
     )
 
 
