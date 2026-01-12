@@ -1,3 +1,87 @@
+box::use(
+  dplyr,
+  rlang,
+  utils,
+  stringr,
+  tools,
+  sf,
+  glue,
+  tidyr,
+  cumulus
+)
+
+
+
+
+#' return_period empirical
+#'
+#' @param x
+#' @param direction `character` representing directioality/ polarity supplied
+#'   supplied to rank() function options are "1" and "-1". Default is "1"
+#'   which maintains the same default setting as rank()
+#' @param ties_method `character` representing the method to break ties.
+#'   options are inherited from rank and include “average” (default),
+#'    “first”, “last”, “random”, “max”, “min”
+#'
+#' @returns vector of length x with empirical return period values
+#' @export
+#'
+#' @examples
+rp_empirical <- function(x, direction=c("1","-1"),ties_method = "average"){
+  direction <- as.numeric(rlang::arg_match(direction))
+  rank = rank(x*direction,ties.method = ties_method)
+  q_rank = rank/(length(x)+1)
+  rp = 1/q_rank
+  return(rp)
+}
+
+#' threshold_var
+#' @description
+#' useful utility function doing grouped return period thresholding all in one
+#' currently only used in book_afg_analysis/06_indicator_expansion.qmd
+#' with one directionality. In this case i deal w/ directionality as a pre
+#' processing step. However, in future it would be cool if this function worked
+#' with directions `1` & `-1`
+#'
+#' @param df
+#' @param var
+#' @param by
+#' @param rp_threshold
+#' @param direction
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+threshold_var <-  function(df,var, by,rp_threshold,direction=1){
+  if(direction==1){
+    df |>
+      dplyr$group_by(
+        dplyr$across({{by}})
+      ) |>
+      dplyr$arrange(
+        dplyr$desc(!!rlang$sym(var))
+      ) |>
+      dplyr$mutate(
+        rank = dplyr$row_number(),
+        q_rank = rank/(max(rank)+1),
+        rp_emp = 1/q_rank,
+        !!rlang$sym(glue$glue("{var}_flag")):= rp_emp>=rp_threshold
+      ) |>
+      dplyr$select(-rank,-q_rank,-rp_emp)
+  }
+}
+
+#' @export
+load_aoi_names <-  function(){
+  c(
+    "Takhar",
+    "Badakhshan",
+    "Badghis",
+    "Sar-e-Pul" ,
+    "Faryab"
+  )
+}
 
 #' Download shapefile and read
 #'
@@ -22,42 +106,42 @@ download_shapefile <- function(
     iso3 = NULL,
     boundary_source = NULL
 ) {
-  if (stringr::str_ends(url, ".zip")) {
-    utils::download.file(
+  if (stringr$str_ends(url, ".zip")) {
+    utils$download.file(
       url = url,
       destfile = zf <- tempfile(fileext = ".zip"),
       quiet = TRUE
     )
 
-    utils::unzip(
+    utils$unzip(
       zipfile = zf,
       exdir = td <- tempdir()
     )
 
     # if the file extension is just `.zip`, we return the temp dir alone
     # because that works for shapefiles, otherwise we return the file unzipped
-    fn <- stringr::str_remove(basename(url), ".zip")
-    if (tools::file_ext(fn) == "") {
+    fn <- stringr$str_remove(basename(url), ".zip")
+    if (tools$file_ext(fn) == "") {
       fn <- td
     } else {
       fn <- file.path(td, fn)
     }
   } else {
-    utils::download.file(
+    utils$download.file(
       url = url,
-      destfile = fn <- tempfile(fileext = paste0(".", tools::file_ext(url))),
+      destfile = fn <- tempfile(fileext = paste0(".", tools$file_ext(url))),
       quiet = TRUE
     )
   }
 
   if (!is.null(layer)) {
-    ret <- sf::st_read(
+    ret <- sf$st_read(
       fn,
       layer = layer,
       quiet = TRUE
     )
   } else {
-    ret <- sf::st_read(
+    ret <- sf$st_read(
       fn,
       quiet = TRUE
     )
@@ -74,7 +158,7 @@ download_shapefile <- function(
 download_fieldmaps_sf <- function(iso3, layer = NULL) {
   iso3 <- tolower(iso3)
   download_shapefile(
-    url = glue::glue("https://data.fieldmaps.io/cod/originals/{iso3}.gpkg.zip"),
+    url = glue$glue("https://data.fieldmaps.io/cod/originals/{iso3}.gpkg.zip"),
     layer = layer,
     iso3 = iso3,
     boundary_source = "FieldMaps, OCHA"
@@ -217,6 +301,57 @@ proj_palettes <-  function(){
     "enso_palette" =  c("La Nina"= "#FBB4AE" ,
                         "El Nino" = "#B3CDE3" ,
                         "Neutral" ="#CCEBC5"
+    )
+  )
+}
+
+
+#' @export
+label_parameters <- function(df){
+  df |>
+    dplyr$mutate(
+      parameter_label = dplyr$case_when(
+        stringr$str_detect(parameter, "era5_land_volumetric_soil")~ "Soil Moisture (ERA5)",
+        stringr$str_detect(parameter,"NDSI")~"NDSI",
+        stringr$str_detect(parameter,"asi")~"ASI",
+        stringr$str_detect(parameter,"vhi")~"VHI",
+        stringr$str_detect(parameter,"cumu_chirps_precipitation_sum")~"Precip cumu (CHIRPS) ",
+        stringr$str_detect(parameter,"chirps_precipitation_sum")~"Precip (CHIRPS)",
+        stringr$str_detect(parameter,"cumu_era5_land_total_precipitation_sum")~"Precip cumu (ERA)",
+        stringr$str_detect(parameter,"era5_land_total_precipitation_sum")~"Precip (ERA)",
+        stringr$str_detect(parameter,"mean_2m_air_temperature")~"Temp (ERA)",
+        stringr$str_detect(parameter,"era5_land_snow_depth_water_equivalent")~"SDWE (ERA5)",
+        stringr$str_detect(parameter,"era5_land_snow_cover")~"Snow Cover (ERA5)",
+        stringr$str_detect(parameter,"era5_land_snowmelt_sum")~"Snow Melt (ERA5)",
+        stringr$str_detect(parameter,"runoff_max")~"Runoff max (ERA5)",
+        stringr$str_detect(parameter,"runoff_sum")~"Runoff sum (ERA5)",
+        stringr$str_detect(parameter,"SWE_inst")~"SWE (FLDAS)",
+        stringr$str_detect(parameter,"mam_mixed_seas_observed")~"Mixed forecast & obs -MAM",
+        .default = parameter
+      )
+    )
+}
+
+
+#' Load design weights
+#'
+#' @returns list of named data.frames. Name reflects date at which the weights
+#'   were considered weights use for trigger mechanism. If new weight
+#'   compositions are decided upon they will be added as new data.frames
+#' @export
+
+design_weights <- function(){
+  list(
+    "20250401" =tidyr$tibble(
+      parameter = c(
+        "era5_land_snow_cover",
+        "cumu_era5_land_total_precipitation_sum",
+        "era5_land_soil_moisture_1m",
+        "mam_mixed_seas_observed",
+        "asi",
+        "vhi"
+      ),
+      weight = c(0.15, 0.05,0.05,0.25,0.25,0.25)
     )
   )
 }

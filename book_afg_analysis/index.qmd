@@ -2,5 +2,27 @@
 
 This book outlines the technical work for Anticipatory Action Afghanistan Drought 2024/25.
 
-
 ## Executive Summary
+## Executive Summary
+The anticipatory action framework for drought in Afghanistan was activated in April 2025.The framework was activated in the second window of monitoring.
+The anticipatory action framework for drought in Afghanistan was activated in April 2025.The framework was activated in the second window of monitoring.
+![](plot_activation_2025.png){width="100%"}
+![](plot_activation_2025.png){width="100%"}
+This document outlines the technical work to develop the trigger mechanism and walks through various stages of the project development which included various rounds of exploration, proposals, and iteration.
+This document outlines the technical work to develop the trigger mechanism and walks through various stages of the project development which included various rounds of exploration, proposals, and iteration.
+The final trigger mechanism is divided into two windows:The final trigger mechanism is divided into two windows:
+```{r}
+# Consolidated imports for consistency
+box::use(
+  dplyr[...],
+  ggplot2[...],
+  lubridate[...],
+  purrr[...],
+  tidyr[...],
+  stringr[...],
+  readr[...],
+  gghdx[...],
+  janitor[...],
+  scales[...]
+)
+```

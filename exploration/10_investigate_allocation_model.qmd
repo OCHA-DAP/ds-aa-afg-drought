@@ -1,0 +1,202 @@
+---
+title-block-banner: "#00ad78ff"
+title-block-banner-color: "#ffffff"
+title: Investigate Allocation Model
+subtitle: AA
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+    embed-resoures: true
+    smooth-scroll: true
+execute:
+  include: true
+  echo: true
+  warning: false
+  message: false
+  eval: true
+  results: "asis"
+  out.width: "100%"
+  code-fold: true
+editor: visual
+project:
+  execute-dir: project
+---
+
+**Note** no need to review at this moment
+
+## Overview
+
+Just an exploratory doc looking at potential allocation models
+
+```{r}
+
+box::use(
+  cumulus,
+  dplyr[...],
+  purrr[...],
+  janitor[clean_names],
+  ../R/utils[load_aoi_names],
+  scales,
+  tidyr[...]
+         )
+TOTAL_ALLOCATION <- 20e6
+PCT_PRE_SEASON <- seq(0.2,0.5,by=0.1)
+
+aoi_names <- load_aoi_names()
+
+aoi_names <- aoi_names[aoi_names!="Badghis"]
+df <- cumulus$blob_read(
+  name= "ds-aa-afg-drought/raw/vector/HNRP_2025_PiN_Targets_Severity.xlsx",
+  container = "projects"
+)
+
+```
+
+```{r}
+df_pcts <- df |>
+  clean_names() |>
+  filter(province %in% aoi_names) |>
+  select(
+    province, area,pcode, ends_with("fsc")
+  ) |>
+  mutate(
+    pct_tot_fsc = target_tot_fsc/pin_fsc,
+    pct_core_fsc = target_core_fsc/pin_fsc
+  ) |>
+  group_by(province) |>
+  summarise(
+    target_tot_fsc = sum(target_tot_fsc)
+  ) |>
+  mutate(
+    pct_targeted = target_tot_fsc/sum(target_tot_fsc)
+  )
+```
+
+## Notes
+
+Partners:
+
+-   FAO
+-   WFP
+-   UN Women
+-   UNFPA
+-   UNICEF
+-   IOM
+
+Still need to get activity list/ required lead times and required \$ for activities.
+
+But some educated guesses/thoughts:
+
+-   AHF activities/partners under second window - (mid/post season)
+-   only 1 or 2 partners potentially under pre-season window
+
+```{r}
+df_pcts |>
+  mutate(
+    allocated = pct_targeted*7e6
+  ) |>
+  ggplot(aes(
+    x= province, y= allocated
+  ))+
+  geom_bar(stat="identity", aes(fill = province),alpha= 0.8)+
+  geom_text(
+    aes(label = scales::label_dollar(accuracy= 1e5)(allocated)),
+    hjust = 2,
+    color= "white",
+    size = 6
+    )+
+  scale_y_continuous(labels = scales::label_dollar(accuracy = 1e5))+
+  coord_flip()+
+  labs(
+    title = "Hypothetical allocation spread based on $7M total pre-season allocation",
+    subtitle = "Allocated by % sectoral food security PiN"
+  )+
+  theme(
+    legend.position ="none",
+    plot.title = element_text(size= 20),
+    plot.subtitle = element_text(size= 20),
+    legend.title =element_blank(),
+    axis.title = element_blank()
+  )
+
+```
+
+```{r}
+
+
+df_allocation_options <- PCT_PRE_SEASON |>
+  map(
+    \(pct_temp){
+      allocation_pre <- pct_temp*TOTAL_ALLOCATION
+      allocation_post <- (1-pct_temp)*TOTAL_ALLOCATION
+
+      df_pcts |>
+        mutate(
+          pre_season_allocation = pct_targeted*allocation_pre,
+          mid_post_season_allocation = pct_targeted*allocation_post,
+          pct_pre = pct_temp
+        )
+
+    }
+  ) |>
+  list_rbind()
+
+df_allocation_options |>
+  pivot_longer(pre_season_allocation:mid_post_season_allocation) |>
+  mutate(
+    label = ifelse(name == "pre_season_allocation", "Pre Season","Mid/Post Season")
+  ) |>
+  ggplot(
+    aes(
+      x= province, y= value, fill= label
+    ),
+  )+
+  facet_wrap(
+    ~scales$label_percent()(pct_pre),nrow=4
+  )+
+  geom_bar(stat= "identity",position = "dodge")+
+  geom_text(
+    aes(
+      y= value+500000,
+      label = scales$label_dollar(accuracy = 100000)(value)
+    ),
+    position =position_dodge(width = .9)
+  )+
+  scale_y_continuous(
+    labels =scales$label_dollar()
+  )+
+  labs(
+    title = "AA Allocation Model Based on Food Security PiN",
+    subtitle = "Options by % allocated with pre-season trigger",
+    caption= "$ figures rounded to nearest 100k for cleaner printing"
+  )+
+  theme(
+    legend.title = element_blank(),
+    axis.title = element_blank()
+  )
+df_allocation_options |>
+  pivot_longer(pre_season_allocation:mid_post_season_allocation) |>
+  mutate(
+    label = ifelse(name == "pre_season_allocation", "Pre Season","Mid/Post Season")
+  ) |>
+  group_by(
+    province,
+    label
+  ) |>
+  summarise(
+    min = min(value),
+    max = max(value)
+  ) |>
+  pivot_longer(min:max) |>
+  ggplot(
+    aes(x = province,y= value, color = label), position =position_dodge(width = .9)
+  )+
+  geom_point(position =position_dodge(width = .4))+
+  geom_line(position =position_dodge(width = .4))+
+  scale_y_continuous(labels = scales::label_dollar())+
+  coord_flip()
+
+```

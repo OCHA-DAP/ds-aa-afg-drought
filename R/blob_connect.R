@@ -10,8 +10,8 @@ box::use(
 #' @export
 load_proj_containers <- function() {
   # storage endpoint
-  sdev <- AzureStor$storage_endpoint(azure_endpoint_url(), sas = Sys.getenv("DSCI_AZ_SAS_DEV"))
-  sprod <- AzureStor$storage_endpoint(azure_endpoint_url(stage = "prod"), sas = Sys.getenv("DSCI_AZ_SAS_PROD"))
+  sdev <- AzureStor$storage_endpoint(azure_endpoint_url(), sas = Sys.getenv("DSCI_AZ_BLOB_DEV_SAS_WRITE"))
+  sprod <- AzureStor$storage_endpoint(azure_endpoint_url(stage = "prod"), sas = Sys.getenv("DSCI_AZ_BLOB_PROD_SAS_WRITE"))
   # storage container
   sc_global <- AzureStor$storage_container(sprod, "raster")
   sc_projects <- AzureStor$storage_container(sdev, "projects")
@@ -55,17 +55,22 @@ proj_blob_paths <- function(){
     DF_ADM2_CHIRPS_WFP = paste0(vector_raw, "wfp-chirps-adm2.csv"),
     DF_ADM2_NDVI_WFP = paste0(vector_raw, "wfp-ndvi-adm2.csv"),
     DF_ADM1_CHIRPS = paste0(vector_processed,"chirps_monthly_afg_adm1_historical.csv"),
+    DF_ADM1_CHIRPS_WFP = paste0(vector_processed, "chirps_monthly_afg_adm1_wfp_historical.csv"),
     DF_ADM1_MODIS_NDVI_CROPS = paste0(vector_processed, "modis_ndvi_crops_adm1.csv"),
     DF_ADM1_MODIS_SNOW = paste0(vector_processed, "modis_snow_frac_monthly_afg_adm1_historical.csv"),
     DF_ADM1_MODIS_SNOWMELT_M2010 = paste0(vector_processed, "modis_first_day_no_snow_2010_mask.csv"),
     DF_ADM1_MODIS_SNOWMELT_M2006 = paste0(vector_processed, "modis_first_day_no_snow_m2006_14e_120c.csv"),
+    DF_ADM1_ERA5_TEMP_PRECIP = paste0(vector_processed, "afg_mean_2m_air_temperature_total_precipitation_era5_monthly.csv"),
     DF_ADM1_SMI = paste0(raw_root, "country_data/Afghanistan Monthly Soil moisture 2018-2024.csv"),
     DF_ADM1_FLDAS_SWE = paste0(vector_processed,"fldas_snow_SWE_adm1.csv"),
+    DF_ADM1_ERA5_LAND_MULTIBAND = paste0(vector_processed,"ecmwf_era5_multiband_gte1981.parquet"),
+    DF_ADM1_ERA5_LAND_PRECIP_TEMP = paste0(vector_processed,"era5-land_temp_precip_gte1981.parquet"),
     DF_FARYAB_SEAS5 = paste0(vector_processed, "ecmwf_seas5_faryab.csv"),
     GIF_MODIS_NDVI_CROPS = paste0(processed_root, "modis_ndvi_crops_hirat_animation.gif"),
     DIR_COGS = paste0(raw_root, "cogs/"),
     DF_EMDAT = paste0(raw_root, "country_data/Major Drought Events_Afghanistan_2000-2023.xlsx"),
     DF_PRODUCTION_DATA = paste0(raw_root, "country_data/16 Years Irrigated and Rainfed Wheat Data.xlsx")
+
   )
 }
 

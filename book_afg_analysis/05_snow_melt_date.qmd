@@ -1,6 +1,5 @@
 ---
 title: "Snow Melt Date"
-editor: visual
 format:
   html:
     toc: true
@@ -17,13 +16,16 @@ execute:
   eval: false
   results: "asis"
   out.width: "100%"
+editor: visual
+project:
+  execute-dir: project
 ---
 
 ## Intro
 
-- Since snow fraction (NDSI) and snow water equivalent (SWE) results were largely inconclusive for scope of project Here we look to see if any information can be gained by trying to understand snow melt date.
-- This document demonstrates a method for extracting date of snow melt at the pixel level and then summarizing this value to different areas of interests
-- This  adapts the Google Earth Engine methods provided by @armstrong23
+-   Since snow fraction (NDSI) and snow water equivalent (SWE) results were largely inconclusive for scope of project Here we look to see if any information can be gained by trying to understand snow melt date.
+-   This document demonstrates a method for extracting date of snow melt at the pixel level and then summarizing this value to different areas of interests
+-   This adapts the Google Earth Engine methods provided by @armstrong23
 
 ```{r}
 #| eval: true
@@ -115,7 +117,6 @@ hybas_vis = list(
 
 ## Overview of AOI & hydrology
 
-
 ```{r}
 #| eval: false
 
@@ -142,7 +143,6 @@ The methodology uses MODIS `NDSI` snow fraction. An requires us to define an are
 The methodology by @armstrong23 does this by choosing a single year and using the temporal pixel level snow dynamics of that year to create a mask that used across all years of analysis. For comparative purposes we implement this methodology and another which rather than using a single year uses a composite derivative to create the mask.
 
 In order to create the single year mask we have to select a year that is representative of general snow fall. To do this we look at the yearly distributions of winter precipitation (Dec - Feb) @fig-plot_snow_overview and select a year close to the median. For the purpose of this analysis/chapter we focus on Faryab and select the year 2006
-
 
 ### Method 1: Single Year Mask
 
@@ -207,19 +207,18 @@ girafe(ggobj = p_chirps_winter)
 
 Below we calculate the mask components independently soley for visualization/communication purposes.
 
-
 ```{r}
+#|eval: false
+
 # Define complete collection
 complete_col <- ee$ImageCollection("MODIS/061/MOD10A1")$
   select("NDSI_Snow_Cover")
 ```
 
-
-1. create water mask
-2. create mask w/ pixels >= 10 % NDSI for at least 14 days of year (2006)
-3. create mask w/ pixels >= 10 % NDSI no more than 120 days (3 months) of year
-4. multiply all masks together to create analysis mask
-
+1.  create water mask
+2.  create mask w/ pixels \>= 10 % NDSI for at least 14 days of year (2006)
+3.  create mask w/ pixels \>= 10 % NDSI no more than 120 days (3 months) of year
+4.  multiply all masks together to create analysis mask
 
 ```{r}
 #| eval: false
@@ -301,8 +300,9 @@ blob_mapshot(
 
 ```
 
-- In light cyan blue you see the areas that has > 10% snow fall for more than 2 weeks.
-- In dark blue you see the areas that had >10 % snow fall for more than three months
+-   In light cyan blue you see the areas that has \> 10% snow fall for more than 2 weeks.
+-   In dark blue you see the areas that had \>10 % snow fall for more than three months
+
 ```{r}
 #| eval: true
 #| echo: false
@@ -318,8 +318,7 @@ knitr::include_graphics("../outputs/snow_masks_y2006_14e_120c_14e_120c.png")
 
 ```
 
-
-- We multiply these values together to get our analysis mask
+-   We multiply these values together to get our analysis mask
 
 ```{r}
 #| eval: true
@@ -336,12 +335,10 @@ knitr::include_graphics("../outputs/analysis_masks_y2006_14e_120c_14e_120c.png")
 
 ```
 
-
 ### Method 2: Multi-year composite mask
 
-- After experimenting w/ different years used for masking we realize that the year chosen does have a significant impact on final results. Additionally the method is not generalize able to multiple AOIs as seen in @fig-plot_winter_precip , different areas have different years that would be considered more or less "typical"/"representative"
-- Therefore, the premise of this composite method is to iterate through each year on record creating a mask for each year using the same methodology as above, but then finally compositing all the masks to retain a new mask that represents the area w/ 70 % agreement between all masks.
-
+-   After experimenting w/ different years used for masking we realize that the year chosen does have a significant impact on final results. Additionally the method is not generalize able to multiple AOIs as seen in @fig-plot_winter_precip , different areas have different years that would be considered more or less "typical"/"representative"
+-   Therefore, the premise of this composite method is to iterate through each year on record creating a mask for each year using the same methodology as above, but then finally compositing all the masks to retain a new mask that represents the area w/ 70 % agreement between all masks.
 
 ```{r}
 #| eval: false
@@ -411,7 +408,6 @@ m_mask_comparison <-
   Map$addLayer(composite_analysis_mask$mask(composite_analysis_mask), vis_params_composite, "Composite Ephemeral")+
   Map$addLayer(fc_faryab$style(fillColor = "#00000000", color = "red"))
 ```
-
 
 ```{r}
 #| echo: false
@@ -528,8 +524,8 @@ annual_col_2006 <- annual_snow_disappearance(start_year=2000,end_year = 2024, ma
 
 ### Snow Melt Map
 
-- For the purpose of map visualization we just map the DOY of snow disappearance using the method 1 mask (single year)
-- Below you see the our analysis mask, AOI, and a raster colored by approximate date of **snow disappearance in 2023** where yellow colors represent later snow melt dates (higher altitudes) and darker blue colors are earlier snow melt dates
+-   For the purpose of map visualization we just map the DOY of snow disappearance using the method 1 mask (single year)
+-   Below you see the our analysis mask, AOI, and a raster colored by approximate date of **snow disappearance in 2023** where yellow colors represent later snow melt dates (higher altitudes) and darker blue colors are earlier snow melt dates
 
 ```{r}
 #| eval: false
@@ -580,7 +576,6 @@ mapview::mapshot2(x =m_no_snow_20203,file ="../outputs/map_snow_doy_2023_m2006.p
 mapview::mapshot2(x =m_no_snow_2024,file ="../outputs/map_snow_doy_2024_m2006.png", remove_url =TRUE )
 ```
 
-
 ```{r}
 #| eval: true
 #| echo: false
@@ -595,7 +590,6 @@ mapview::mapshot2(x =m_no_snow_2024,file ="../outputs/map_snow_doy_2024_m2006.pn
 
 knitr::include_graphics("../outputs/map_snow_doy_2023_m2006.png")
 ```
-
 
 By comparing the above map for 2023 with that for **2024** we can see much earlier snow melt dates in 2024.
 
@@ -616,8 +610,7 @@ knitr::include_graphics("../outputs/map_snow_doy_2024_m2006.png")
 
 ## Timeseries Extraction
 
-- For each we get the earliest snow melt date per pixel in our AOI and mask and get calculate the average snow melt date in our AOI with zonal statistics.
-
+-   For each we get the earliest snow melt date per pixel in our AOI and mask and get calculate the average snow melt date in our AOI with zonal statistics.
 
 ```{r}
 #| eval: false
@@ -654,7 +647,7 @@ list(
 
 ```
 
-- We then compare that against both `end of may` and `end of jun` `VHI` and `ASI`
+-   We then compare that against both `end of may` and `end of jun` `VHI` and `ASI`
 
 ```{r}
 #| eval: true
@@ -669,13 +662,12 @@ df_fao_wide <- df_fao |>
     month %in% c("05","06")
   ) |>
   pivot_wider(
-    id_cols = c("country","adm1_code","province","year"),
-    values_from = data,
-    names_from= c("type","mo")
+    id_cols = c("country","adm1_code","adm1_name","year"),
+    values_from = value,
+    names_from= c("parameter","mo")
   ) |>
   rename(
-    yr = year,
-    adm1_name = province
+    yr = year
   )
 ```
 
@@ -766,13 +758,11 @@ lp_snowmelt <- ldf_snow_fao |>
 
 ## Snow Melt Date By ASI
 
-- Method 1 pushes the snow disappearance dates much earlier than method 2.
-- Under method 1 we see the majority of snow melt dates occurring before 15 Feb
-- Method 1 we see a lot of snow disappearance occurring after Feb 15
-
+-   Method 1 pushes the snow disappearance dates much earlier than method 2.
+-   Under method 1 we see the majority of snow melt dates occurring before 15 Feb
+-   Method 1 we see a lot of snow disappearance occurring after Feb 15
 
 ### Method 1
-
 
 ```{r}
 #| echo: true
@@ -792,9 +782,9 @@ girafe(ggobj=lp_snowmelt$single_year)
 girafe(ggobj=lp_snowmelt$composite)
 ```
 
-- Perhaps the median/average "representative" snow year chosen in method 1 (2006) is too heavily weighted towards an earlier snow fall pattern in the 2000's. Whereas method 2 may do a better job of capturing a change in snowfall dynamic/regime over time.
-- Method 2 seems more aligned with the general snow fall distribution we see in @fig-plot_snow_overview
-- Method 2 seems more generalizeable to expand the AOI.
+-   Perhaps the median/average "representative" snow year chosen in method 1 (2006) is too heavily weighted towards an earlier snow fall pattern in the 2000's. Whereas method 2 may do a better job of capturing a change in snowfall dynamic/regime over time.
+-   Method 2 seems more aligned with the general snow fall distribution we see in @fig-plot_snow_overview
+-   Method 2 seems more generalizeable to expand the AOI.
 
 ```{r scrap}
 #| eval: false
