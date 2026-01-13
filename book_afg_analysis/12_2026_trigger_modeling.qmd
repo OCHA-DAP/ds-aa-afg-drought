@@ -168,8 +168,82 @@ df_univariate |>
     arrange(window, desc(f_meas)) |>
     knitr::kable(
         digits = 3,
-        caption = "Univariate predictor performance (bootstrap CV)",
+        caption = "Univariate predictor performance (bootstrap CV, default P > 0.5 threshold)",
         col.names = c("Window", "Predictor", "AUC", "F1", "Precision", "Recall")
+    )
+```
+
+**Note**: The above table uses the default P > 0.5 classification threshold, which may underestimate F1 for imbalanced data. The table below shows performance with thresholds tuned to maximize F1.
+
+```{r}
+#| label: univariate-tuned
+
+# Fit univariate with tuned threshold
+fit_univariate_tuned <- function(data, predictor, n_boots = N_BOOTSTRAP, seed = SEED) {
+    form <- as.formula(paste("drought ~", paste0("`", predictor, "`")))
+
+    spec <- logistic_reg() |> set_engine("glm") |> set_mode("classification")
+    wf <- workflow() |> add_recipe(recipe(form, data = data)) |> add_model(spec)
+
+    set.seed(seed)
+    boots <- bootstraps(data, times = n_boots, strata = drought)
+    results <- fit_resamples(wf, resamples = boots,
+                             control = control_resamples(save_pred = TRUE))
+    preds <- collect_predictions(results)
+
+    # Find optimal threshold
+    thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+        pred_class <- factor(
+            if_else(preds$.pred_yes > thresh, "yes", "no"),
+            levels = c("yes", "no")
+        )
+        tibble(
+            threshold = thresh,
+            f1 = f_meas_vec(preds$drought, pred_class)
+        )
+    })
+
+    best_thresh <- thresh_results |>
+        filter(f1 == max(f1, na.rm = TRUE)) |>
+        slice(1) |>
+        pull(threshold)
+
+    # Calculate metrics at optimal threshold
+    pred_tuned <- factor(
+        if_else(preds$.pred_yes > best_thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+
+    tibble(
+        predictor = predictor,
+        threshold = best_thresh,
+        roc_auc = roc_auc_vec(preds$drought, preds$.pred_yes),
+        f_meas = f_meas_vec(preds$drought, pred_tuned),
+        precision = precision_vec(preds$drought, pred_tuned),
+        recall = recall_vec(preds$drought, pred_tuned)
+    )
+}
+
+# Run for both windows with tuned thresholds
+df_uni_apr_tuned <- map(get_predictors(df_apr), \(p) fit_univariate_tuned(df_apr, p)) |>
+    list_rbind() |> mutate(window = "April")
+
+df_uni_mar_tuned <- map(get_predictors(df_mar), \(p) fit_univariate_tuned(df_mar, p)) |>
+    list_rbind() |> mutate(window = "March")
+
+df_univariate_tuned <- bind_rows(df_uni_apr_tuned, df_uni_mar_tuned)
+```
+
+```{r}
+#| label: univariate-tuned-table
+
+df_univariate_tuned |>
+    select(window, predictor, threshold, roc_auc, f_meas, precision, recall) |>
+    arrange(window, desc(f_meas)) |>
+    knitr::kable(
+        digits = 3,
+        caption = "Univariate predictor performance (bootstrap CV, tuned thresholds)",
+        col.names = c("Window", "Predictor", "Threshold", "AUC", "F1", "Precision", "Recall")
     )
 ```
 
@@ -178,13 +252,13 @@ df_univariate |>
 #| fig-height: 5
 #| fig-width: 8
 
-df_univariate |>
+df_univariate_tuned |>
     ggplot(aes(x = window, y = reorder(predictor, f_meas), fill = f_meas)) +
     geom_tile(color = "white", linewidth = 0.5) +
     geom_text(aes(label = round(f_meas, 2)), color = "white", fontface = "bold") +
-    scale_fill_gradient(low = "steelblue", high = "darkred", limits = c(0, 0.7)) +
+    scale_fill_gradient(low = "steelblue", high = "darkred", limits = c(0, 0.8)) +
     labs(
-        title = "Univariate F1 Score by Predictor and Window",
+        title = "Univariate F1 Score by Predictor and Window (Tuned Thresholds)",
         x = NULL, y = NULL, fill = "F1"
     ) +
     theme(panel.grid = element_blank())
