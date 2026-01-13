@@ -509,6 +509,203 @@ tibble(
     knitr::kable(caption = "In-sample performance (overfitted)")
 ```
 
+## Trigger Approach Comparison
+
+The CDI approach derives weights from logistic regression coefficients. But we could also use the model's predicted probabilities directly. This section compares three trigger approaches:
+
+1. **Direct model, P > 0.5**: Standard classification threshold
+2. **Direct model, tuned threshold**: Threshold optimized for F1
+3. **CDI with RP-based threshold**: Our weighted index approach
+
+```{r}
+#| label: predicted-probabilities
+
+# Get predicted probabilities from the fitted ridge model
+df_apr_probs <- df_apr_cdi |>
+    mutate(
+        prob_drought = predict(final_ridge_fit, df_apr, type = "prob")$.pred_yes
+    )
+```
+
+### Default Threshold (P > 0.5)
+
+With ~24% drought years, the default 0.5 threshold may not be optimal for our imbalanced data.
+
+```{r}
+#| label: default-threshold
+
+df_apr_probs <- df_apr_probs |>
+    mutate(
+        trigger_default = factor(
+            if_else(prob_drought > 0.5, "yes", "no"),
+            levels = c("yes", "no")
+        )
+    )
+```
+
+### Threshold Tuning
+
+We search for the probability threshold that maximizes F1 score.
+
+```{r}
+#| label: threshold-tuning
+
+thresholds <- seq(0.1, 0.9, by = 0.05)
+
+threshold_results <- map_dfr(thresholds, function(thresh) {
+    pred <- factor(
+        if_else(df_apr_probs$prob_drought > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+
+    tibble(
+        threshold = thresh,
+        precision = precision_vec(df_apr_probs$drought, pred),
+        recall = recall_vec(df_apr_probs$drought, pred),
+        f1 = f_meas_vec(df_apr_probs$drought, pred),
+        n_triggered = sum(pred == "yes")
+    )
+})
+
+# Find optimal threshold (take first if ties)
+best_prob_threshold <- threshold_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1) |>
+    pull(threshold)
+```
+
+**Optimal threshold**: `r best_prob_threshold` (vs default 0.5)
+
+```{r}
+#| label: threshold-tuning-plot
+#| fig-height: 5
+#| fig-width: 8
+
+threshold_results |>
+    pivot_longer(cols = c(precision, recall, f1),
+                 names_to = "metric", values_to = "value") |>
+    ggplot(aes(x = threshold, y = value, color = metric)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    geom_vline(xintercept = best_prob_threshold, linetype = "dashed") +
+    geom_vline(xintercept = 0.5, linetype = "dotted", color = "gray") +
+    annotate("text", x = best_prob_threshold + 0.03, y = 0.3,
+             label = paste0("Optimal: ", best_prob_threshold), hjust = 0) +
+    scale_color_manual(values = c("precision" = "steelblue", "recall" = "tomato", "f1" = "darkgreen")) +
+    labs(
+        title = "Probability Threshold Tuning",
+        subtitle = "Dashed = optimal threshold | Dotted = default 0.5",
+        x = "Probability Threshold", y = "Metric Value", color = "Metric"
+    )
+```
+
+### Three-Way Comparison
+
+```{r}
+#| label: approach-comparison
+
+df_apr_compare <- df_apr_probs |>
+    mutate(
+        trigger_tuned = factor(
+            if_else(prob_drought > best_prob_threshold, "yes", "no"),
+            levels = c("yes", "no")
+        )
+    )
+
+# Calculate metrics for each approach
+calc_trigger_metrics <- function(pred, actual) {
+    pred_f <- factor(pred, levels = c("yes", "no"))
+    tibble(
+        precision = precision_vec(actual, pred_f),
+        recall = recall_vec(actual, pred_f),
+        f1 = f_meas_vec(actual, pred_f),
+        n_triggered = sum(pred_f == "yes")
+    )
+}
+
+comparison_table <- bind_rows(
+    calc_trigger_metrics(df_apr_compare$trigger_default, df_apr_compare$drought) |>
+        mutate(approach = "P > 0.5 (default)", threshold = "0.50"),
+    calc_trigger_metrics(df_apr_compare$trigger_tuned, df_apr_compare$drought) |>
+        mutate(approach = "P > tuned", threshold = as.character(best_prob_threshold)),
+    calc_trigger_metrics(df_apr_compare$trigger, df_apr_compare$drought) |>
+        mutate(approach = "CDI (RP-based)", threshold = paste0(round(cdi_threshold, 2), " (75th %ile)"))
+) |>
+    select(approach, threshold, precision, recall, f1, n_triggered)
+
+comparison_table |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Approach", "Threshold", "Precision", "Recall", "F1", "N Triggered"),
+        caption = "Comparison of trigger approaches (in-sample)"
+    )
+```
+
+### Ranking Equivalence
+
+Since CDI is derived from the same model coefficients, probability and CDI rankings should be identical.
+
+```{r}
+#| label: ranking-equivalence
+
+rank_cor <- cor(
+    rank(-df_apr_compare$prob_drought),
+    rank(-df_apr_compare$CDI)
+)
+```
+
+**Rank correlation**: `r round(rank_cor, 4)` (1.0 = identical rankings)
+
+```{r}
+#| label: trigger-agreement
+
+library(gt)
+
+df_apr_compare |>
+    select(year, drought, prob_drought, CDI, trigger_default, trigger_tuned, trigger) |>
+    arrange(desc(prob_drought)) |>
+    rename(
+        Year = year,
+        Actual = drought,
+        `P(drought)` = prob_drought,
+        `P>0.5` = trigger_default,
+        `P>tuned` = trigger_tuned,
+        `CDI trig` = trigger
+    ) |>
+    gt() |>
+    tab_header(
+        title = "Trigger Comparison Across All Years",
+        subtitle = "Sorted by predicted probability"
+    ) |>
+    fmt_number(columns = c(`P(drought)`, CDI), decimals = 3) |>
+    tab_style(
+        style = cell_fill(color = "tomato", alpha = 0.4),
+        locations = cells_body(columns = Actual, rows = Actual == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `P>0.5`, rows = `P>0.5` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `P>tuned`, rows = `P>tuned` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `CDI trig`, rows = `CDI trig` == "yes")
+    ) |>
+    tab_spanner(
+        label = "Trigger Decision",
+        columns = c(`P>0.5`, `P>tuned`, `CDI trig`)
+    ) |>
+    tab_footnote(
+        footnote = "Red = actual drought | Blue = triggered",
+        locations = cells_column_spanners()
+    )
+```
+
+**Key insight**: The RP-based CDI threshold is a **policy choice** that constrains expected trigger frequency to once every `r RP_THRESHOLD` years. This may not maximize F1, but it controls false alarm rate for budget planning. The tuned probability threshold optimizes for prediction accuracy instead.
+
 ### Leave-One-Out Cross-Validation - GLM
 
 For each year, we fit the model on all OTHER years, derive CDI weights and threshold, then predict the held-out year. This uses standard logistic regression (GLM).
