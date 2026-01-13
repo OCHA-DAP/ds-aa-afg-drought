@@ -751,14 +751,11 @@ comparison_table |>
 **Ranking equivalence**: Since CDI is derived from the same model, probability and CDI rankings are identical (correlation = `r round(cor(rank(-df_apr_compare$prob_drought), rank(-df_apr_compare$CDI)), 4)`).
 
 ::: {.callout-note}
-## Policy vs Optimization
+## Threshold Convergence
 
-The RP-based threshold is a **budget constraint**, not a performance optimization.
+The **F1-optimized threshold** (P > `r best_prob_threshold`) triggers `r sum(df_apr_compare$trigger_tuned == "yes")` of `r nrow(df_apr_compare)` years (`r round(sum(df_apr_compare$trigger_tuned == "yes") / nrow(df_apr_compare) * 100, 0)`%), corresponding to roughly the **`r round((1 - sum(df_apr_compare$trigger_tuned == "yes") / nrow(df_apr_compare)) * 100, 0)`th percentile**.
 
-- **F1-optimized threshold** (`r best_prob_threshold`): Maximizes prediction accuracy
-- **RP-based threshold** (75th percentile): Constrains expected trigger frequency to ~1 per `r RP_THRESHOLD` years
-
-The RP-based approach may not maximize F1, but it provides predictable trigger frequency for humanitarian planning and budgeting.
+This closely matches the RP=`r RP_THRESHOLD` policy threshold (75th percentile, ~25% trigger rate). The statistically optimal threshold aligns with the operationally desired trigger frequency - a fortunate convergence that won't always occur.
 :::
 
 ## Model Validation (LOOCV)
