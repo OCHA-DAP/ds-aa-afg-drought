@@ -509,9 +509,9 @@ tibble(
     knitr::kable(caption = "In-sample performance (overfitted)")
 ```
 
-## Trigger Approach Comparison
+## Trigger Approach Comparison (April Window)
 
-The CDI approach derives weights from logistic regression coefficients. But we could also use the model's predicted probabilities directly. This section compares three trigger approaches:
+The CDI approach derives weights from logistic regression coefficients. But we could also use the model's predicted probabilities directly. This section compares three trigger approaches for the **April publication window**:
 
 1. **Direct model, P > 0.5**: Standard classification threshold
 2. **Direct model, tuned threshold**: Threshold optimized for F1
@@ -637,7 +637,7 @@ comparison_table |>
     knitr::kable(
         digits = 3,
         col.names = c("Approach", "Threshold", "Precision", "Recall", "F1", "N Triggered"),
-        caption = "Comparison of trigger approaches (in-sample)"
+        caption = "Comparison of trigger approaches - April window (in-sample)"
     )
 ```
 
@@ -674,8 +674,8 @@ df_apr_compare |>
     ) |>
     gt() |>
     tab_header(
-        title = "Trigger Comparison Across All Years",
-        subtitle = "Sorted by predicted probability"
+        title = "Trigger Comparison: April Window (All Years)",
+        subtitle = "Sorted by predicted drought probability"
     ) |>
     fmt_number(columns = c(`P(drought)`, CDI), decimals = 3) |>
     tab_style(
@@ -972,9 +972,11 @@ ggplot() +
 
 ## Summary
 
-**Model Selection**: April window logistic regression (F1 = `r round(apr_model$metrics$mean[3], 2)`)
+**Selected Window**: April publication (outperforms March due to more observational data)
 
-**CDI Weights**:
+**Model**: Ridge regression with tuned penalty (`r round(best_penalty$penalty, 4)`)
+
+**CDI Weights** (derived from ridge coefficients):
 
 ```{r}
 #| label: summary-weights
@@ -986,8 +988,10 @@ cdi_weights |>
     cat(sep = "\n")
 ```
 
-**Trigger Performance** (historical):
+**Trigger Performance** (LOOCV - honest estimate):
 
-- Precision: `r round(tp / (tp + fp) * 100, 0)`%
-- Recall: `r round(tp / (tp + fn) * 100, 0)`%
-- F1: `r round(2 * tp / (2 * tp + fp + fn), 2)`
+- Precision: `r round(tp_ridge_loo / (tp_ridge_loo + fp_ridge_loo) * 100, 0)`%
+- Recall: `r round(tp_ridge_loo / (tp_ridge_loo + fn_ridge_loo) * 100, 0)`%
+- F1: `r round(2 * tp_ridge_loo / (2 * tp_ridge_loo + fp_ridge_loo + fn_ridge_loo), 2)`
+
+**Threshold Equivalence**: Probability threshold (tuned to `r best_prob_threshold`) and CDI RP-based threshold produce identical triggers (rank correlation = 1.0)
