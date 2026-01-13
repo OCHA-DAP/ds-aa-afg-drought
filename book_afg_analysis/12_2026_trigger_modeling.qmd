@@ -1022,6 +1022,81 @@ cdi_weights |>
     cat(sep = "\n")
 ```
 
+## Methodological Note: Ridge Regression vs Grid Search {#methodology-comparison}
+
+This year's approach differs from the 2025 analysis. This section documents the methodological choices and their trade-offs.
+
+### Last Year's Approach: Exhaustive Grid Search
+
+The 2025 analysis used a grid search approach:
+
+1. **Weight grid**: Created all combinations of weights from 0-1 by 0.05 increments for each indicator
+2. **CDI construction**: Computed weighted average of z-scores for each weight combination
+3. **Selection**: Filtered to weight combinations achieving the best F1 score
+4. **Tie-breaking**: When hundreds of combinations tied at the best F1, selected the CDI with highest correlation to end-of-season ASI (continuous, not thresholded)
+
+This approach has several properties:
+
+**Strengths:**
+
+- Intuitive and transparent
+- Explores the full weight space
+- Weights directly interpretable as proportions
+
+**Limitations:**
+
+- **Overfitting risk**: With ~200,000+ weight combinations tested on n=42 years, high probability of finding spuriously good fits
+- **Multiple testing**: No adjustment for the massive number of comparisons
+- **In-sample evaluation**: All optimization done on the full dataset with no holdout
+- **Arbitrary tie-breaker**: Using ASI correlation as tie-breaker introduces a second optimization criterion that may not align with trigger performance
+
+### This Year's Approach: Regularized Regression with LOOCV
+
+The 2026 analysis uses ridge regression:
+
+1. **Model fitting**: Ridge regression (L2 penalty) learns weights from predictor-outcome relationships
+2. **Regularization**: Penalty term shrinks coefficients toward zero, trading bias for variance reduction
+3. **Tuning**: Penalty strength selected via bootstrap cross-validation
+4. **Validation**: Final performance estimated via leave-one-out cross-validation (LOOCV)
+
+**Strengths:**
+
+- **Honest out-of-sample estimates**: LOOCV provides unbiased performance estimates
+- **Regularization controls overfitting**: Penalty term prevents fitting to noise
+- **Principled variable weighting**: Weights emerge from data relationships, not exhaustive search
+- **Feature selection via lasso**: L1 penalty identifies truly predictive variables before ridge fitting
+
+**Limitations:**
+
+- Weights emerge from model fitting rather than explicit analyst choices (though easily normalized to proportions)
+- Requires familiarity with regularization concepts
+
+### Comparison Caveats
+
+Direct F1 comparison between the two approaches is not straightforward:
+
+- **2025**: Modeled at **province level** (separate CDI per province), with some provinces achieving F1 ~0.8
+- **2026**: Models the **merged 5-province area** as a single unit (area-weighted mean of indicators)
+
+These are different prediction problems. The merged approach trades spatial granularity for a more stable signal and simpler operational trigger (one threshold for the entire region rather than five).
+
+### Key Differences in Interpretation
+
+The critical difference is **confidence in the estimates**:
+
+| Aspect | Grid Search (2025) | Ridge + LOOCV (2026) |
+|--------|-------------------|---------------------|
+| Performance estimate | Likely optimistic (in-sample) | Honest (out-of-sample) |
+| Degrees of freedom | ~200,000 combinations tested | ~10 hyperparameters |
+| Overfitting risk | High | Low (regularized) |
+| Generalization | Uncertain | More reliable |
+
+::: {.callout-note}
+## Bottom Line
+
+The 2025 grid search likely found real signal, but performance estimates are optimistically biased due to in-sample optimization. The 2026 ridge approach provides more defensible estimates of true out-of-sample performance through LOOCV validation and regularization. The methodological differences (province-level vs merged area) mean direct F1 comparison is not meaningful.
+:::
+
 ---
 
 ## Appendix A: March Technical Details {#appendix-a-march-technical-details}
