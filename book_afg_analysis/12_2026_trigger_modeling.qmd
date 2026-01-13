@@ -306,9 +306,13 @@ lasso_coefs_mar |>
 
 See [Appendix A](#appendix-a-march-technical-details) for the full correlation matrix and discussion of suppressor effects.
 
-### SEAS5-Only vs Multivariate Comparison
+### Model Comparison: SEAS5 vs Multivariate
 
-Given lasso's results, how does a simple SEAS5-only model compare to a multivariate model using all lasso-selected variables?
+We compare three approaches:
+
+1. **SEAS5 only**: Simple univariate model using just the seasonal forecast
+2. **Lasso**: Multivariate with automatic feature selection (all variables, L1 penalty)
+3. **Ridge on lasso-selected**: Two-stage approach - lasso for selection, ridge for stable coefficients
 
 ```{r}
 #| label: march-seas5-univariate
@@ -408,21 +412,41 @@ ridge_mar_thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
 best_ridge_mar_thresh <- ridge_mar_thresh_results |>
     filter(f1 == max(f1, na.rm = TRUE)) |>
     slice(1)
+
+# Get lasso predictions for comparison
+lasso_mar_preds <- collect_predictions(lasso_tune_mar, parameters = best_lasso_penalty)
+
+lasso_mar_thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+    pred_class <- factor(
+        if_else(lasso_mar_preds$.pred_yes > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    tibble(
+        threshold = thresh,
+        f1 = f_meas_vec(lasso_mar_preds$drought, pred_class),
+        precision = precision_vec(lasso_mar_preds$drought, pred_class),
+        recall = recall_vec(lasso_mar_preds$drought, pred_class)
+    )
+})
+
+best_lasso_mar_thresh <- lasso_mar_thresh_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1)
 ```
 
 ```{r}
 #| label: march-model-comparison
 
 tibble(
-    Model = c("SEAS5 only (tuned threshold)", "Lasso-selected multivariate (tuned)"),
-    Threshold = c(best_seas5_thresh$threshold, best_ridge_mar_thresh$threshold),
-    F1 = c(best_seas5_thresh$f1, best_ridge_mar_thresh$f1),
-    Precision = c(best_seas5_thresh$precision, best_ridge_mar_thresh$precision),
-    Recall = c(best_seas5_thresh$recall, best_ridge_mar_thresh$recall)
+    Model = c("SEAS5 only", "Lasso (all variables)", "Ridge (lasso-selected)"),
+    Threshold = c(best_seas5_thresh$threshold, best_lasso_mar_thresh$threshold, best_ridge_mar_thresh$threshold),
+    F1 = c(best_seas5_thresh$f1, best_lasso_mar_thresh$f1, best_ridge_mar_thresh$f1),
+    Precision = c(best_seas5_thresh$precision, best_lasso_mar_thresh$precision, best_ridge_mar_thresh$precision),
+    Recall = c(best_seas5_thresh$recall, best_lasso_mar_thresh$recall, best_ridge_mar_thresh$recall)
 ) |>
     knitr::kable(
         digits = 3,
-        caption = "March window: SEAS5 univariate vs multivariate (bootstrap CV, tuned thresholds)"
+        caption = "March window model comparison (bootstrap CV, tuned thresholds)"
     )
 ```
 
