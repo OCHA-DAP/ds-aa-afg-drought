@@ -173,92 +173,21 @@ df_univariate |>
     )
 ```
 
-**Note**: The above table uses the default P > 0.5 classification threshold, which may underestimate F1 for imbalanced data. The table below shows performance with thresholds tuned to maximize F1.
-
-```{r}
-#| label: univariate-tuned
-
-# Fit univariate with tuned threshold
-fit_univariate_tuned <- function(data, predictor, n_boots = N_BOOTSTRAP, seed = SEED) {
-    form <- as.formula(paste("drought ~", paste0("`", predictor, "`")))
-
-    spec <- logistic_reg() |> set_engine("glm") |> set_mode("classification")
-    wf <- workflow() |> add_recipe(recipe(form, data = data)) |> add_model(spec)
-
-    set.seed(seed)
-    boots <- bootstraps(data, times = n_boots, strata = drought)
-    results <- fit_resamples(wf, resamples = boots,
-                             control = control_resamples(save_pred = TRUE))
-    preds <- collect_predictions(results)
-
-    # Find optimal threshold
-    thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
-        pred_class <- factor(
-            if_else(preds$.pred_yes > thresh, "yes", "no"),
-            levels = c("yes", "no")
-        )
-        tibble(
-            threshold = thresh,
-            f1 = f_meas_vec(preds$drought, pred_class)
-        )
-    })
-
-    best_thresh <- thresh_results |>
-        filter(f1 == max(f1, na.rm = TRUE)) |>
-        slice(1) |>
-        pull(threshold)
-
-    # Calculate metrics at optimal threshold
-    pred_tuned <- factor(
-        if_else(preds$.pred_yes > best_thresh, "yes", "no"),
-        levels = c("yes", "no")
-    )
-
-    tibble(
-        predictor = predictor,
-        threshold = best_thresh,
-        roc_auc = roc_auc_vec(preds$drought, preds$.pred_yes),
-        f_meas = f_meas_vec(preds$drought, pred_tuned),
-        precision = precision_vec(preds$drought, pred_tuned),
-        recall = recall_vec(preds$drought, pred_tuned)
-    )
-}
-
-# Run for both windows with tuned thresholds
-df_uni_apr_tuned <- map(get_predictors(df_apr), \(p) fit_univariate_tuned(df_apr, p)) |>
-    list_rbind() |> mutate(window = "April")
-
-df_uni_mar_tuned <- map(get_predictors(df_mar), \(p) fit_univariate_tuned(df_mar, p)) |>
-    list_rbind() |> mutate(window = "March")
-
-df_univariate_tuned <- bind_rows(df_uni_apr_tuned, df_uni_mar_tuned)
-```
-
-```{r}
-#| label: univariate-tuned-table
-
-df_univariate_tuned |>
-    select(window, predictor, threshold, roc_auc, f_meas, precision, recall) |>
-    arrange(window, desc(f_meas)) |>
-    knitr::kable(
-        digits = 3,
-        caption = "Univariate predictor performance (bootstrap CV, tuned thresholds)",
-        col.names = c("Window", "Predictor", "Threshold", "AUC", "F1", "Precision", "Recall")
-    )
-```
+**Note**: The above table uses the default P > 0.5 classification threshold. With imbalanced data (~24% drought), optimal thresholds are typically lower (0.25-0.35). See Appendix for tuned threshold analysis.
 
 ```{r}
 #| label: univariate-heatmap
 #| fig-height: 5
 #| fig-width: 8
 
-df_univariate_tuned |>
+df_univariate |>
     ggplot(aes(x = window, y = reorder(predictor, f_meas), fill = f_meas)) +
     geom_tile(color = "white", linewidth = 0.5) +
     geom_text(aes(label = round(f_meas, 2)), color = "white", fontface = "bold") +
-    scale_fill_gradient(low = "steelblue", high = "darkred", limits = c(0, 0.8)) +
+    scale_fill_gradient(low = "steelblue", high = "darkred", limits = c(0, 0.7)) +
     labs(
-        title = "Univariate F1 Score by Predictor and Window (Tuned Thresholds)",
+        title = "Univariate F1 Score by Predictor and Window",
+        subtitle = "Default P > 0.5 threshold",
         x = NULL, y = NULL, fill = "F1"
     ) +
     theme(panel.grid = element_blank())
@@ -376,6 +305,272 @@ mar_model <- fit_classification_model(
     exclude_vars = c("pub_year", MARCH_EXCLUDE_VARS)
 )
 ```
+
+### March Window: Lasso Feature Selection
+
+For the March window, most predictors represent February conditions (before the growing season). Physically, only the SEAS5-MAM forecast should be predictive of end-of-season drought. We use **Lasso regression** to test this - lasso shrinks irrelevant coefficients to exactly zero, performing automatic feature selection.
+
+```{r}
+#| label: march-lasso
+
+# Lasso specification (mixture = 1 for pure L1 penalty)
+lasso_spec <- logistic_reg(penalty = tune(), mixture = 1) |>
+    set_engine("glmnet") |>
+    set_mode("classification")
+
+# Recipe for March data
+lasso_recipe_mar <- recipe(drought ~ ., data = df_mar) |>
+    step_rm(pub_year) |>
+    step_zv(all_predictors())
+
+lasso_wf_mar <- workflow() |>
+    add_recipe(lasso_recipe_mar) |>
+    add_model(lasso_spec)
+
+# Tune penalty with bootstrap CV
+set.seed(SEED)
+lasso_boots <- bootstraps(df_mar, times = N_BOOTSTRAP, strata = drought)
+lasso_grid <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+lasso_tune_mar <- tune_grid(
+    lasso_wf_mar,
+    resamples = lasso_boots,
+    grid = lasso_grid,
+    metrics = metric_set(roc_auc, f_meas),
+    control = control_grid(save_pred = TRUE)
+)
+
+# Select best penalty
+best_lasso_penalty <- select_best(lasso_tune_mar, metric = "f_meas")
+
+# Fit final model
+final_lasso_mar <- lasso_wf_mar |>
+    finalize_workflow(best_lasso_penalty) |>
+    fit(data = df_mar)
+
+# Extract coefficients
+lasso_coefs_mar <- final_lasso_mar |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)") |>
+    arrange(desc(abs(estimate)))
+```
+
+```{r}
+#| label: march-lasso-coefs
+
+lasso_coefs_mar |>
+    mutate(
+        selected = if_else(estimate != 0, "Yes", "No"),
+        estimate = round(estimate, 4)
+    ) |>
+    select(term, estimate, selected) |>
+    knitr::kable(
+        caption = "March window: Lasso coefficients (non-zero = selected)",
+        col.names = c("Predictor", "Coefficient", "Selected")
+    )
+```
+
+```{r}
+#| label: march-lasso-plot
+#| fig-height: 4
+#| fig-width: 8
+
+autoplot(lasso_tune_mar) +
+    labs(
+        title = "March Window: Lasso Penalty Tuning",
+        subtitle = paste0("Best penalty: ", round(best_lasso_penalty$penalty, 4))
+    )
+```
+
+**Interpretation**: Variables with non-zero coefficients are selected by lasso as predictive. If only SEAS5-MAM (or very few variables) survive, this confirms that pre-growing season observations have limited predictive value for end-of-season drought.
+
+### March Predictor Collinearity
+
+The positive coefficient on `total_precipitation_sum` is unexpected. Let's check the correlation structure:
+
+```{r}
+#| label: march-correlation
+#| fig-height: 6
+#| fig-width: 7
+
+# Correlation matrix for March predictors
+mar_predictors <- df_mar |> select(-drought, -pub_year)
+
+cor_mat <- cor(mar_predictors, use = "complete.obs")
+
+# Visualize
+cor_mat |>
+    as.data.frame() |>
+    rownames_to_column("var1") |>
+    pivot_longer(-var1, names_to = "var2", values_to = "cor") |>
+    ggplot(aes(x = var1, y = var2, fill = cor)) +
+    geom_tile() +
+    geom_text(aes(label = round(cor, 2)), size = 3) +
+    scale_fill_gradient2(low = "steelblue", mid = "white", high = "darkred",
+                         midpoint = 0, limits = c(-1, 1)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "March Predictor Correlations", x = NULL, y = NULL)
+```
+
+```{r}
+#| label: precip-correlation
+
+# Specific correlation between precip variables
+cor(mar_predictors$total_precipitation_sum, mar_predictors$precip_cumsum)
+```
+
+The high correlation between `total_precipitation_sum` and `precip_cumsum` (they overlap by construction) creates a suppressor effect. When both are in the model, their coefficients become unstable.
+
+### Lasso-Selected Ridge Model (March)
+
+A common approach: use lasso for feature selection, then fit ridge on selected variables. We exclude `asi` (dropped by lasso) and `total_precipitation_sum` (suppressor effect, redundant with `precip_cumsum`).
+
+```{r}
+#| label: march-lasso-ridge
+
+# Variables selected by lasso, excluding the problematic ones
+LASSO_SELECTED_VARS <- c("seas5 Mar-Apr-May", "vhi", "snow_cover",
+                          "volumetric_soil_water_1m", "precip_cumsum")
+
+# Ridge on lasso-selected variables
+ridge_spec_mar <- logistic_reg(penalty = tune(), mixture = 0) |>
+    set_engine("glmnet") |>
+    set_mode("classification")
+
+ridge_recipe_mar <- recipe(drought ~ ., data = df_mar) |>
+    step_rm(pub_year) |>
+    step_select(all_of(c("drought", LASSO_SELECTED_VARS))) |>
+    step_zv(all_predictors())
+
+ridge_wf_mar <- workflow() |>
+    add_recipe(ridge_recipe_mar) |>
+    add_model(ridge_spec_mar)
+
+# Tune with bootstrap
+set.seed(SEED)
+ridge_boots_mar <- bootstraps(df_mar, times = N_BOOTSTRAP, strata = drought)
+penalty_grid_mar <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+ridge_tune_mar <- tune_grid(
+    ridge_wf_mar,
+    resamples = ridge_boots_mar,
+    grid = penalty_grid_mar,
+    metrics = metric_set(roc_auc, f_meas, precision, recall),
+    control = control_grid(save_pred = TRUE)
+)
+
+best_penalty_mar <- select_best(ridge_tune_mar, metric = "f_meas")
+final_ridge_mar <- ridge_wf_mar |>
+    finalize_workflow(best_penalty_mar) |>
+    fit(data = df_mar)
+
+# Extract coefficients
+coefs_ridge_mar <- final_ridge_mar |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)") |>
+    mutate(
+        weight = -estimate / sum(abs(estimate)),
+        contribution_pct = abs(weight) * 100
+    ) |>
+    arrange(desc(contribution_pct))
+
+coefs_ridge_mar |>
+    select(term, estimate, weight, contribution_pct) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Feature", "Ridge Coef", "CDI Weight", "Contribution %"),
+        caption = "March window: Lasso-selected ridge coefficients"
+    )
+```
+
+### Univariate SEAS5 Model (March)
+
+How does the multivariate model compare to simply using the SEAS5 forecast alone?
+
+```{r}
+#| label: march-seas5-univariate
+
+# Univariate SEAS5 model (standard GLM - no regularization needed with 1 predictor)
+seas5_spec <- logistic_reg() |>
+    set_engine("glm") |>
+    set_mode("classification")
+
+seas5_recipe <- recipe(drought ~ `seas5 Mar-Apr-May`, data = df_mar)
+
+seas5_wf <- workflow() |>
+    add_recipe(seas5_recipe) |>
+    add_model(seas5_spec)
+
+set.seed(SEED)
+seas5_boots <- bootstraps(df_mar, times = N_BOOTSTRAP, strata = drought)
+
+seas5_results <- fit_resamples(
+    seas5_wf,
+    resamples = seas5_boots,
+    control = control_resamples(save_pred = TRUE)
+)
+
+seas5_preds <- collect_predictions(seas5_results)
+
+# Tune threshold
+seas5_thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+    pred_class <- factor(
+        if_else(seas5_preds$.pred_yes > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    tibble(
+        threshold = thresh,
+        f1 = f_meas_vec(seas5_preds$drought, pred_class),
+        precision = precision_vec(seas5_preds$drought, pred_class),
+        recall = recall_vec(seas5_preds$drought, pred_class)
+    )
+})
+
+best_seas5_thresh <- seas5_thresh_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1)
+```
+
+```{r}
+#| label: march-model-comparison
+
+# Get metrics for lasso-selected ridge (with tuned threshold)
+ridge_mar_preds <- collect_predictions(ridge_tune_mar, parameters = best_penalty_mar)
+
+ridge_mar_thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+    pred_class <- factor(
+        if_else(ridge_mar_preds$.pred_yes > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    tibble(
+        threshold = thresh,
+        f1 = f_meas_vec(ridge_mar_preds$drought, pred_class),
+        precision = precision_vec(ridge_mar_preds$drought, pred_class),
+        recall = recall_vec(ridge_mar_preds$drought, pred_class)
+    )
+})
+
+best_ridge_mar_thresh <- ridge_mar_thresh_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1)
+
+# Comparison table
+tibble(
+    Model = c("SEAS5 only (tuned)", "Lasso-selected ridge (tuned)"),
+    Threshold = c(best_seas5_thresh$threshold, best_ridge_mar_thresh$threshold),
+    F1 = c(best_seas5_thresh$f1, best_ridge_mar_thresh$f1),
+    Precision = c(best_seas5_thresh$precision, best_ridge_mar_thresh$precision),
+    Recall = c(best_seas5_thresh$recall, best_ridge_mar_thresh$recall)
+) |>
+    knitr::kable(
+        digits = 3,
+        caption = "March window: SEAS5 univariate vs lasso-selected multivariate (bootstrap CV, tuned thresholds)"
+    )
+```
+
+**Interpretation**: If the univariate SEAS5 model performs similarly to the multivariate model, it suggests that February observational data adds limited value for the March trigger window - the seasonal forecast captures most of the predictive signal.
 
 ### Model Comparison
 
@@ -1069,3 +1264,98 @@ cdi_weights |>
 - F1: `r round(2 * tp_ridge_loo / (2 * tp_ridge_loo + fp_ridge_loo + fn_ridge_loo), 2)`
 
 **Threshold Equivalence**: Probability threshold (tuned to `r best_prob_threshold`) and CDI RP-based threshold produce identical triggers (rank correlation = 1.0)
+
+## Appendix: Tuned Threshold Univariate Analysis
+
+The main univariate analysis uses default P > 0.5 threshold for fair comparison. Here we show performance with thresholds tuned per predictor to maximize F1. This represents a theoretical ceiling for each predictor's performance.
+
+```{r}
+#| label: univariate-tuned-appendix
+
+# Fit univariate with tuned threshold
+fit_univariate_tuned <- function(data, predictor, n_boots = N_BOOTSTRAP, seed = SEED) {
+    form <- as.formula(paste("drought ~", paste0("`", predictor, "`")))
+
+    spec <- logistic_reg() |> set_engine("glm") |> set_mode("classification")
+    wf <- workflow() |> add_recipe(recipe(form, data = data)) |> add_model(spec)
+
+    set.seed(seed)
+    boots <- bootstraps(data, times = n_boots, strata = drought)
+    results <- fit_resamples(wf, resamples = boots,
+                             control = control_resamples(save_pred = TRUE))
+    preds <- collect_predictions(results)
+
+    # Find optimal threshold
+    thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+        pred_class <- factor(
+            if_else(preds$.pred_yes > thresh, "yes", "no"),
+            levels = c("yes", "no")
+        )
+        tibble(
+            threshold = thresh,
+            f1 = f_meas_vec(preds$drought, pred_class)
+        )
+    })
+
+    best_thresh <- thresh_results |>
+        filter(f1 == max(f1, na.rm = TRUE)) |>
+        slice(1) |>
+        pull(threshold)
+
+    # Calculate metrics at optimal threshold
+    pred_tuned <- factor(
+        if_else(preds$.pred_yes > best_thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+
+    tibble(
+        predictor = predictor,
+        threshold = best_thresh,
+        roc_auc = roc_auc_vec(preds$drought, preds$.pred_yes),
+        f_meas = f_meas_vec(preds$drought, pred_tuned),
+        precision = precision_vec(preds$drought, pred_tuned),
+        recall = recall_vec(preds$drought, pred_tuned)
+    )
+}
+
+# Run for both windows with tuned thresholds
+df_uni_apr_tuned <- map(get_predictors(df_apr), \(p) fit_univariate_tuned(df_apr, p)) |>
+    list_rbind() |> mutate(window = "April")
+
+df_uni_mar_tuned <- map(get_predictors(df_mar), \(p) fit_univariate_tuned(df_mar, p)) |>
+    list_rbind() |> mutate(window = "March")
+
+df_univariate_tuned <- bind_rows(df_uni_apr_tuned, df_uni_mar_tuned)
+```
+
+```{r}
+#| label: univariate-tuned-table-appendix
+
+df_univariate_tuned |>
+    select(window, predictor, threshold, roc_auc, f_meas, precision, recall) |>
+    arrange(window, desc(f_meas)) |>
+    knitr::kable(
+        digits = 3,
+        caption = "Univariate predictor performance with tuned thresholds",
+        col.names = c("Window", "Predictor", "Threshold", "AUC", "F1", "Precision", "Recall")
+    )
+```
+
+```{r}
+#| label: univariate-heatmap-tuned-appendix
+#| fig-height: 5
+#| fig-width: 8
+
+df_univariate_tuned |>
+    ggplot(aes(x = window, y = reorder(predictor, f_meas), fill = f_meas)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = round(f_meas, 2)), color = "white", fontface = "bold") +
+    scale_fill_gradient(low = "steelblue", high = "darkred", limits = c(0, 0.8)) +
+    labs(
+        title = "Univariate F1 Score (Tuned Thresholds)",
+        x = NULL, y = NULL, fill = "F1"
+    ) +
+    theme(panel.grid = element_blank())
+```
+
+**Key observation**: All optimal thresholds are below 0.5 (range 0.25-0.35), confirming that the default threshold underestimates performance for imbalanced data.
