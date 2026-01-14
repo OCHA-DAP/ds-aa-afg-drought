@@ -1046,7 +1046,7 @@ This approach has several properties:
 **Limitations:**
 
 - **Overfitting risk**: With ~200,000+ weight combinations tested on n=42 years, high probability of finding spuriously good fits
-- **Multiple testing**: No adjustment for the massive number of comparisons
+- **Selection bias**: Choosing the "best" from 200,000+ candidates virtually guarantees selecting a combination that benefited from chance alignment with sample noise
 - **In-sample evaluation**: All optimization done on the full dataset with no holdout
 - **Arbitrary tie-breaker**: Using ASI correlation as tie-breaker introduces a second optimization criterion that may not align with trigger performance
 
