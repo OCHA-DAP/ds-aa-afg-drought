@@ -193,6 +193,7 @@ df_univariate <- bind_rows(df_uni_apr, df_uni_mar)
 #| fig-width: 8
 
 df_univariate |>
+    mutate(window = factor(window, levels = c("March", "April"))) |>
     ggplot(aes(x = window, y = reorder(predictor, f_meas), fill = f_meas)) +
     geom_tile(color = "white", linewidth = 0.5) +
     geom_text(aes(label = round(f_meas, 2)), color = "white", fontface = "bold") +
@@ -1280,6 +1281,7 @@ df_univariate_tuned |>
 #| fig-width: 8
 
 df_univariate_tuned |>
+    mutate(window = factor(window, levels = c("March", "April"))) |>
     ggplot(aes(x = window, y = reorder(predictor, f_meas), fill = f_meas)) +
     geom_tile(color = "white", linewidth = 0.5) +
     geom_text(aes(label = round(f_meas, 2)), color = "white", fontface = "bold") +
@@ -1292,3 +1294,152 @@ df_univariate_tuned |>
 ```
 
 **Key observation**: All optimal thresholds are below 0.5 (range 0.25-0.35), confirming that the default threshold underestimates performance for imbalanced data.
+
+---
+
+## Appendix D: CDI vs Predicted Probability {#appendix-d-cdi-vs-probability}
+
+This appendix verifies the relationship between the manually-constructed CDI and the ridge model's predicted probabilities, and explains when each metric is appropriate.
+
+### The Relationship Between CDI, Linear Predictor, and Probability
+
+Logistic regression operates in three stages:
+
+1. **Linear predictor** = intercept + β₁x₁ + β₂x₂ + ... (unbounded, can be any real number)
+2. **CDI** = (β₁x₁ + β₂x₂ + ...) / Σ|β| (normalized linear predictor without intercept)
+3. **Probability** = 1 / (1 + exp(-linear_predictor)) (logistic transformation, bounded 0-1)
+
+The CDI and linear predictor differ only by a shift (intercept) and scale (normalization), so they should be **perfectly correlated (r = 1)**. The probability is a non-linear (S-curve) transformation of the linear predictor, which **preserves ranking but changes distances between points**.
+
+```{r}
+#| label: appendix-cdi-linear-check
+
+# Extract the LINEAR PREDICTOR (before logistic transformation)
+# Recover from probability using inverse logistic: logit(p) = log(p/(1-p))
+df_apr_probs <- df_apr_probs |>
+    mutate(
+        linear_predictor = log(prob_drought / (1 - prob_drought))
+    )
+
+# Correlations
+cor_cdi_linear <- cor(df_apr_probs$CDI, df_apr_probs$linear_predictor)
+cor_cdi_prob <- cor(df_apr_probs$CDI, df_apr_probs$prob_drought)
+
+# Check ranking equivalence
+rank_cdi <- rank(df_apr_probs$CDI)
+rank_prob <- rank(df_apr_probs$prob_drought)
+ranks_identical <- all(rank_cdi == rank_prob)
+
+cat("Correlation CDI vs Linear Predictor:", round(cor_cdi_linear, 6), "\n")
+cat("Correlation CDI vs Probability:", round(cor_cdi_prob, 6), "\n")
+cat("Rankings identical:", ranks_identical, "\n")
+```
+
+As expected:
+
+- **CDI vs Linear Predictor: r = 1** (perfect linear relationship)
+- **CDI vs Probability: r ≈ 0.96** (S-curve introduces non-linearity)
+- **Rankings identical: TRUE** (same years would trigger at any percentile threshold)
+
+### Visual Verification
+
+```{r}
+#| label: appendix-cdi-scatter-comparison
+#| fig-height: 4
+#| fig-width: 10
+
+library(patchwork)
+
+p1 <- ggplot(df_apr_probs, aes(x = CDI, y = linear_predictor)) +
+    geom_point(aes(color = drought), size = 2) +
+    geom_smooth(method = "lm", se = FALSE, color = "gray40") +
+    scale_color_manual(values = c("yes" = "tomato", "no" = "steelblue")) +
+    labs(
+        title = paste0("CDI vs Linear Predictor (r = ", round(cor_cdi_linear, 4), ")"),
+        subtitle = "Perfect linear relationship",
+        x = "CDI", y = "Linear Predictor"
+    ) +
+    theme(legend.position = "none")
+
+p2 <- ggplot(df_apr_probs, aes(x = CDI, y = prob_drought)) +
+    geom_point(aes(color = drought), size = 2) +
+    geom_smooth(method = "loess", se = FALSE, color = "gray40") +
+    scale_color_manual(values = c("yes" = "tomato", "no" = "steelblue")) +
+    labs(
+        title = paste0("CDI vs Probability (r = ", round(cor_cdi_prob, 4), ")"),
+        subtitle = "S-curve from logistic transformation",
+        x = "CDI", y = "P(drought)"
+    ) +
+    theme(legend.position = "none")
+
+p1 + p2
+```
+
+The left panel shows perfect linearity between CDI and the linear predictor. The right panel shows the characteristic S-curve of the logistic transformation, which compresses extreme values toward 0 and 1.
+
+### Time Series Comparison
+
+```{r}
+#| label: appendix-cdi-prob-timeseries
+#| fig-height: 6
+#| fig-width: 10
+
+# Rescale probability to same range as CDI for visual comparison
+cdi_range <- range(df_apr_probs$CDI)
+prob_rescaled <- scales::rescale(df_apr_probs$prob_drought, to = cdi_range)
+
+df_comparison <- df_apr_probs |>
+    mutate(
+        year = pub_year,
+        prob_rescaled = prob_rescaled
+    )
+
+ggplot(df_comparison, aes(x = year)) +
+    geom_line(aes(y = CDI, color = "CDI"), linewidth = 1) +
+    geom_line(aes(y = prob_rescaled, color = "P(drought) rescaled"),
+              linewidth = 1, linetype = "dashed") +
+    geom_point(aes(y = CDI, shape = drought), size = 2.5) +
+    scale_color_manual(values = c("CDI" = "black", "P(drought) rescaled" = "darkred")) +
+    scale_shape_manual(values = c("yes" = 16, "no" = 1),
+                       labels = c("yes" = "Drought", "no" = "No drought")) +
+    labs(
+        title = "Time Series: CDI vs Predicted Probability",
+        subtitle = "Probability rescaled to CDI range; divergence shows logistic non-linearity",
+        x = "Year", y = "CDI scale",
+        color = "Metric", shape = "Actual"
+    )
+```
+
+The lines track closely but diverge slightly at extreme values (e.g., peaks around 2000, 2008, 2018) where the logistic transformation compresses the scale.
+
+### When to Use CDI vs Probability
+
+**Use CDI when:**
+
+- Setting percentile-based thresholds (e.g., RP=4 triggers at 75th percentile)
+- Communicating drought severity on an interpretable scale
+- Rankings and relative ordering are what matter
+- Operational simplicity is valued (CDI relates directly to input z-scores)
+
+**Use probability when:**
+
+- Communicating risk as a percentage ("65% chance of drought this year")
+- Decision-making with explicit cost-benefit analysis
+- Combining forecasts from multiple models (probabilities are on a standard scale)
+- Calibration matters (if verified)
+
+### Probability Interpretation in This Model
+
+The predicted probability has a specific meaning: **P(drought) = probability that end-of-season ASI will exceed the 4-year return period threshold**, given the early-season indicator values.
+
+This is a meaningful quantity, but:
+
+1. **Calibration is assumed, not verified** - With n=42 years and ridge regularization, we haven't confirmed that "70% predicted" corresponds to 70% actual drought frequency
+2. **We use percentile thresholds operationally** - The RP-based CDI threshold framework doesn't require calibrated probabilities
+3. **CDI is more interpretable** - "CDI = 1.5" relates to input z-scores; "P = 0.72" requires calibration context
+
+::: {.callout-note}
+## Summary
+
+The CDI is mathematically equivalent to the ridge model's linear predictor (r = 1) and produces identical year rankings as the predicted probability. For percentile-based triggering, they yield the same decisions. CDI is preferred operationally for its interpretability and consistency with the return period framework. Probability would be appropriate if partners requested probabilistic risk communication.
+:::

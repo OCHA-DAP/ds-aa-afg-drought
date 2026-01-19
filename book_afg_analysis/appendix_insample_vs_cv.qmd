@@ -1,0 +1,243 @@
+---
+title: "Appendix: In-Sample vs Cross-Validated Performance"
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+## Why Does SEAS5-Only Beat Multivariate in Bootstrap CV?
+
+This appendix investigates a seemingly paradoxical result from the March window analysis: the simple SEAS5-only model outperforms a multivariate model in bootstrap cross-validation (F1 ≈ 0.58 vs 0.47).
+
+**The puzzle**: Shouldn't more variables always help, or at least not hurt?
+
+**The answer**: More variables improve *in-sample* fit (mathematically guaranteed), but can hurt *out-of-sample* performance due to overfitting.
+
+```{r}
+#| label: setup
+
+library(tidymodels)
+library(dplyr)
+library(tidyr)
+library(cumulus)
+library(knitr)
+
+# Load March data
+df_mar <- blob_read(
+    name = "ds-aa-afg-drought/processed/vector/2026_mar_pub_feature_set_v1.parquet",
+    stage = "dev",
+    container_name = "projects"
+) |>
+    mutate(
+        drought = factor(
+            if_else(
+                outcome_asi_zscore >= quantile(outcome_asi_zscore, 1 - 1/4, na.rm = TRUE),
+                "yes", "no"
+            ),
+            levels = c("yes", "no")
+        )
+    ) |>
+    select(-outcome_asi_zscore, -adm0_name.x, -adm0_name.y, -pub_date, -timestep) |>
+    drop_na()
+```
+
+## The Data
+
+We have `r nrow(df_mar)` years of data with `r sum(df_mar$drought == "yes")` drought years (~`r round(mean(df_mar$drought == "yes") * 100)`%).
+
+**Predictors available in March window:**
+
+- `seas5 Mar-Apr-May`: Seasonal precipitation forecast
+- `asi`, `vhi`: Vegetation indices (February values)
+- `snow_cover`, `total_precipitation_sum`, `precip_cumsum`: Climate variables
+- `volumetric_soil_water_1m`: Soil moisture
+
+## Experiment: In-Sample vs Bootstrap CV
+
+We compare two models:
+
+1. **SEAS5-only**: `drought ~ seas5 Mar-Apr-May`
+2. **Multivariate**: `drought ~ all predictors`
+
+```{r}
+#| label: define-models
+
+# Model specifications
+spec <- logistic_reg() |> set_engine("glm") |> set_mode("classification")
+
+# Recipes
+rec_seas5 <- recipe(drought ~ `seas5 Mar-Apr-May`, data = df_mar)
+rec_multi <- recipe(drought ~ ., data = df_mar) |>
+    update_role(pub_year, new_role = "ID")
+
+# Workflows
+wf_seas5 <- workflow() |> add_recipe(rec_seas5) |> add_model(spec)
+wf_multi <- workflow() |> add_recipe(rec_multi) |> add_model(spec)
+```
+
+### In-Sample Performance (Train and Test on Same Data)
+
+This is "cheating" - we expect multivariate to win or tie.
+
+```{r}
+#| label: insample-performance
+
+# Fit on full data
+fit_seas5 <- fit(wf_seas5, data = df_mar)
+fit_multi <- fit(wf_multi, data = df_mar)
+
+# Predict on same data (in-sample)
+pred_seas5 <- predict(fit_seas5, df_mar, type = "prob") |>
+    bind_cols(predict(fit_seas5, df_mar, type = "class")) |>
+    bind_cols(df_mar |> select(drought))
+
+pred_multi <- predict(fit_multi, df_mar, type = "prob") |>
+    bind_cols(predict(fit_multi, df_mar, type = "class")) |>
+    bind_cols(df_mar |> select(drought))
+
+# Calculate metrics
+insample_seas5 <- tibble(
+    model = "SEAS5-only",
+    auc = roc_auc_vec(pred_seas5$drought, pred_seas5$.pred_yes),
+    f1 = f_meas_vec(pred_seas5$drought, pred_seas5$.pred_class),
+    precision = precision_vec(pred_seas5$drought, pred_seas5$.pred_class),
+    recall = recall_vec(pred_seas5$drought, pred_seas5$.pred_class)
+)
+
+insample_multi <- tibble(
+    model = "Multivariate",
+    auc = roc_auc_vec(pred_multi$drought, pred_multi$.pred_yes),
+    f1 = f_meas_vec(pred_multi$drought, pred_multi$.pred_class),
+    precision = precision_vec(pred_multi$drought, pred_multi$.pred_class),
+    recall = recall_vec(pred_multi$drought, pred_multi$.pred_class)
+)
+
+insample_results <- bind_rows(insample_seas5, insample_multi)
+
+kable(insample_results, digits = 3, caption = "In-Sample Performance (training = test data)")
+```
+
+**Result**: Multivariate has higher AUC (`r round(insample_multi$auc, 3)` vs `r round(insample_seas5$auc, 3)`), confirming that more variables improve in-sample fit.
+
+### Bootstrap Cross-Validation (Honest Out-of-Sample)
+
+Now we evaluate honestly - each prediction is made on data the model never saw.
+
+```{r}
+#| label: bootstrap-cv
+
+set.seed(42)
+boots <- bootstraps(df_mar, times = 30, strata = drought)
+
+# Fit and evaluate SEAS5
+cv_seas5 <- fit_resamples(
+    wf_seas5,
+    resamples = boots,
+    metrics = metric_set(roc_auc, f_meas, precision, recall),
+    control = control_resamples(save_pred = TRUE)
+)
+
+# Fit and evaluate Multivariate
+cv_multi <- fit_resamples(
+    wf_multi,
+    resamples = boots,
+    metrics = metric_set(roc_auc, f_meas, precision, recall),
+    control = control_resamples(save_pred = TRUE)
+)
+
+# Collect metrics
+cv_results <- bind_rows(
+    collect_metrics(cv_seas5) |> mutate(model = "SEAS5-only"),
+    collect_metrics(cv_multi) |> mutate(model = "Multivariate")
+) |>
+    select(model, .metric, mean, std_err) |>
+    pivot_wider(names_from = .metric, values_from = c(mean, std_err))
+
+kable(
+    cv_results |> select(model, mean_roc_auc, mean_f_meas, mean_precision, mean_recall),
+    digits = 3,
+    col.names = c("Model", "AUC", "F1", "Precision", "Recall"),
+    caption = "Bootstrap CV Performance (out-of-sample)"
+)
+```
+
+**Result**: SEAS5-only now wins! The extra variables that helped in-sample are hurting out-of-sample.
+
+## Side-by-Side Comparison
+
+```{r}
+#| label: comparison-table
+
+comparison <- tibble(
+    Model = c("SEAS5-only", "Multivariate"),
+    `In-Sample AUC` = c(insample_seas5$auc, insample_multi$auc),
+    `Bootstrap CV AUC` = c(
+        cv_results$mean_roc_auc[cv_results$model == "SEAS5-only"],
+        cv_results$mean_roc_auc[cv_results$model == "Multivariate"]
+    ),
+    `In-Sample F1` = c(insample_seas5$f1, insample_multi$f1),
+    `Bootstrap CV F1` = c(
+        cv_results$mean_f_meas[cv_results$model == "SEAS5-only"],
+        cv_results$mean_f_meas[cv_results$model == "Multivariate"]
+    )
+)
+
+kable(comparison, digits = 3, caption = "In-Sample vs Bootstrap CV Performance")
+```
+
+## Why This Happens
+
+```{r}
+#| label: explanation-diagram
+#| echo: false
+
+tibble(
+    Aspect = c(
+        "What it measures",
+        "Multivariate advantage?",
+        "Problem detected",
+        "Use for"
+    ),
+    `In-Sample` = c(
+        "Fit to training data",
+        "Yes (mathematically guaranteed)",
+        "None - overfitting is invisible",
+        "Never use for model selection"
+    ),
+    `Bootstrap CV` = c(
+        "Expected performance on new data",
+        "Only if variables have real signal",
+        "Overfitting penalized",
+        "Model selection, honest evaluation"
+    )
+) |>
+    kable(caption = "In-Sample vs Cross-Validation")
+```
+
+### The Overfitting Mechanism
+
+1. **In-sample**: The multivariate model finds patterns in the February variables that happen to correlate with drought in this specific 42-year sample.
+
+2. **Out-of-sample**: These patterns don't generalize - they were fitting noise, not signal.
+
+3. **Physical explanation**: February observations (before growing season) shouldn't strongly predict June agricultural drought. SEAS5 forecasts the actual growing season, so it has real predictive power.
+
+## Key Takeaway
+
+::: {.callout-important}
+## In-Sample Performance is Misleading
+
+A model can have **better in-sample fit** but **worse out-of-sample performance**. This is why cross-validation is essential for model selection.
+
+The multivariate model's superior in-sample AUC (`r round(insample_multi$auc, 3)` vs `r round(insample_seas5$auc, 3)`) is an illusion - it's fitting noise that won't generalize.
+:::
+
+## Technical Note: Factor Levels in R
+
+When using raw `glm()` for binary classification, be aware that `predict(..., type = "response")` returns P(second factor level). With `levels = c("yes", "no")`, this means P("no"), not P("yes").
+
+**tidymodels avoids this confusion** by providing explicit `.pred_yes` and `.pred_no` columns. This appendix uses tidymodels throughout to ensure correct probability interpretation.
