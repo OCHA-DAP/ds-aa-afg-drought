@@ -204,6 +204,7 @@ cython_debug/
 *.aux
 *.pdf
 book_afg_analysis/_book/*
+book_afg_analysis/_freeze/*
 **/*_files/
 
 dash_explore/*
@@ -211,3 +212,6 @@ outputs/*
 
 *.ipynb
 .idea/*
+
+.claude/
+artefacts/

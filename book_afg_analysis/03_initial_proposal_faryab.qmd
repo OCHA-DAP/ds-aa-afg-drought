@@ -6,8 +6,6 @@ format:
     toc: true
     toc-depth: 3
     code-fold: true
-    self-contained: true
-    embed-resoures: true
     smooth-scroll: true
 execute:
   include: true
@@ -17,7 +15,6 @@ execute:
   eval: true
   results: "asis"
   out.width: "100%"
-  code-fold: true
 project:
   execute-dir: project
 ---
@@ -46,18 +43,20 @@ box::use(
     .. / R / blob_connect
 )
 
-# Consolidated imports for consistency
 box::use(
-  dplyr[...],
-  ggplot2[...],
-  lubridate[...],
-  purrr[...],
-  tidyr[...],
-  stringr[...],
-  readr[...],
-  gghdx[...],
-  janitor[...],
-  scales[...]
+    dplyr,
+    gg= ggplot2,
+    lubridate,
+    purrr,
+    tidyr,
+    stringr,
+    readr,
+    gghdx,
+    janitor,
+    scales,
+    stats,
+    gghdx,
+    forcats
 )
 
 gghdx$gghdx()

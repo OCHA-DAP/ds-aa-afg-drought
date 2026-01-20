@@ -20,6 +20,9 @@ book:
     - 09_pre_season_allocation_options.qmd
     - summary.qmd
     - references.qmd
+  appendices:
+    - 10_asi_provincial_correlation.qmd
+    - 11_multi_year_drought.qmd
 
 bibliography: references.bib
 
@@ -29,8 +32,17 @@ format:
     number-sections: true
     number-depth: 3
     fig-format: "png" # More efficient than SVG for most plots
-    fig-dpi: 96       # Web-resolution is sufficient
-execute:
-  freeze: false
+    fig-dpi: 96       # Lower DPI for faster rendering
+    self-contained: false # Avoid embedding all resources for faster builds
+    embed-resources: false
+    toc: true          # Enable table of contents for navigation
+    css: custom.css    # Apply the custom CSS globally
+    toc-depth: 3
+    code-fold: true
+    smooth-scroll: true
 
-editor: visual
+execute:
+  freeze: auto        # Freeze execution to avoid re-running code chunks
+  cache: false         # Enable caching for faster re-renders
+
+editor: source

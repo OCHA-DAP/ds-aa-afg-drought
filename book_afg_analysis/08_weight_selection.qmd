@@ -6,8 +6,6 @@ format:
     toc: true
     toc-depth: 3
     code-fold: true
-    self-contained: true
-    embed-resoures: true
     smooth-scroll: true
 execute:
   include: true
@@ -17,8 +15,6 @@ execute:
   eval: true
   results: "asis"
   out.width: "100%"
-  code-fold: true
-editor: visual
 jupyter:
   kernelspec:
     name: "dsci_playground"
@@ -60,10 +56,6 @@ blob_name = "ds-aa-afg-drought/weight_parameter_set/gte1984/historical_weighted_
 df_weights = stratus.load_parquet_from_blob(blob_name)
 ```
 
-```{python}
-1+1
-1+2
-```
 ```{python}
 # | include: false
 
@@ -426,9 +418,6 @@ df_wt_set.set_index("wt_id").loc[11209]
 
 df_plot
 ```
-
-
-
 
 ```{python}
 # We define colors and labels for each parameter to ensure consistent visualization:

@@ -6,11 +6,7 @@ format:
     toc: true
     toc-depth: 3
     code-fold: true
-    self-contained: true
-    embed-resoures: true
     smooth-scroll: true
-    fig-format: "png" # More efficient than SVG for most plots
-    fig-dpi: 96       # Web-resolution is sufficient
 execute:
   include: false
   echo: false
@@ -20,7 +16,7 @@ execute:
   results: "asis"
   out.width: "100%"
   code-fold: true
-editor: visual
+editor: source
 project:
   execute-dir: project
 ---
