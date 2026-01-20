@@ -1,0 +1,1445 @@
+---
+title: "2026 Drought Trigger Modeling"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+execute:
+  warning: false
+  message: false
+project:
+  execute-dir: project
+---
+
+## Introduction
+
+This chapter develops drought trigger models for anticipatory action in Afghanistan's northern provinces. The core question: **Can we predict end-of-season agricultural drought early enough to trigger humanitarian response?**
+
+We evaluate two potential trigger windows:
+
+- **March publication**: Earliest possible trigger, relies heavily on seasonal forecasts
+- **April publication**: One month later, incorporates early growing season observations
+
+The fundamental trade-off: earlier triggers provide more lead time for response but have less observational data and thus lower accuracy.
+
+::: {.callout-important}
+## Key Findings
+
+1. **April window outperforms March** due to growing-season observations
+2. **March trigger**: Use SEAS5 seasonal forecast alone - adding February observations hurts performance (F1=0.58 vs 0.47)
+3. **April trigger**: Use ridge-based CDI with interpretable component weights (LOOCV F1 ~0.82)
+:::
+
+```{r}
+#| label: setup
+
+box::use(
+    dplyr[...],
+    tidyr[...],
+    ggplot2[...],
+    gghdx[...],
+    cumulus[...],
+    purrr[...],
+    glue[glue],
+    tibble[tibble]
+)
+
+library(tidymodels)
+gghdx()
+```
+
+```{r}
+#| label: config
+
+# Return period threshold for defining drought
+RP_THRESHOLD <- 4
+
+# Bootstrap resamples for cross-validation
+N_BOOTSTRAP <- 30
+
+# Random seed
+SEED <- 42
+
+# Feature set paths
+FEATURE_PATHS <- list(
+    march = "ds-aa-afg-drought/processed/vector/2026_mar_pub_feature_set_v1.parquet",
+    april = "ds-aa-afg-drought/processed/vector/2026_april_pub_feature_set_v1.parquet"
+)
+
+# Variables to exclude (use composite instead of individual SEAS5 components)
+APRIL_EXCLUDE_VARS <- c("total_precipitation_sum", "seas5 Apr", "seas5 May")
+MARCH_EXCLUDE_VARS <- c()
+```
+
+## Data Overview
+
+### Outcome Variable
+
+We predict **end-of-season agricultural drought**, defined using the FAO Agricultural Stress Index (ASI) published in June (valid for May - end of growing season). Drought is defined empirically as years where ASI exceeds the `r RP_THRESHOLD`-year return period threshold.
+
+### Predictors by Window
+
+**March publication** (data valid for February):
+
+- ERA5-Land: snow cover, precipitation, soil moisture, cumulative precipitation
+- FAO: ASI, VHI (vegetation health)
+- SEAS5: Mar-Apr-May seasonal precipitation forecast
+
+**April publication** (data valid for March):
+
+- Same ERA5-Land and FAO indicators (one month later)
+- SEAS5: April and May precipitation forecasts
+- `mixed_fcast_obsv`: Composite averaging observed March precip with forecasted Apr/May
+
+All predictors are z-score standardized with sign convention: **positive z-score = drought conditions**.
+
+```{r}
+#| label: load-data
+
+# Load feature sets
+df_mar_raw <- blob_read(name = FEATURE_PATHS$march, container = "projects")
+df_apr_raw <- blob_read(name = FEATURE_PATHS$april, container = "projects")
+
+# Prepare modeling data with empirical RP thresholding
+prepare_model_data <- function(df, rp_threshold = RP_THRESHOLD) {
+    df |>
+        filter(!is.na(outcome_asi_zscore)) |>
+        arrange(desc(outcome_asi_zscore)) |>
+        mutate(
+            rank = row_number(),
+            q_rank = rank / (n() + 1),
+            rp_emp = 1 / q_rank,
+            drought = factor(
+                if_else(rp_emp >= rp_threshold, "yes", "no"),
+                levels = c("yes", "no")
+            )
+        ) |>
+        select(-outcome_asi_zscore, -rank, -q_rank, -rp_emp,
+               -starts_with("adm0_name"), -pub_date, -timestep)
+}
+
+df_mar <- prepare_model_data(df_mar_raw)
+df_apr <- prepare_model_data(df_apr_raw)
+```
+
+### Sample Characteristics
+
+**Sample**: `r nrow(df_apr)` years (1984-2025) with `r sum(df_apr$drought == "yes")` drought events (`r round(mean(df_apr$drought == "yes") * 100, 1)`%) at the `r RP_THRESHOLD`-year return period threshold.
+
+```{r}
+#| label: class-balance
+
+bind_rows(
+    df_mar |> count(drought) |> mutate(window = "March"),
+    df_apr |> count(drought) |> mutate(window = "April")
+) |>
+    pivot_wider(names_from = drought, values_from = n) |>
+    mutate(pct_drought = round(yes / (no + yes) * 100, 1)) |>
+    knitr::kable(caption = "Class balance by trigger window")
+```
+
+## Window Comparison: Why April Outperforms March
+
+Before diving into model details, we establish a key finding: **April indicators consistently outperform March indicators** across all predictors.
+
+```{r}
+#| label: univariate-functions
+
+# Get predictor names
+get_predictors <- function(data) {
+    data |> select(-drought, -pub_year) |> colnames()
+}
+
+# Fit single-predictor logistic regression
+fit_univariate <- function(data, predictor, n_boots = N_BOOTSTRAP, seed = SEED) {
+    form <- as.formula(paste("drought ~", paste0("`", predictor, "`")))
+
+    spec <- logistic_reg() |> set_engine("glm") |> set_mode("classification")
+    wf <- workflow() |> add_recipe(recipe(form, data = data)) |> add_model(spec)
+
+    set.seed(seed)
+    boots <- bootstraps(data, times = n_boots, strata = drought)
+    results <- fit_resamples(wf, resamples = boots,
+                             control = control_resamples(save_pred = TRUE))
+    preds <- collect_predictions(results)
+
+    tibble(
+        predictor = predictor,
+        roc_auc = yardstick::roc_auc_vec(preds$drought, preds$.pred_yes),
+        f_meas = yardstick::f_meas_vec(preds$drought, preds$.pred_class),
+        precision = yardstick::precision_vec(preds$drought, preds$.pred_class),
+        recall = yardstick::recall_vec(preds$drought, preds$.pred_class)
+    )
+}
+```
+
+```{r}
+#| label: univariate-analysis
+
+# Run for both windows
+df_uni_apr <- map(get_predictors(df_apr), \(p) fit_univariate(df_apr, p)) |>
+    list_rbind() |> mutate(window = "April")
+
+df_uni_mar <- map(get_predictors(df_mar), \(p) fit_univariate(df_mar, p)) |>
+    list_rbind() |> mutate(window = "March")
+
+df_univariate <- bind_rows(df_uni_apr, df_uni_mar)
+```
+
+```{r}
+#| label: univariate-heatmap
+#| fig-height: 5
+#| fig-width: 8
+
+df_univariate |>
+    mutate(window = factor(window, levels = c("March", "April"))) |>
+    ggplot(aes(x = window, y = reorder(predictor, f_meas), fill = f_meas)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = round(f_meas, 2)), color = "white", fontface = "bold") +
+    scale_fill_gradient(low = "steelblue", high = "darkred", limits = c(0, 0.7)) +
+    labs(
+        title = "Univariate F1 Score by Predictor and Window",
+        subtitle = "April consistently outperforms March across all indicators",
+        x = NULL, y = NULL, fill = "F1"
+    ) +
+    theme(panel.grid = element_blank())
+```
+
+::: {.callout-tip}
+## Key Finding: April Outperforms March
+
+Every predictor shows higher univariate F1 score in the April window compared to March. This is expected: by April, we have observations from the early growing season (March) rather than pre-season data (February).
+
+*Note: These are screening metrics (bootstrap CV, default threshold) - see LOOCV section for honest multivariate performance estimates.*
+:::
+
+```{r}
+#| label: univariate-table
+
+df_univariate |>
+    select(window, predictor, roc_auc, f_meas, precision, recall) |>
+    arrange(window, desc(f_meas)) |>
+    knitr::kable(
+        digits = 3,
+        caption = "Univariate predictor performance (bootstrap CV, default P > 0.5 threshold)",
+        col.names = c("Window", "Predictor", "AUC", "F1", "Precision", "Recall")
+    )
+```
+
+**Note**: Uses default P > 0.5 classification threshold. See [Appendix C](#appendix-c-tuned-threshold-univariate-analysis) for tuned threshold analysis.
+
+## March Window: Forecast-Only Trigger
+
+### Physical Reasoning
+
+For the March trigger window, predictor data is valid for **February** - before the growing season begins. Physically, we would expect:
+
+- **SEAS5 forecast**: Should be predictive (directly forecasts growing season precipitation)
+- **February observations** (ASI, VHI, soil moisture, snow): Less clear connection to end-of-season drought
+
+We use **Lasso regression** to empirically test which variables are truly predictive. Lasso shrinks irrelevant coefficients to exactly zero, performing automatic feature selection.
+
+### Lasso Feature Selection
+
+```{r}
+#| label: march-lasso
+
+# Lasso specification (mixture = 1 for pure L1 penalty)
+lasso_spec <- logistic_reg(penalty = tune(), mixture = 1) |>
+    set_engine("glmnet") |>
+    set_mode("classification")
+
+# Recipe for March data
+lasso_recipe_mar <- recipe(drought ~ ., data = df_mar) |>
+    step_rm(pub_year) |>
+    step_zv(all_predictors())
+
+lasso_wf_mar <- workflow() |>
+    add_recipe(lasso_recipe_mar) |>
+    add_model(lasso_spec)
+
+# Tune penalty with bootstrap CV
+set.seed(SEED)
+lasso_boots <- bootstraps(df_mar, times = N_BOOTSTRAP, strata = drought)
+lasso_grid <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+lasso_tune_mar <- tune_grid(
+    lasso_wf_mar,
+    resamples = lasso_boots,
+    grid = lasso_grid,
+    metrics = metric_set(roc_auc, f_meas),
+    control = control_grid(save_pred = TRUE)
+)
+
+# Select best penalty
+best_lasso_penalty <- select_best(lasso_tune_mar, metric = "f_meas")
+
+# Fit final model
+final_lasso_mar <- lasso_wf_mar |>
+    finalize_workflow(best_lasso_penalty) |>
+    fit(data = df_mar)
+
+# Extract coefficients
+lasso_coefs_mar <- final_lasso_mar |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)") |>
+    arrange(desc(abs(estimate)))
+```
+
+```{r}
+#| label: march-lasso-coefs
+
+lasso_coefs_mar |>
+    mutate(
+        selected = if_else(estimate != 0, "Yes", "No"),
+        estimate = round(estimate, 4)
+    ) |>
+    select(term, estimate, selected) |>
+    knitr::kable(
+        caption = "March window: Lasso coefficients (non-zero = selected)",
+        col.names = c("Predictor", "Coefficient", "Selected")
+    )
+```
+
+**Result**: SEAS5 Mar-Apr-May has the largest coefficient magnitude. Notably, **ASI was dropped** (coefficient = 0), suggesting February agricultural stress has no unique predictive value for June drought.
+
+See [Appendix A](#appendix-a-march-technical-details) for the full correlation matrix and discussion of suppressor effects.
+
+### Model Comparison: SEAS5 vs Multivariate
+
+We compare three approaches:
+
+1. **SEAS5 only**: Simple univariate model using just the seasonal forecast
+2. **Lasso**: Multivariate with automatic feature selection (all variables, L1 penalty)
+3. **Ridge on lasso-selected**: Two-stage approach - lasso for selection, ridge for stable coefficients
+
+```{r}
+#| label: march-seas5-univariate
+
+# Univariate SEAS5 model
+seas5_spec <- logistic_reg() |>
+    set_engine("glm") |>
+    set_mode("classification")
+
+seas5_recipe <- recipe(drought ~ `seas5 Mar-Apr-May`, data = df_mar)
+
+seas5_wf <- workflow() |>
+    add_recipe(seas5_recipe) |>
+    add_model(seas5_spec)
+
+set.seed(SEED)
+seas5_boots <- bootstraps(df_mar, times = N_BOOTSTRAP, strata = drought)
+
+seas5_results <- fit_resamples(
+    seas5_wf,
+    resamples = seas5_boots,
+    control = control_resamples(save_pred = TRUE)
+)
+
+seas5_preds <- collect_predictions(seas5_results)
+
+# Tune threshold
+seas5_thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+    pred_class <- factor(
+        if_else(seas5_preds$.pred_yes > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    tibble(
+        threshold = thresh,
+        f1 = f_meas_vec(seas5_preds$drought, pred_class),
+        precision = precision_vec(seas5_preds$drought, pred_class),
+        recall = recall_vec(seas5_preds$drought, pred_class)
+    )
+})
+
+best_seas5_thresh <- seas5_thresh_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1)
+```
+
+```{r}
+#| label: march-lasso-ridge
+
+# Variables selected by lasso, excluding problematic ones
+LASSO_SELECTED_VARS <- c("seas5 Mar-Apr-May", "vhi", "snow_cover",
+                          "volumetric_soil_water_1m", "precip_cumsum")
+
+# Ridge on lasso-selected variables
+ridge_spec_mar <- logistic_reg(penalty = tune(), mixture = 0) |>
+    set_engine("glmnet") |>
+    set_mode("classification")
+
+ridge_recipe_mar <- recipe(drought ~ ., data = df_mar) |>
+    step_rm(pub_year) |>
+    step_select(all_of(c("drought", LASSO_SELECTED_VARS))) |>
+    step_zv(all_predictors())
+
+ridge_wf_mar <- workflow() |>
+    add_recipe(ridge_recipe_mar) |>
+    add_model(ridge_spec_mar)
+
+set.seed(SEED)
+ridge_boots_mar <- bootstraps(df_mar, times = N_BOOTSTRAP, strata = drought)
+penalty_grid_mar <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+ridge_tune_mar <- tune_grid(
+    ridge_wf_mar,
+    resamples = ridge_boots_mar,
+    grid = penalty_grid_mar,
+    metrics = metric_set(roc_auc, f_meas, precision, recall),
+    control = control_grid(save_pred = TRUE)
+)
+
+best_penalty_mar <- select_best(ridge_tune_mar, metric = "f_meas")
+
+# Get metrics for comparison
+ridge_mar_preds <- collect_predictions(ridge_tune_mar, parameters = best_penalty_mar)
+
+ridge_mar_thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+    pred_class <- factor(
+        if_else(ridge_mar_preds$.pred_yes > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    tibble(
+        threshold = thresh,
+        f1 = f_meas_vec(ridge_mar_preds$drought, pred_class),
+        precision = precision_vec(ridge_mar_preds$drought, pred_class),
+        recall = recall_vec(ridge_mar_preds$drought, pred_class)
+    )
+})
+
+best_ridge_mar_thresh <- ridge_mar_thresh_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1)
+
+# Get lasso predictions for comparison
+lasso_mar_preds <- collect_predictions(lasso_tune_mar, parameters = best_lasso_penalty)
+
+lasso_mar_thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+    pred_class <- factor(
+        if_else(lasso_mar_preds$.pred_yes > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    tibble(
+        threshold = thresh,
+        f1 = f_meas_vec(lasso_mar_preds$drought, pred_class),
+        precision = precision_vec(lasso_mar_preds$drought, pred_class),
+        recall = recall_vec(lasso_mar_preds$drought, pred_class)
+    )
+})
+
+best_lasso_mar_thresh <- lasso_mar_thresh_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1)
+```
+
+```{r}
+#| label: march-model-comparison
+
+tibble(
+    Model = c("SEAS5 only", "Lasso (all variables)", "Ridge (lasso-selected)"),
+    Threshold = c(best_seas5_thresh$threshold, best_lasso_mar_thresh$threshold, best_ridge_mar_thresh$threshold),
+    F1 = c(best_seas5_thresh$f1, best_lasso_mar_thresh$f1, best_ridge_mar_thresh$f1),
+    Precision = c(best_seas5_thresh$precision, best_lasso_mar_thresh$precision, best_ridge_mar_thresh$precision),
+    Recall = c(best_seas5_thresh$recall, best_lasso_mar_thresh$recall, best_ridge_mar_thresh$recall)
+) |>
+    knitr::kable(
+        digits = 3,
+        caption = "March window model comparison (bootstrap CV, tuned thresholds)"
+    )
+```
+
+::: {.callout-important}
+## March Window Recommendation
+
+**Use SEAS5 seasonal forecast alone.** The univariate SEAS5 model (F1=0.58) outperforms the multivariate model (F1=0.47).
+
+Adding February observational data does not improve prediction - it adds noise rather than signal. This makes physical sense: pre-growing season observations have limited connection to end-of-season agricultural outcomes.
+:::
+
+## April Window: Combined Drought Index (CDI)
+
+### Available Data
+
+By April publication, we have observations from **March** - the early growing season. This includes:
+
+- **March precipitation**: Critical for crop establishment
+- **March soil moisture**: Reflects accumulated water availability
+- **March VHI/ASI**: Early vegetation stress indicators
+- **April/May forecasts**: Remaining season precipitation outlook
+
+The `mixed_fcast_obsv` composite (averaging observed March precip with forecasted Apr/May) performs best univariately.
+
+### Model Building: Ridge Regression
+
+We use **ridge regression** rather than standard logistic regression because:
+
+1. Small sample size (n=42) with correlated predictors causes coefficient instability
+2. Ridge regularization shrinks coefficients toward zero, reducing variance
+3. Produces physically sensible weights (see [Appendix B](#appendix-b-ridge-vs-glm-comparison) for GLM issues)
+
+```{r}
+#| label: model-functions
+
+fit_classification_model <- function(data, model_spec, exclude_vars = c("pub_year"),
+                                      n_boots = N_BOOTSTRAP, seed = SEED) {
+    recipe <- recipe(drought ~ ., data = data) |>
+        step_rm(all_of(exclude_vars)) |>
+        step_zv(all_predictors())
+
+    workflow <- workflow() |> add_recipe(recipe) |> add_model(model_spec)
+
+    set.seed(seed)
+    boots <- bootstraps(data, times = n_boots, strata = drought)
+    results <- fit_resamples(workflow, resamples = boots,
+                             control = control_resamples(save_pred = TRUE))
+    preds <- collect_predictions(results)
+
+    metrics <- tibble(
+        .metric = c("accuracy", "roc_auc", "f_meas", "precision", "recall"),
+        mean = c(
+            yardstick::accuracy_vec(preds$drought, preds$.pred_class),
+            yardstick::roc_auc_vec(preds$drought, preds$.pred_yes),
+            yardstick::f_meas_vec(preds$drought, preds$.pred_class),
+            yardstick::precision_vec(preds$drought, preds$.pred_class),
+            yardstick::recall_vec(preds$drought, preds$.pred_class)
+        )
+    )
+
+    list(
+        metrics = metrics,
+        predictions = preds,
+        final_fit = fit(workflow, data = data)
+    )
+}
+
+get_logreg_coefs <- function(model_result) {
+    model_result$final_fit |>
+        extract_fit_parsnip() |>
+        broom::tidy() |>
+        filter(term != "(Intercept)") |>
+        arrange(desc(abs(estimate)))
+}
+```
+
+```{r}
+#| label: april-ridge
+
+# Ridge specification with penalty tuning
+ridge_spec <- logistic_reg(penalty = tune(), mixture = 0) |>
+    set_engine("glmnet") |>
+    set_mode("classification")
+
+# Recipe (data is already z-scored)
+ridge_recipe <- recipe(drought ~ ., data = df_apr) |>
+    step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS, "precip_cumsum"))) |>
+    step_zv(all_predictors())
+
+ridge_wf <- workflow() |>
+    add_recipe(ridge_recipe) |>
+    add_model(ridge_spec)
+
+# Bootstrap resampling with penalty tuning
+set.seed(SEED)
+ridge_boots <- bootstraps(df_apr, times = N_BOOTSTRAP, strata = drought)
+penalty_grid <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+ridge_tune <- tune_grid(
+    ridge_wf,
+    resamples = ridge_boots,
+    grid = penalty_grid,
+    metrics = metric_set(roc_auc, f_meas, precision, recall),
+    control = control_grid(save_pred = TRUE)
+)
+
+# Select best penalty and finalize
+best_penalty <- select_best(ridge_tune, metric = "f_meas")
+final_ridge_wf <- ridge_wf |> finalize_workflow(best_penalty)
+final_ridge_fit <- fit(final_ridge_wf, data = df_apr)
+
+# Extract coefficients
+coefs_ridge <- final_ridge_fit |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)")
+
+# CDI weights: negate because parsnip/glmnet convention
+cdi_weights <- coefs_ridge |>
+    mutate(
+        weight = -estimate / sum(abs(estimate)),
+        contribution_pct = abs(weight) * 100
+    ) |>
+    arrange(desc(contribution_pct)) |>
+    select(term, estimate, weight, contribution_pct)
+```
+
+### CDI Construction
+
+The **Combined Drought Index (CDI)** is a weighted sum of standardized indicators, with weights derived from ridge regression coefficients:
+
+```{r}
+#| label: cdi-weights-table
+
+cdi_weights |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Indicator", "Ridge Coef", "CDI Weight", "Contribution %"),
+        caption = "CDI weights derived from ridge regression"
+    )
+```
+
+```{r}
+#| label: cdi-formula
+#| results: asis
+
+formula_parts <- cdi_weights |>
+    arrange(desc(weight)) |>
+    mutate(
+        part = paste0(
+            if_else(row_number() == 1, "", " + "),
+            round(weight, 3), " × ", term
+        )
+    ) |>
+    pull(part)
+
+cat("**CDI Formula:**\n\n$$\\text{CDI} = ", paste(formula_parts, collapse = ""), "$$\n")
+```
+
+**Interpretation**: Higher CDI values indicate higher drought risk. The weights reflect each indicator's predictive contribution - VHI and the mixed forecast/observation composite contribute most.
+
+```{r}
+#| label: apply-cdi
+
+calc_cdi <- function(data, weights_df) {
+    cdi <- rep(0, nrow(data))
+    for (i in seq_len(nrow(weights_df))) {
+        feat <- weights_df$term[i]
+        w <- weights_df$weight[i]
+        if (feat %in% colnames(data)) {
+            cdi <- cdi + w * data[[feat]]
+        }
+    }
+    cdi
+}
+
+df_apr_cdi <- df_apr |>
+    mutate(
+        CDI = calc_cdi(df_apr, cdi_weights),
+        year = pub_year
+    )
+
+# CDI threshold at RP percentile
+cdi_threshold <- quantile(df_apr_cdi$CDI, 1 - 1 / RP_THRESHOLD)
+
+df_apr_cdi <- df_apr_cdi |>
+    mutate(trigger = factor(if_else(CDI >= cdi_threshold, "yes", "no"),
+                            levels = c("yes", "no")))
+```
+
+## Threshold Selection
+
+### The Problem
+
+Our model outputs continuous values (CDI or predicted probabilities). We need a **threshold** to convert these to yes/no trigger decisions. Three approaches:
+
+1. **Default P > 0.5**: Standard classification threshold
+2. **F1-optimized threshold**: Threshold that maximizes F1 score
+3. **RP-based CDI threshold**: Threshold at the `r RP_THRESHOLD`-year return period percentile
+
+```{r}
+#| label: threshold-analysis
+
+# Get predicted probabilities
+df_apr_probs <- df_apr_cdi |>
+    mutate(
+        prob_drought = predict(final_ridge_fit, df_apr, type = "prob")$.pred_yes,
+        trigger_default = factor(
+            if_else(prob_drought > 0.5, "yes", "no"),
+            levels = c("yes", "no")
+        )
+    )
+
+# Tune threshold for F1
+thresholds <- seq(0.1, 0.9, by = 0.05)
+
+threshold_results <- map_dfr(thresholds, function(thresh) {
+    pred <- factor(
+        if_else(df_apr_probs$prob_drought > thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+
+    tibble(
+        threshold = thresh,
+        precision = precision_vec(df_apr_probs$drought, pred),
+        recall = recall_vec(df_apr_probs$drought, pred),
+        f1 = f_meas_vec(df_apr_probs$drought, pred),
+        n_triggered = sum(pred == "yes")
+    )
+})
+
+best_prob_threshold <- threshold_results |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1) |>
+    pull(threshold)
+
+df_apr_compare <- df_apr_probs |>
+    mutate(
+        trigger_tuned = factor(
+            if_else(prob_drought > best_prob_threshold, "yes", "no"),
+            levels = c("yes", "no")
+        )
+    )
+```
+
+```{r}
+#| label: threshold-tuning-plot
+#| fig-height: 5
+#| fig-width: 8
+
+threshold_results |>
+    pivot_longer(cols = c(precision, recall, f1),
+                 names_to = "metric", values_to = "value") |>
+    ggplot(aes(x = threshold, y = value, color = metric)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    geom_vline(xintercept = best_prob_threshold, linetype = "dashed") +
+    geom_vline(xintercept = 0.5, linetype = "dotted", color = "gray") +
+    annotate("text", x = best_prob_threshold + 0.03, y = 0.3,
+             label = paste0("F1-optimal: ", best_prob_threshold), hjust = 0) +
+    scale_color_manual(values = c("precision" = "steelblue", "recall" = "tomato", "f1" = "darkgreen")) +
+    labs(
+        title = "Probability Threshold Tuning",
+        subtitle = "Dashed = F1-optimal | Dotted = default 0.5",
+        x = "Probability Threshold", y = "Metric Value", color = "Metric"
+    )
+```
+
+### Three-Way Comparison
+
+```{r}
+#| label: approach-comparison
+
+calc_trigger_metrics <- function(pred, actual) {
+    pred_f <- factor(pred, levels = c("yes", "no"))
+    tibble(
+        precision = precision_vec(actual, pred_f),
+        recall = recall_vec(actual, pred_f),
+        f1 = f_meas_vec(actual, pred_f),
+        n_triggered = sum(pred_f == "yes")
+    )
+}
+
+comparison_table <- bind_rows(
+    calc_trigger_metrics(df_apr_compare$trigger_default, df_apr_compare$drought) |>
+        mutate(approach = "P > 0.5 (default)", threshold = "0.50"),
+    calc_trigger_metrics(df_apr_compare$trigger_tuned, df_apr_compare$drought) |>
+        mutate(approach = "P > tuned", threshold = as.character(best_prob_threshold)),
+    calc_trigger_metrics(df_apr_compare$trigger, df_apr_compare$drought) |>
+        mutate(approach = "CDI (RP-based)", threshold = paste0(round(cdi_threshold, 2), " (75th %ile)"))
+) |>
+    select(approach, threshold, precision, recall, f1, n_triggered)
+
+comparison_table |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Approach", "Threshold", "Precision", "Recall", "F1", "N Triggered"),
+        caption = "Comparison of trigger approaches - April window (in-sample)"
+    )
+```
+
+**Ranking equivalence**: Since CDI is derived from the same model, probability and CDI rankings are identical (correlation = `r round(cor(rank(-df_apr_compare$prob_drought), rank(-df_apr_compare$CDI)), 4)`).
+
+::: {.callout-note}
+## Threshold Convergence
+
+The **F1-optimized threshold** (P > `r best_prob_threshold`) triggers `r sum(df_apr_compare$trigger_tuned == "yes")` of `r nrow(df_apr_compare)` years (`r round(sum(df_apr_compare$trigger_tuned == "yes") / nrow(df_apr_compare) * 100, 0)`%), corresponding to roughly the **`r round((1 - sum(df_apr_compare$trigger_tuned == "yes") / nrow(df_apr_compare)) * 100, 0)`th percentile**.
+
+This closely matches the RP=`r RP_THRESHOLD` policy threshold (75th percentile, ~25% trigger rate). The statistically optimal threshold aligns with the operationally desired trigger frequency - a fortunate convergence that won't always occur.
+:::
+
+## Model Validation (LOOCV)
+
+In-sample metrics are overly optimistic. For honest performance estimates, we use **Leave-One-Out Cross-Validation (LOOCV)**: for each year, we fit the model on all other years and predict the held-out year.
+
+Critically, we **re-derive CDI weights and thresholds** for each fold - this ensures truly out-of-sample evaluation.
+
+```{r}
+#| label: loocv-ridge
+
+# LOOCV for ridge-based CDI
+loocv_ridge_results <- map_dfr(1:nrow(df_apr), function(i) {
+    train <- df_apr[-i, ]
+    test <- df_apr[i, ]
+
+    ridge_recipe_loo <- recipe(drought ~ ., data = train) |>
+        step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS, "precip_cumsum"))) |>
+        step_zv(all_predictors())
+
+    ridge_spec_loo <- logistic_reg(penalty = best_penalty$penalty, mixture = 0) |>
+        set_engine("glmnet") |>
+        set_mode("classification")
+
+    ridge_wf_loo <- workflow() |>
+        add_recipe(ridge_recipe_loo) |>
+        add_model(ridge_spec_loo)
+
+    fit_result <- fit(ridge_wf_loo, data = train)
+
+    coefs <- fit_result |>
+        extract_fit_parsnip() |>
+        tidy() |>
+        filter(term != "(Intercept)")
+
+    weights <- coefs |>
+        mutate(weight = -estimate / sum(abs(estimate)))
+
+    # Calculate CDI for training data to get threshold
+    train_cdi <- rep(0, nrow(train))
+    for (j in seq_len(nrow(weights))) {
+        feat <- weights$term[j]
+        w <- weights$weight[j]
+        if (feat %in% colnames(train)) {
+            train_cdi <- train_cdi + w * train[[feat]]
+        }
+    }
+    threshold <- quantile(train_cdi, 1 - 1 / RP_THRESHOLD)
+
+    # Calculate CDI for test observation
+    test_cdi <- 0
+    for (j in seq_len(nrow(weights))) {
+        feat <- weights$term[j]
+        w <- weights$weight[j]
+        if (feat %in% colnames(test)) {
+            test_cdi <- test_cdi + w * test[[feat]]
+        }
+    }
+
+    tibble(
+        year = test$pub_year,
+        actual = as.character(test$drought),
+        cdi = test_cdi,
+        threshold = threshold,
+        predicted = if_else(test_cdi >= threshold, "yes", "no")
+    )
+})
+
+# Calculate Ridge LOOCV metrics
+loocv_ridge_conf <- table(
+    Predicted = factor(loocv_ridge_results$predicted, levels = c("yes", "no")),
+    Actual = factor(loocv_ridge_results$actual, levels = c("yes", "no"))
+)
+
+tp_ridge_loo <- loocv_ridge_conf["yes", "yes"]
+fp_ridge_loo <- loocv_ridge_conf["yes", "no"]
+fn_ridge_loo <- loocv_ridge_conf["no", "yes"]
+tn_ridge_loo <- loocv_ridge_conf["no", "no"]
+```
+
+```{r}
+#| label: loocv-results
+
+# In-sample metrics for comparison
+conf_mat <- table(Trigger = df_apr_cdi$trigger, Actual = df_apr_cdi$drought)
+tp <- conf_mat["yes", "yes"]
+fp <- conf_mat["yes", "no"]
+fn <- conf_mat["no", "yes"]
+tn <- conf_mat["no", "no"]
+
+tibble(
+    Metric = c("Precision", "Recall", "F1 Score", "Years Triggered"),
+    `In-Sample` = c(
+        round(tp / (tp + fp), 3),
+        round(tp / (tp + fn), 3),
+        round(2 * tp / (2 * tp + fp + fn), 3),
+        tp + fp
+    ),
+    `LOOCV` = c(
+        round(tp_ridge_loo / (tp_ridge_loo + fp_ridge_loo), 3),
+        round(tp_ridge_loo / (tp_ridge_loo + fn_ridge_loo), 3),
+        round(2 * tp_ridge_loo / (2 * tp_ridge_loo + fp_ridge_loo + fn_ridge_loo), 3),
+        tp_ridge_loo + fp_ridge_loo
+    )
+) |>
+    knitr::kable(caption = "In-sample vs LOOCV performance (Ridge)")
+```
+
+```{r}
+#| label: loocv-confusion
+
+loocv_ridge_conf |>
+    as.data.frame.matrix() |>
+    knitr::kable(caption = "LOOCV confusion matrix (Ridge)")
+```
+
+**LOOCV results are the honest performance estimates** - these are the numbers to report for expected trigger performance.
+
+## Visualization & Interpretation
+
+### CDI Time Series
+
+```{r}
+#| label: cdi-timeseries
+#| fig-height: 6
+#| fig-width: 10
+
+ggplot(df_apr_cdi, aes(x = year, y = CDI)) +
+    geom_line(linewidth = 1) +
+    geom_point(aes(color = drought), size = 3) +
+    geom_hline(yintercept = cdi_threshold, linetype = "dashed",
+               color = "red", linewidth = 1) +
+    scale_color_manual(
+        values = c("yes" = "tomato", "no" = "steelblue"),
+        labels = c("yes" = "Drought", "no" = "No Drought")
+    ) +
+    annotate("text", x = min(df_apr_cdi$year) + 3, y = cdi_threshold + 0.1,
+             label = paste0(RP_THRESHOLD, "-yr RP Threshold"),
+             hjust = 0, color = "red") +
+    labs(
+        title = "Combined Drought Index (CDI) Time Series",
+        subtitle = "April trigger window | Points colored by actual outcome",
+        x = "Year", y = "CDI Value", color = "Actual"
+    )
+```
+
+### Component Contributions
+
+```{r}
+#| label: cdi-components
+#| fig-height: 7
+#| fig-width: 10
+
+weight_labels <- cdi_weights |>
+    mutate(label = paste0(term, " (", round(weight * 100, 0), "%)")) |>
+    select(term, label)
+
+df_components <- df_apr_cdi |>
+    select(year, drought, all_of(cdi_weights$term), CDI) |>
+    pivot_longer(cols = all_of(cdi_weights$term),
+                 names_to = "component", values_to = "zscore") |>
+    left_join(weight_labels, by = c("component" = "term"))
+
+ggplot() +
+    geom_line(data = df_components,
+              aes(x = year, y = zscore, color = label),
+              alpha = 0.6, linewidth = 0.7) +
+    geom_line(data = df_apr_cdi, aes(x = year, y = CDI),
+              color = "black", linewidth = 1.5) +
+    geom_hline(yintercept = cdi_threshold, linetype = "dashed", color = "red") +
+    geom_point(data = df_apr_cdi |> filter(drought == "yes"),
+               aes(x = year, y = CDI), color = "red", size = 3) +
+    scale_color_brewer(palette = "Set2") +
+    labs(
+        title = "CDI Components and Weighted Index",
+        subtitle = "Black = CDI | Red dots = drought years | Colored = components",
+        x = "Year", y = "Z-score / CDI", color = "Component"
+    ) +
+    theme(legend.position = "bottom") +
+    guides(color = guide_legend(nrow = 2))
+```
+
+### Year-by-Year Trigger Decisions
+
+```{r}
+#| label: trigger-table
+
+library(gt)
+
+df_apr_compare |>
+    select(year, drought, prob_drought, CDI, trigger_default, trigger_tuned, trigger) |>
+    arrange(desc(prob_drought)) |>
+    rename(
+        Year = year,
+        Actual = drought,
+        `P(drought)` = prob_drought,
+        `P>0.5` = trigger_default,
+        `P>tuned` = trigger_tuned,
+        `CDI trig` = trigger
+    ) |>
+    gt() |>
+    tab_header(
+        title = "Trigger Comparison: April Window (All Years)",
+        subtitle = "Sorted by predicted drought probability"
+    ) |>
+    fmt_number(columns = c(`P(drought)`, CDI), decimals = 3) |>
+    tab_style(
+        style = cell_fill(color = "tomato", alpha = 0.4),
+        locations = cells_body(columns = Actual, rows = Actual == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `P>0.5`, rows = `P>0.5` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `P>tuned`, rows = `P>tuned` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `CDI trig`, rows = `CDI trig` == "yes")
+    ) |>
+    tab_spanner(
+        label = "Trigger Decision",
+        columns = c(`P>0.5`, `P>tuned`, `CDI trig`)
+    ) |>
+    tab_footnote(
+        footnote = "Red = actual drought | Blue = triggered",
+        locations = cells_column_spanners()
+    )
+```
+
+## Summary & Recommendations
+
+::: {.callout-important}
+## Recommendations for 2026 Trigger
+
+**March Window** (if earlier trigger needed):
+
+- Use **SEAS5 seasonal forecast only**
+- Simpler and performs better than multivariate (F1=0.58 vs 0.47)
+- February observations add noise, not signal
+
+**April Window** (recommended):
+
+- Use **ridge-based CDI** with `r RP_THRESHOLD`-year return period threshold
+- Interpretable component weights: VHI (`r round(cdi_weights$contribution_pct[cdi_weights$term == "vhi"], 0)`%), mixed_fcast_obsv (`r round(cdi_weights$contribution_pct[cdi_weights$term == "mixed_fcast_obsv"], 0)`%), snow_cover (`r round(cdi_weights$contribution_pct[cdi_weights$term == "snow_cover"], 0)`%), asi (`r round(cdi_weights$contribution_pct[cdi_weights$term == "asi"], 0)`%)
+
+**Expected Performance** (LOOCV estimates):
+
+- Precision: `r round(tp_ridge_loo / (tp_ridge_loo + fp_ridge_loo) * 100, 0)`%
+- Recall: `r round(tp_ridge_loo / (tp_ridge_loo + fn_ridge_loo) * 100, 0)`%
+- F1: `r round(2 * tp_ridge_loo / (2 * tp_ridge_loo + fp_ridge_loo + fn_ridge_loo), 2)`
+:::
+
+```{r}
+#| label: summary-weights
+#| results: asis
+
+cat("**CDI Weights:**\n\n")
+cdi_weights |>
+    mutate(text = paste0("- **", term, "**: ", round(weight * 100, 1), "%")) |>
+    pull(text) |>
+    cat(sep = "\n")
+```
+
+## Methodological Note: Ridge Regression vs Grid Search {#methodology-comparison}
+
+This year's approach differs from the 2025 analysis. This section documents the methodological choices and their trade-offs.
+
+### Last Year's Approach: Exhaustive Grid Search
+
+The 2025 analysis used a grid search approach:
+
+1. **Weight grid**: Created all combinations of weights from 0-1 by 0.05 increments for each indicator
+2. **CDI construction**: Computed weighted average of z-scores for each weight combination
+3. **Selection**: Filtered to weight combinations achieving the best F1 score
+4. **Tie-breaking**: When hundreds of combinations tied at the best F1, selected the CDI with highest correlation to end-of-season ASI (continuous, not thresholded)
+
+This approach has several properties:
+
+**Strengths:**
+
+- Intuitive and transparent
+- Explores the full weight space
+- Weights directly interpretable as proportions
+
+**Limitations:**
+
+- **Overfitting risk**: With ~200,000+ weight combinations tested on n=42 years, high probability of finding spuriously good fits
+- **Selection bias**: Choosing the "best" from 200,000+ candidates virtually guarantees selecting a combination that benefited from chance alignment with sample noise
+- **In-sample evaluation**: All optimization done on the full dataset with no holdout
+- **Arbitrary tie-breaker**: Using ASI correlation as tie-breaker introduces a second optimization criterion that may not align with trigger performance
+
+### This Year's Approach: Regularized Regression with LOOCV
+
+The 2026 analysis uses ridge regression:
+
+1. **Model fitting**: Ridge regression (L2 penalty) learns weights from predictor-outcome relationships
+2. **Regularization**: Penalty term shrinks coefficients toward zero, trading bias for variance reduction
+3. **Tuning**: Penalty strength selected via bootstrap cross-validation
+4. **Validation**: Final performance estimated via leave-one-out cross-validation (LOOCV)
+
+**Strengths:**
+
+- **Honest out-of-sample estimates**: LOOCV provides unbiased performance estimates
+- **Regularization controls overfitting**: Penalty term prevents fitting to noise
+- **Principled variable weighting**: Weights emerge from data relationships, not exhaustive search
+- **Feature selection via lasso**: L1 penalty identifies truly predictive variables before ridge fitting
+
+**Limitations:**
+
+- Weights emerge from model fitting rather than explicit analyst choices (though easily normalized to proportions)
+- Requires familiarity with regularization concepts
+
+### Comparison Caveats
+
+Direct F1 comparison between the two approaches is not straightforward:
+
+- **2025**: Modeled at **province level** (separate CDI per province), with some provinces achieving F1 ~0.8
+- **2026**: Models the **merged 5-province area** as a single unit (area-weighted mean of indicators)
+
+These are different prediction problems. The merged approach trades spatial granularity for a more stable signal and simpler operational trigger (one threshold for the entire region rather than five).
+
+### Key Differences in Interpretation
+
+The critical difference is **confidence in the estimates**:
+
+| Aspect | Grid Search (2025) | Ridge + LOOCV (2026) |
+|--------|-------------------|---------------------|
+| Performance estimate | Likely optimistic (in-sample) | Honest (out-of-sample) |
+| Degrees of freedom | ~200,000 combinations tested | ~10 hyperparameters |
+| Overfitting risk | High | Low (regularized) |
+| Generalization | Uncertain | More reliable |
+
+::: {.callout-note}
+## Bottom Line
+
+The 2025 grid search likely found real signal, but performance estimates are optimistically biased due to in-sample optimization. The 2026 ridge approach provides more defensible estimates of true out-of-sample performance through LOOCV validation and regularization. The methodological differences (province-level vs merged area) mean direct F1 comparison is not meaningful.
+:::
+
+---
+
+## Appendix A: March Technical Details {#appendix-a-march-technical-details}
+
+### Predictor Correlation Matrix
+
+```{r}
+#| label: march-correlation-appendix
+#| fig-height: 6
+#| fig-width: 7
+
+mar_predictors <- df_mar |> select(-drought, -pub_year)
+
+cor_mat_mar <- cor(mar_predictors, use = "complete.obs")
+
+cor_mat_mar |>
+    as.data.frame() |>
+    rownames_to_column("var1") |>
+    pivot_longer(-var1, names_to = "var2", values_to = "cor") |>
+    ggplot(aes(x = var1, y = var2, fill = cor)) +
+    geom_tile() +
+    geom_text(aes(label = round(cor, 2)), size = 3) +
+    scale_fill_gradient2(low = "steelblue", mid = "white", high = "darkred",
+                         midpoint = 0, limits = c(-1, 1)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "March Predictor Correlations", x = NULL, y = NULL)
+```
+
+### Suppressor Effect
+
+The correlation between `total_precipitation_sum` and `precip_cumsum` is `r round(cor(mar_predictors$total_precipitation_sum, mar_predictors$precip_cumsum), 3)` (they overlap by construction). When both are included in a model, their coefficients become unstable and can have counterintuitive signs. This is called a **suppressor effect**.
+
+### Lasso Tuning Plot
+
+```{r}
+#| label: march-lasso-plot-appendix
+#| fig-height: 4
+#| fig-width: 8
+
+autoplot(lasso_tune_mar) +
+    labs(
+        title = "March Window: Lasso Penalty Tuning",
+        subtitle = paste0("Best penalty: ", round(best_lasso_penalty$penalty, 4))
+    )
+```
+
+---
+
+## Appendix B: Ridge vs GLM Comparison {#appendix-b-ridge-vs-glm-comparison}
+
+### GLM Coefficient Instability
+
+Standard logistic regression with small samples (n=42) and correlated predictors produces unstable coefficients:
+
+```{r}
+#| label: glm-model-appendix
+
+logreg_spec <- logistic_reg() |> set_engine("glm") |> set_mode("classification")
+
+apr_model <- fit_classification_model(
+    df_apr,
+    logreg_spec,
+    exclude_vars = c("pub_year", APRIL_EXCLUDE_VARS, "precip_cumsum")
+)
+
+coefs_glm <- get_logreg_coefs(apr_model)
+
+cdi_weights_glm <- coefs_glm |>
+    mutate(
+        weight = -estimate / sum(abs(estimate)),
+        contribution_pct = abs(weight) * 100
+    ) |>
+    select(term, estimate, weight, contribution_pct)
+
+cdi_weights_glm |>
+    mutate(sign_ok = if_else(weight > 0, "correct", "FLIPPED")) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Feature", "Raw Coef", "Weight", "Contrib %", "Sign"),
+        caption = "Standard logistic regression - note coefficient sign issues"
+    )
+```
+
+**Problem**: Some coefficients have counterintuitive signs due to multicollinearity. Ridge regression resolves this by shrinking correlated coefficients toward each other.
+
+### Coefficient Sign Convention
+
+With parsnip/glmnet and `levels = c("yes", "no")`, the model predicts P(yes) as the first level. However, glmnet internally encodes this such that negative coefficients indicate higher probability of the first level. We negate coefficients when creating CDI weights to maintain the convention: **higher CDI = more drought**.
+
+### Ridge Tuning Plot
+
+```{r}
+#| label: ridge-tuning-plot-appendix
+#| fig-height: 5
+#| fig-width: 8
+
+autoplot(ridge_tune) +
+    labs(
+        title = "Ridge Penalty Tuning Results",
+        subtitle = paste0("Best penalty: ", round(best_penalty$penalty, 4))
+    )
+```
+
+---
+
+## Appendix C: Tuned Threshold Univariate Analysis {#appendix-c-tuned-threshold-univariate-analysis}
+
+The main univariate analysis uses default P > 0.5 threshold for fair comparison. Here we show performance with thresholds tuned per predictor to maximize F1.
+
+```{r}
+#| label: univariate-tuned-appendix
+
+fit_univariate_tuned <- function(data, predictor, n_boots = N_BOOTSTRAP, seed = SEED) {
+    form <- as.formula(paste("drought ~", paste0("`", predictor, "`")))
+
+    spec <- logistic_reg() |> set_engine("glm") |> set_mode("classification")
+    wf <- workflow() |> add_recipe(recipe(form, data = data)) |> add_model(spec)
+
+    set.seed(seed)
+    boots <- bootstraps(data, times = n_boots, strata = drought)
+    results <- fit_resamples(wf, resamples = boots,
+                             control = control_resamples(save_pred = TRUE))
+    preds <- collect_predictions(results)
+
+    thresh_results <- map_dfr(seq(0.1, 0.9, by = 0.05), function(thresh) {
+        pred_class <- factor(
+            if_else(preds$.pred_yes > thresh, "yes", "no"),
+            levels = c("yes", "no")
+        )
+        tibble(
+            threshold = thresh,
+            f1 = f_meas_vec(preds$drought, pred_class)
+        )
+    })
+
+    best_thresh <- thresh_results |>
+        filter(f1 == max(f1, na.rm = TRUE)) |>
+        slice(1) |>
+        pull(threshold)
+
+    pred_tuned <- factor(
+        if_else(preds$.pred_yes > best_thresh, "yes", "no"),
+        levels = c("yes", "no")
+    )
+
+    tibble(
+        predictor = predictor,
+        threshold = best_thresh,
+        roc_auc = roc_auc_vec(preds$drought, preds$.pred_yes),
+        f_meas = f_meas_vec(preds$drought, pred_tuned),
+        precision = precision_vec(preds$drought, pred_tuned),
+        recall = recall_vec(preds$drought, pred_tuned)
+    )
+}
+
+df_uni_apr_tuned <- map(get_predictors(df_apr), \(p) fit_univariate_tuned(df_apr, p)) |>
+    list_rbind() |> mutate(window = "April")
+
+df_uni_mar_tuned <- map(get_predictors(df_mar), \(p) fit_univariate_tuned(df_mar, p)) |>
+    list_rbind() |> mutate(window = "March")
+
+df_univariate_tuned <- bind_rows(df_uni_apr_tuned, df_uni_mar_tuned)
+```
+
+```{r}
+#| label: univariate-tuned-table-appendix
+
+df_univariate_tuned |>
+    select(window, predictor, threshold, roc_auc, f_meas, precision, recall) |>
+    arrange(window, desc(f_meas)) |>
+    knitr::kable(
+        digits = 3,
+        caption = "Univariate predictor performance with tuned thresholds",
+        col.names = c("Window", "Predictor", "Threshold", "AUC", "F1", "Precision", "Recall")
+    )
+```
+
+```{r}
+#| label: univariate-heatmap-tuned-appendix
+#| fig-height: 5
+#| fig-width: 8
+
+df_univariate_tuned |>
+    mutate(window = factor(window, levels = c("March", "April"))) |>
+    ggplot(aes(x = window, y = reorder(predictor, f_meas), fill = f_meas)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = round(f_meas, 2)), color = "white", fontface = "bold") +
+    scale_fill_gradient(low = "steelblue", high = "darkred", limits = c(0, 0.8)) +
+    labs(
+        title = "Univariate F1 Score (Tuned Thresholds)",
+        x = NULL, y = NULL, fill = "F1"
+    ) +
+    theme(panel.grid = element_blank())
+```
+
+**Key observation**: All optimal thresholds are below 0.5 (range 0.25-0.35), confirming that the default threshold underestimates performance for imbalanced data.
+
+---
+
+## Appendix D: CDI vs Predicted Probability {#appendix-d-cdi-vs-probability}
+
+This appendix verifies the relationship between the manually-constructed CDI and the ridge model's predicted probabilities, and explains when each metric is appropriate.
+
+### The Relationship Between CDI, Linear Predictor, and Probability
+
+Logistic regression operates in three stages:
+
+1. **Linear predictor** = intercept + β₁x₁ + β₂x₂ + ... (unbounded, can be any real number)
+2. **CDI** = (β₁x₁ + β₂x₂ + ...) / Σ|β| (normalized linear predictor without intercept)
+3. **Probability** = 1 / (1 + exp(-linear_predictor)) (logistic transformation, bounded 0-1)
+
+The CDI and linear predictor differ only by a shift (intercept) and scale (normalization), so they should be **perfectly correlated (r = 1)**. The probability is a non-linear (S-curve) transformation of the linear predictor, which **preserves ranking but changes distances between points**.
+
+```{r}
+#| label: appendix-cdi-linear-check
+
+# Extract the LINEAR PREDICTOR (before logistic transformation)
+# Recover from probability using inverse logistic: logit(p) = log(p/(1-p))
+df_apr_probs <- df_apr_probs |>
+    mutate(
+        linear_predictor = log(prob_drought / (1 - prob_drought))
+    )
+
+# Correlations
+cor_cdi_linear <- cor(df_apr_probs$CDI, df_apr_probs$linear_predictor)
+cor_cdi_prob <- cor(df_apr_probs$CDI, df_apr_probs$prob_drought)
+
+# Check ranking equivalence
+rank_cdi <- rank(df_apr_probs$CDI)
+rank_prob <- rank(df_apr_probs$prob_drought)
+ranks_identical <- all(rank_cdi == rank_prob)
+
+cat("Correlation CDI vs Linear Predictor:", round(cor_cdi_linear, 6), "\n")
+cat("Correlation CDI vs Probability:", round(cor_cdi_prob, 6), "\n")
+cat("Rankings identical:", ranks_identical, "\n")
+```
+
+As expected:
+
+- **CDI vs Linear Predictor: r = 1** (perfect linear relationship)
+- **CDI vs Probability: r ≈ 0.96** (S-curve introduces non-linearity)
+- **Rankings identical: TRUE** (same years would trigger at any percentile threshold)
+
+### Visual Verification
+
+```{r}
+#| label: appendix-cdi-scatter-comparison
+#| fig-height: 4
+#| fig-width: 10
+
+library(patchwork)
+
+p1 <- ggplot(df_apr_probs, aes(x = CDI, y = linear_predictor)) +
+    geom_point(aes(color = drought), size = 2) +
+    geom_smooth(method = "lm", se = FALSE, color = "gray40") +
+    scale_color_manual(values = c("yes" = "tomato", "no" = "steelblue")) +
+    labs(
+        title = paste0("CDI vs Linear Predictor (r = ", round(cor_cdi_linear, 4), ")"),
+        subtitle = "Perfect linear relationship",
+        x = "CDI", y = "Linear Predictor"
+    ) +
+    theme(legend.position = "none")
+
+p2 <- ggplot(df_apr_probs, aes(x = CDI, y = prob_drought)) +
+    geom_point(aes(color = drought), size = 2) +
+    geom_smooth(method = "loess", se = FALSE, color = "gray40") +
+    scale_color_manual(values = c("yes" = "tomato", "no" = "steelblue")) +
+    labs(
+        title = paste0("CDI vs Probability (r = ", round(cor_cdi_prob, 4), ")"),
+        subtitle = "S-curve from logistic transformation",
+        x = "CDI", y = "P(drought)"
+    ) +
+    theme(legend.position = "none")
+
+p1 + p2
+```
+
+The left panel shows perfect linearity between CDI and the linear predictor. The right panel shows the characteristic S-curve of the logistic transformation, which compresses extreme values toward 0 and 1.
+
+### Time Series Comparison
+
+```{r}
+#| label: appendix-cdi-prob-timeseries
+#| fig-height: 6
+#| fig-width: 10
+
+# Rescale probability to same range as CDI for visual comparison
+cdi_range <- range(df_apr_probs$CDI)
+prob_rescaled <- scales::rescale(df_apr_probs$prob_drought, to = cdi_range)
+
+df_comparison <- df_apr_probs |>
+    mutate(
+        year = pub_year,
+        prob_rescaled = prob_rescaled
+    )
+
+ggplot(df_comparison, aes(x = year)) +
+    geom_line(aes(y = CDI, color = "CDI"), linewidth = 1) +
+    geom_line(aes(y = prob_rescaled, color = "P(drought) rescaled"),
+              linewidth = 1, linetype = "dashed") +
+    geom_point(aes(y = CDI, shape = drought), size = 2.5) +
+    scale_color_manual(values = c("CDI" = "black", "P(drought) rescaled" = "darkred")) +
+    scale_shape_manual(values = c("yes" = 16, "no" = 1),
+                       labels = c("yes" = "Drought", "no" = "No drought")) +
+    labs(
+        title = "Time Series: CDI vs Predicted Probability",
+        subtitle = "Probability rescaled to CDI range; divergence shows logistic non-linearity",
+        x = "Year", y = "CDI scale",
+        color = "Metric", shape = "Actual"
+    )
+```
+
+The lines track closely but diverge slightly at extreme values (e.g., peaks around 2000, 2008, 2018) where the logistic transformation compresses the scale.
+
+### When to Use CDI vs Probability
+
+**Use CDI when:**
+
+- Setting percentile-based thresholds (e.g., RP=4 triggers at 75th percentile)
+- Communicating drought severity on an interpretable scale
+- Rankings and relative ordering are what matter
+- Operational simplicity is valued (CDI relates directly to input z-scores)
+
+**Use probability when:**
+
+- Communicating risk as a percentage ("65% chance of drought this year")
+- Decision-making with explicit cost-benefit analysis
+- Combining forecasts from multiple models (probabilities are on a standard scale)
+- Calibration matters (if verified)
+
+### Probability Interpretation in This Model
+
+The predicted probability has a specific meaning: **P(drought) = probability that end-of-season ASI will exceed the 4-year return period threshold**, given the early-season indicator values.
+
+This is a meaningful quantity, but:
+
+1. **Calibration is assumed, not verified** - With n=42 years and ridge regularization, we haven't confirmed that "70% predicted" corresponds to 70% actual drought frequency
+2. **We use percentile thresholds operationally** - The RP-based CDI threshold framework doesn't require calibrated probabilities
+3. **CDI is more interpretable** - "CDI = 1.5" relates to input z-scores; "P = 0.72" requires calibration context
+
+::: {.callout-note}
+## Summary
+
+The CDI is mathematically equivalent to the ridge model's linear predictor (r = 1) and produces identical year rankings as the predicted probability. For percentile-based triggering, they yield the same decisions. CDI is preferred operationally for its interpretability and consistency with the return period framework. Probability would be appropriate if partners requested probabilistic risk communication.
+:::
