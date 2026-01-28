@@ -982,7 +982,7 @@ df_apr_compare |>
         `P(drought)` = prob_drought,
         `P>0.5` = trigger_default,
         `P>tuned` = trigger_tuned,
-        `CDI trig` = trigger
+        `CDI tuned` = trigger
     ) |>
     gt() |>
     tab_header(
@@ -1004,11 +1004,11 @@ df_apr_compare |>
     ) |>
     tab_style(
         style = cell_fill(color = "steelblue", alpha = 0.4),
-        locations = cells_body(columns = `CDI trig`, rows = `CDI trig` == "yes")
+        locations = cells_body(columns = `CDI tuned`, rows = `CDI tuned` == "yes")
     ) |>
     tab_spanner(
         label = "Trigger Decision",
-        columns = c(`P>0.5`, `P>tuned`, `CDI trig`)
+        columns = c(`P>0.5`, `P>tuned`, `CDI tuned`)
     ) |>
     tab_footnote(
         footnote = "Red = actual drought | Blue = triggered",

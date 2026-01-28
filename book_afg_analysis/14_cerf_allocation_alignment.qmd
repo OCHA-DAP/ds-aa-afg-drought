@@ -31,7 +31,8 @@ box::use(
     glue[glue],
     tibble[tibble],
     janitor[clean_names],
-    lubridate[year, as_date]
+    lubridate[year, as_date],
+    .. / R / utils[rp_empirical]
 )
 
 library(tidymodels)
@@ -127,6 +128,18 @@ cdi_weights <- coefs_ridge |>
     ) |>
     arrange(desc(contribution_pct)) |>
     select(term, estimate, weight, contribution_pct)
+
+# F1-optimized probability threshold → CDI threshold (same derivation as ch12)
+prob_drought <- predict(final_ridge_fit, df_apr, type = "prob")$.pred_yes
+
+thresholds <- seq(0.1, 0.9, by = 0.05)
+best_prob_threshold <- map_dfr(thresholds, function(thresh) {
+    pred <- factor(if_else(prob_drought > thresh, "yes", "no"), levels = c("yes", "no"))
+    tibble(threshold = thresh, f1 = yardstick::f_meas_vec(df_apr$drought, pred))
+}) |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1) |>
+    pull(threshold)
 ```
 
 ```{r}
@@ -161,22 +174,20 @@ calc_cdi <- function(data, weights_df) {
     cdi
 }
 
-rp_empirical <- function(x) {
-    r <- rank(-x, ties.method = "average")
-    q <- r / (length(x) + 1)
-    1 / q
-}
-
 df_historical <- tibble(
     year = df_apr$pub_year,
     drought_actual = df_apr$drought,
     cdi = calc_cdi(df_apr, cdi_weights),
+    prob_drought = prob_drought,
     seas5_mam = df_mar$`seas5 Mar-Apr-May`
 ) |>
     mutate(
-        cdi_rp = rp_empirical(cdi),
-        seas5_rp = rp_empirical(seas5_mam)
+        cdi_rp = rp_empirical(cdi, direction = "-1"),
+        seas5_rp = rp_empirical(seas5_mam, direction = "-1")
     )
+
+# CDI threshold from F1-optimized probability (consistent with ch12)
+cdi_threshold <- min(df_historical$cdi[df_historical$prob_drought > best_prob_threshold])
 
 # Join with CERF data — restrict to CERF coverage period (2006–2024)
 df_cerf_analysis <- df_historical |>
@@ -356,17 +367,17 @@ df_f1_by_rp |>
 
 df_cerf_analysis |>
     mutate(
-        cdi_rp4 = if_else(cdi_rp >= 4, "yes", "no"),
+        cdi_trig = if_else(cdi >= cdi_threshold, "yes", "no"),
         seas5_rp4 = if_else(seas5_rp >= 4, "yes", "no"),
-        combined = if_else(cdi_rp >= 4 | seas5_rp >= 4, "yes", "no")
+        combined = if_else(cdi >= cdi_threshold | seas5_rp >= 4, "yes", "no")
     ) |>
-    select(year, cerf, drought_actual, cdi_rp4, seas5_rp4, combined) |>
+    select(year, cerf, drought_actual, cdi_trig, seas5_rp4, combined) |>
     arrange(desc(year)) |>
     rename(
         Year = year,
         CERF = cerf,
         `ASI Drought` = drought_actual,
-        `CDI RP4` = cdi_rp4,
+        CDI = cdi_trig,
         `SEAS5 RP4` = seas5_rp4,
         `Combined` = combined
     ) |>
@@ -385,7 +396,7 @@ df_cerf_analysis |>
     ) |>
     tab_style(
         style = cell_fill(color = "steelblue", alpha = 0.4),
-        locations = cells_body(columns = `CDI RP4`, rows = `CDI RP4` == "yes")
+        locations = cells_body(columns = CDI, rows = CDI == "yes")
     ) |>
     tab_style(
         style = cell_fill(color = "steelblue", alpha = 0.4),
@@ -395,7 +406,7 @@ df_cerf_analysis |>
         style = cell_fill(color = "steelblue", alpha = 0.4),
         locations = cells_body(columns = Combined, rows = Combined == "yes")
     ) |>
-    tab_spanner(label = "Trigger (RP4)", columns = c(`CDI RP4`, `SEAS5 RP4`, `Combined`)) |>
+    tab_spanner(label = "Trigger", columns = c(CDI, `SEAS5 RP4`, `Combined`)) |>
     tab_footnote(
         footnote = "Red = CERF allocation | Gold = ASI drought | Blue = trigger fires",
         locations = cells_column_spanners()

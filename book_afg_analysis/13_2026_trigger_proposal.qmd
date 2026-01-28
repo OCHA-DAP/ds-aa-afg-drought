@@ -34,7 +34,8 @@ box::use(
     cumulus[...],
     purrr[...],
     glue[glue],
-    tibble[tibble]
+    tibble[tibble],
+    .. / R / utils[rp_empirical]
 )
 
 library(tidymodels)
@@ -141,6 +142,18 @@ cdi_weights <- coefs_ridge |>
     ) |>
     arrange(desc(contribution_pct)) |>
     select(term, estimate, weight, contribution_pct)
+
+# F1-optimized probability threshold → CDI threshold (same derivation as ch12)
+prob_drought <- predict(final_ridge_fit, df_apr, type = "prob")$.pred_yes
+
+thresholds <- seq(0.1, 0.9, by = 0.05)
+best_prob_threshold <- map_dfr(thresholds, function(thresh) {
+    pred <- factor(if_else(prob_drought > thresh, "yes", "no"), levels = c("yes", "no"))
+    tibble(threshold = thresh, f1 = yardstick::f_meas_vec(df_apr$drought, pred))
+}) |>
+    filter(f1 == max(f1, na.rm = TRUE)) |>
+    slice(1) |>
+    pull(threshold)
 ```
 
 ```{r}
@@ -159,24 +172,23 @@ calc_cdi <- function(data, weights_df) {
     cdi
 }
 
-# Empirical RP function (higher value = worse drought = higher RP)
-rp_empirical <- function(x) {
-    r <- rank(-x, ties.method = "average")
-    q <- r / (length(x) + 1)
-    1 / q
-}
-
 # Build historical record with both signals
 df_historical <- tibble(
     year = df_apr$pub_year,
     drought_actual = df_apr$drought,
     cdi = calc_cdi(df_apr, cdi_weights),
+    prob_drought = prob_drought,
     seas5_mam = df_mar$`seas5 Mar-Apr-May`
 ) |>
     mutate(
-        cdi_rp = rp_empirical(cdi),
-        seas5_rp = rp_empirical(seas5_mam)
+        cdi_rp = rp_empirical(cdi, direction = "-1"),
+        seas5_rp = rp_empirical(seas5_mam, direction = "-1")
     )
+
+# CDI threshold from F1-optimized probability (consistent with ch12)
+cdi_threshold <- min(df_historical$cdi[df_historical$prob_drought > best_prob_threshold])
+n_trigger_tuned <- sum(df_historical$prob_drought > best_prob_threshold)
+rp_f1_equivalent <- round((nrow(df_historical) + 1) / n_trigger_tuned, 2)
 ```
 
 ## Combined RP Heatmap
@@ -258,7 +270,7 @@ The table below shows three candidate trigger configurations applied to all `r n
 
 - **SEAS5 RP4**: SEAS5 March forecast exceeds 4-year RP threshold
 - **SEAS5 RP5**: SEAS5 March forecast exceeds 5-year RP threshold
-- **CDI RP4**: April CDI exceeds 4-year RP threshold
+- **CDI**: April CDI exceeds F1-optimized threshold (≈RP `r rp_f1_equivalent`)
 
 ```{r}
 #| label: trigger-table
@@ -267,9 +279,9 @@ df_trigger <- df_historical |>
     mutate(
         seas5_rp4 = if_else(seas5_rp >= 4, "yes", "no"),
         seas5_rp5 = if_else(seas5_rp >= 5, "yes", "no"),
-        cdi_rp4 = if_else(cdi_rp >= 4, "yes", "no")
+        cdi_trig = if_else(cdi >= cdi_threshold, "yes", "no")
     ) |>
-    select(year, drought_actual, seas5_rp4, seas5_rp5, cdi_rp4) |>
+    select(year, drought_actual, seas5_rp4, seas5_rp5, cdi_trig) |>
     arrange(desc(year))
 
 df_trigger |>
@@ -278,7 +290,7 @@ df_trigger |>
         Actual = drought_actual,
         `SEAS5 RP4` = seas5_rp4,
         `SEAS5 RP5` = seas5_rp5,
-        `CDI RP4` = cdi_rp4
+        CDI = cdi_trig
     ) |>
     gt() |>
     tab_header(
@@ -299,11 +311,11 @@ df_trigger |>
     ) |>
     tab_style(
         style = cell_fill(color = "steelblue", alpha = 0.4),
-        locations = cells_body(columns = `CDI RP4`, rows = `CDI RP4` == "yes")
+        locations = cells_body(columns = CDI, rows = CDI == "yes")
     ) |>
     tab_spanner(
         label = "Trigger Decision",
-        columns = c(`SEAS5 RP4`, `SEAS5 RP5`, `CDI RP4`)
+        columns = c(`SEAS5 RP4`, `SEAS5 RP5`, CDI)
     ) |>
     tab_footnote(
         footnote = "Red = actual drought year | Blue = trigger fires",
@@ -313,7 +325,7 @@ df_trigger |>
 
 ## SEAS5 Early Warning Value
 
-Adding SEAS5 to the combined trigger does **not** rescue any drought years that CDI misses — every drought caught by SEAS5 is already caught by CDI RP4. The two missed droughts (2007 and 2025) are missed by both signals. From a pure detection standpoint, SEAS5 adds only false positives.
+Adding SEAS5 to the combined trigger does **not** rescue any drought years that CDI misses — every drought caught by SEAS5 is already caught by CDI. From a pure detection standpoint, SEAS5 adds only false positives.
 
 However, SEAS5 still has value as an **early warning signal**. Because the March forecast is available one month before the April CDI, a SEAS5 trigger gives agencies an earlier window to act. The question becomes: at what SEAS5 threshold do we get the most early warnings with the fewest false early alerts?
 
@@ -322,7 +334,7 @@ However, SEAS5 still has value as an **early warning signal**. Because the March
 
 df_early <- df_historical |>
     mutate(
-        cdi_fires = cdi_rp >= RP_THRESHOLD,
+        cdi_fires = cdi >= cdi_threshold,
         seas5_fires_rp = floor(seas5_rp)
     ) |>
     filter(drought_actual == "yes") |>
@@ -339,7 +351,7 @@ df_early <- df_historical |>
 df_early |>
     rename(
         Year = year,
-        `CDI RP4` = cdi_fires_label,
+        CDI = cdi_fires_label,
         `SEAS5 RP` = seas5_rp,
         `SEAS5 fires at` = seas5_earliest
     ) |>
@@ -351,7 +363,7 @@ df_early |>
     fmt_number(columns = `SEAS5 RP`, decimals = 1) |>
     tab_style(
         style = cell_fill(color = "steelblue", alpha = 0.4),
-        locations = cells_body(columns = `CDI RP4`, rows = `CDI RP4` == "yes")
+        locations = cells_body(columns = CDI, rows = CDI == "yes")
     )
 ```
 
