@@ -157,6 +157,23 @@ best_prob_threshold <- map_dfr(thresholds, function(thresh) {
 ```
 
 ```{r}
+#| label: cdi-formula
+#| results: asis
+
+formula_parts <- cdi_weights |>
+    arrange(desc(weight)) |>
+    mutate(
+        part = paste0(
+            if_else(row_number() == 1, "", " + "),
+            round(weight, 3), " × ", term
+        )
+    ) |>
+    pull(part)
+
+cat("**CDI Formula:**\n\n$$\\text{CDI} = ", paste(formula_parts, collapse = ""), "$$\n")
+```
+
+```{r}
 #| label: compute-historical
 
 # CDI calculation helper
