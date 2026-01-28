@@ -433,7 +433,8 @@ p_heat <- df_asymmetric |>
     labs(x = "CDI RP Threshold", y = "SEAS5 RP Threshold") +
     theme(
         panel.grid = element_blank(),
-        legend.position = "none"
+        legend.position = "none",
+        plot.margin = margin(0, 0, 5, 5)
     )
 
 # Top marginal bar (CDI)
@@ -442,11 +443,15 @@ p_top <- df_cdi_marginal |>
     geom_col(fill = hdx_hex("sapphire-hdx"), width = 0.7) +
     geom_text(aes(label = round(f1, 2)), vjust = -0.3, size = 3) +
     scale_y_continuous(limits = c(0, max(df_cdi_marginal$f1) * 1.15), expand = c(0, 0)) +
-    labs(x = NULL, y = "F1", title = "CDI alone") +
+    labs(x = NULL, y = NULL, title = "CDI alone") +
     theme(
         axis.text.x = element_blank(),
         axis.ticks.x = element_blank(),
-        panel.grid = element_blank()
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        plot.margin = margin(0, 0, -10, 0)
     )
 
 # Right marginal bar (SEAS5)
@@ -455,11 +460,15 @@ p_right <- df_seas5_marginal |>
     geom_col(fill = hdx_hex("tomato-hdx"), width = 0.7) +
     geom_text(aes(label = round(f1, 2)), hjust = -0.2, size = 3) +
     scale_x_continuous(limits = c(0, max(df_seas5_marginal$f1) * 1.15), expand = c(0, 0)) +
-    labs(x = "F1", y = NULL, title = "SEAS5 alone") +
+    labs(x = NULL, y = NULL, title = "SEAS5 alone") +
     theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
         axis.text.y = element_blank(),
         axis.ticks.y = element_blank(),
-        panel.grid = element_blank()
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        plot.margin = margin(0, 0, 0, -10)
     )
 
 # Empty corner
@@ -477,10 +486,80 @@ p_empty <- ggplot() + theme_void()
     )
 ```
 
+### Zoomed View: RP 3–5 Range
+
+The overview heatmap uses integer RP thresholds. The zoomed view below uses 0.1 increments to show exactly where our F1-tuned threshold (~RP 3.9) sits within the optimal range.
+
+```{r}
+#| label: zoomed-heatmap
+#| fig-height: 6
+#| fig-width: 7
+
+# Fine-grained RP breaks for zoom
+rp_fine <- seq(3, 5, by = 0.2)
+
+# Compute our tuned threshold's equivalent RP
+n_trigger_tuned <- sum(df_historical$prob_drought > best_prob_threshold)
+tuned_rp <- round((nrow(df_historical) + 1) / n_trigger_tuned, 1)
+
+df_zoom <- expand_grid(
+    cdi_rp_thresh = rp_fine,
+    seas5_rp_thresh = rp_fine
+) |>
+    pmap_dfr(function(cdi_rp_thresh, seas5_rp_thresh) {
+        combined_flag <- factor(
+            if_else(
+                df_cerf_analysis$cdi_rp >= cdi_rp_thresh |
+                df_cerf_analysis$seas5_rp >= seas5_rp_thresh,
+                "yes", "no"
+            ),
+            levels = c("yes", "no")
+        )
+        f1 <- yardstick::f_meas_vec(df_cerf_analysis$cerf, combined_flag)
+        tibble(
+            cdi_rp_thresh = cdi_rp_thresh,
+            seas5_rp_thresh = seas5_rp_thresh,
+            f1 = if_else(is.na(f1), 0, f1)
+        )
+    })
+
+# Find position of our tuned threshold (snap to nearest grid point)
+tuned_cdi_snap <- rp_fine[which.min(abs(rp_fine - tuned_rp))]
+
+df_zoom |>
+    ggplot(aes(x = factor(cdi_rp_thresh), y = factor(seas5_rp_thresh), fill = f1)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    geom_text(aes(label = round(f1, 2)), size = 2.5) +
+    # Highlight our tuned threshold
+    annotate("rect",
+             xmin = which(rp_fine == tuned_cdi_snap) - 0.5,
+             xmax = which(rp_fine == tuned_cdi_snap) + 0.5,
+             ymin = which(rp_fine == 4) - 0.5,
+             ymax = which(rp_fine == 4) + 0.5,
+             fill = NA, color = "black", linewidth = 1.5) +
+    scale_fill_gradient2(
+        low = "white", mid = "khaki", high = hdx_hex("mint-hdx"),
+        midpoint = 0.4,
+        limits = c(0, max(df_zoom$f1)),
+        name = "F1"
+    ) +
+    labs(
+        title = "Zoomed: Combined Trigger F1 (RP 3–5 range)",
+        subtitle = glue("Black border = proposed threshold (CDI ≈ RP {tuned_rp}, SEAS5 RP 4)"),
+        x = "CDI RP Threshold",
+        y = "SEAS5 RP Threshold"
+    ) +
+    theme(
+        panel.grid = element_blank(),
+        axis.text.x = element_text(size = 7, angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 7)
+    )
+```
+
 ::: {.callout-note}
 ## Interpretation
 
-The heatmap shows that **lowering the CDI threshold toward RP 3** improves CERF alignment regardless of SEAS5 threshold. This suggests CERF allocations respond to conditions that are somewhat less extreme than our ASI RP4 drought definition — humanitarian need is triggered by a broader range of conditions including conflict, food prices, and compounding factors beyond pure agricultural drought severity.
+F1 peaks around RP 3–4 for both signals, declining at stricter thresholds (fewer triggers, more missed CERF years) or looser thresholds (more false positives). Our F1-tuned CDI threshold (~RP 3.9) falls within this optimal range. Within the CERF period, CDI at RP 4 catches 6 of 7 CERF allocation years — the only miss is 2012 (cdi_rp = 1.4), which would require an impractically low threshold to capture.
 :::
 
 ## Year-by-Year Alignment
