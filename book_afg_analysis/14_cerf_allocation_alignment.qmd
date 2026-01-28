@@ -1,0 +1,409 @@
+---
+title: "CERF Allocation Alignment"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+execute:
+  warning: false
+  message: false
+project:
+  execute-dir: project
+---
+
+## Introduction
+
+This chapter evaluates how well the proposed trigger signals align with **historical CERF Rapid Response drought allocations** for Afghanistan. CERF Rapid Response allocations represent an independent, external validation of drought severity — they reflect the humanitarian community's real-time assessment that conditions warranted emergency funding.
+
+We filter to **Rapid Response** allocations only (excluding Underfunded Emergencies), as these represent the acute drought response most analogous to anticipatory action triggers. We treat CERF Rapid Response allocation as the outcome variable and ask: if we had applied our CDI or SEAS5 triggers historically, how often would they have correctly predicted a CERF allocation year?
+
+```{r}
+#| label: setup
+
+box::use(
+    dplyr[...],
+    tidyr[...],
+    ggplot2[...],
+    gghdx[...],
+    cumulus[...],
+    purrr[...],
+    glue[glue],
+    tibble[tibble],
+    janitor[clean_names],
+    lubridate[year, as_date]
+)
+
+library(tidymodels)
+library(gt)
+gghdx()
+```
+
+```{r}
+#| label: config
+
+RP_THRESHOLD <- 4
+SEED <- 42
+N_BOOTSTRAP <- 30
+
+FEATURE_PATHS <- list(
+    march = "ds-aa-afg-drought/processed/vector/2026_mar_pub_feature_set_v1.parquet",
+    april = "ds-aa-afg-drought/processed/vector/2026_april_pub_feature_set_v1.parquet"
+)
+
+APRIL_EXCLUDE_VARS <- c("total_precipitation_sum", "seas5 Apr", "seas5 May")
+```
+
+## Data
+
+```{r}
+#| label: load-data
+
+# Load feature sets
+df_mar_raw <- blob_read(name = FEATURE_PATHS$march, container = "projects")
+df_apr_raw <- blob_read(name = FEATURE_PATHS$april, container = "projects")
+
+# Prepare modeling data
+prepare_model_data <- function(df, rp_threshold = RP_THRESHOLD) {
+    df |>
+        filter(!is.na(outcome_asi_zscore)) |>
+        arrange(desc(outcome_asi_zscore)) |>
+        mutate(
+            rank = row_number(),
+            q_rank = rank / (n() + 1),
+            rp_emp = 1 / q_rank,
+            drought = factor(
+                if_else(rp_emp >= rp_threshold, "yes", "no"),
+                levels = c("yes", "no")
+            )
+        ) |>
+        select(-outcome_asi_zscore, -rank, -q_rank, -rp_emp,
+               -starts_with("adm0_name"), -pub_date, -timestep)
+}
+
+df_mar <- prepare_model_data(df_mar_raw)
+df_apr <- prepare_model_data(df_apr_raw)
+```
+
+```{r}
+#| label: fit-ridge
+
+ridge_spec <- logistic_reg(penalty = tune(), mixture = 0) |>
+    set_engine("glmnet") |>
+    set_mode("classification")
+
+ridge_recipe <- recipe(drought ~ ., data = df_apr) |>
+    step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS, "precip_cumsum"))) |>
+    step_zv(all_predictors())
+
+ridge_wf <- workflow() |>
+    add_recipe(ridge_recipe) |>
+    add_model(ridge_spec)
+
+set.seed(SEED)
+ridge_boots <- bootstraps(df_apr, times = N_BOOTSTRAP, strata = drought)
+penalty_grid <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+ridge_tune <- tune_grid(
+    ridge_wf,
+    resamples = ridge_boots,
+    grid = penalty_grid,
+    metrics = metric_set(roc_auc, f_meas),
+    control = control_grid(save_pred = TRUE)
+)
+
+best_penalty <- select_best(ridge_tune, metric = "f_meas")
+final_ridge_fit <- fit(finalize_workflow(ridge_wf, best_penalty), data = df_apr)
+
+coefs_ridge <- final_ridge_fit |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)")
+
+cdi_weights <- coefs_ridge |>
+    mutate(
+        weight = -estimate / sum(abs(estimate)),
+        contribution_pct = abs(weight) * 100
+    ) |>
+    arrange(desc(contribution_pct)) |>
+    select(term, estimate, weight, contribution_pct)
+```
+
+```{r}
+#| label: load-cerf
+
+df_cerf <- blob_read("ds-aa-afg-drought/raw/vector/afg_drought_cerf_allocations.xlsx") |>
+    clean_names() |>
+    mutate(allocation_date = as_date(allocation_date)) |>
+    filter(window == "Rapid Response")
+
+df_cerf_yr <- df_cerf |>
+    group_by(yr = year(allocation_date)) |>
+    summarise(n_allocations = n()) |>
+    # 2025 CERF Rapid Response allocation occurred but is not yet in the dataset
+    bind_rows(tibble(yr = 2025, n_allocations = 1)) |>
+    complete(yr = 2006:2025, fill = list(n_allocations = 0)) |>
+    mutate(cerf = factor(if_else(n_allocations > 0, "yes", "no"), levels = c("yes", "no")))
+```
+
+```{r}
+#| label: build-historical
+
+calc_cdi <- function(data, weights_df) {
+    cdi <- rep(0, nrow(data))
+    for (i in seq_len(nrow(weights_df))) {
+        feat <- weights_df$term[i]
+        w <- weights_df$weight[i]
+        if (feat %in% colnames(data)) {
+            cdi <- cdi + w * data[[feat]]
+        }
+    }
+    cdi
+}
+
+rp_empirical <- function(x) {
+    r <- rank(-x, ties.method = "average")
+    q <- r / (length(x) + 1)
+    1 / q
+}
+
+df_historical <- tibble(
+    year = df_apr$pub_year,
+    drought_actual = df_apr$drought,
+    cdi = calc_cdi(df_apr, cdi_weights),
+    seas5_mam = df_mar$`seas5 Mar-Apr-May`
+) |>
+    mutate(
+        cdi_rp = rp_empirical(cdi),
+        seas5_rp = rp_empirical(seas5_mam)
+    )
+
+# Join with CERF data — restrict to CERF coverage period (2006–2024)
+df_cerf_analysis <- df_historical |>
+    inner_join(df_cerf_yr, by = c("year" = "yr"))
+```
+
+**CERF allocation years**: `r paste(df_cerf_yr |> filter(cerf == "yes") |> pull(yr), collapse = ", ")`.
+
+Analysis period: `r min(df_cerf_analysis$year)`–`r max(df_cerf_analysis$year)` (`r nrow(df_cerf_analysis)` years), of which `r sum(df_cerf_analysis$cerf == "yes")` had CERF drought allocations.
+
+## ROC-AUC: Continuous Signal Quality
+
+Before examining thresholds, we evaluate how well the **continuous** CDI and SEAS5 scores discriminate CERF allocation years from non-allocation years. ROC-AUC is threshold-independent and measures overall ranking quality.
+
+```{r}
+#| label: roc-auc
+
+roc_cdi <- yardstick::roc_auc_vec(
+    df_cerf_analysis$cerf,
+    df_cerf_analysis$cdi
+)
+
+roc_seas5 <- yardstick::roc_auc_vec(
+    df_cerf_analysis$cerf,
+    df_cerf_analysis$seas5_mam
+)
+
+tibble(
+    Signal = c("CDI (April)", "SEAS5 MAM (March)"),
+    `ROC-AUC` = c(roc_cdi, roc_seas5)
+) |>
+    gt() |>
+    tab_header(
+        title = "ROC-AUC: Continuous Signal vs CERF Allocation",
+        subtitle = glue("{min(df_cerf_analysis$year)}\u2013{max(df_cerf_analysis$year)}")
+    ) |>
+    fmt_number(columns = `ROC-AUC`, decimals = 3)
+```
+
+```{r}
+#| label: roc-curves
+#| fig-height: 5
+#| fig-width: 7
+
+roc_data_cdi <- yardstick::roc_curve(
+    df_cerf_analysis |> mutate(cerf = factor(cerf, levels = c("yes", "no"))),
+    cerf,
+    cdi
+) |> mutate(signal = "CDI (April)")
+
+roc_data_seas5 <- yardstick::roc_curve(
+    df_cerf_analysis |> mutate(cerf = factor(cerf, levels = c("yes", "no"))),
+    cerf,
+    seas5_mam
+) |> mutate(signal = "SEAS5 MAM (March)")
+
+bind_rows(roc_data_cdi, roc_data_seas5) |>
+    ggplot(aes(x = 1 - specificity, y = sensitivity, color = signal)) +
+    geom_path(linewidth = 1.2) +
+    geom_abline(linetype = "dashed", color = "grey50") +
+    scale_color_manual(values = c(
+        "CDI (April)" = hdx_hex("sapphire-hdx"),
+        "SEAS5 MAM (March)" = hdx_hex("tomato-hdx")
+    )) +
+    labs(
+        title = "ROC Curves: Trigger Signals vs CERF Allocation",
+        subtitle = glue("CDI AUC = {round(roc_cdi, 3)} | SEAS5 AUC = {round(roc_seas5, 3)}"),
+        x = "False Positive Rate (1 - Specificity)",
+        y = "True Positive Rate (Sensitivity)",
+        color = NULL
+    )
+```
+
+## F1 by RP Threshold
+
+For each RP threshold (1–7), we flag years where CDI or SEAS5 exceeds the threshold and compute classification metrics against CERF allocation.
+
+```{r}
+#| label: f1-by-threshold
+
+df_f1_by_rp <- map_dfr(1:7, function(rp) {
+    cdi_flag <- factor(
+        if_else(df_cerf_analysis$cdi_rp >= rp, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    seas5_flag <- factor(
+        if_else(df_cerf_analysis$seas5_rp >= rp, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    combined_flag <- factor(
+        if_else(df_cerf_analysis$cdi_rp >= rp | df_cerf_analysis$seas5_rp >= rp, "yes", "no"),
+        levels = c("yes", "no")
+    )
+
+    cerf_truth <- df_cerf_analysis$cerf
+
+    calc_metrics <- function(pred, label) {
+        tibble(
+            signal = label,
+            rp = rp,
+            f1 = yardstick::f_meas_vec(cerf_truth, pred),
+            precision = yardstick::precision_vec(cerf_truth, pred),
+            recall = yardstick::recall_vec(cerf_truth, pred)
+        )
+    }
+
+    bind_rows(
+        calc_metrics(cdi_flag, "CDI (April)"),
+        calc_metrics(seas5_flag, "SEAS5 (March)"),
+        calc_metrics(combined_flag, "Combined OR")
+    )
+})
+```
+
+```{r}
+#| label: f1-by-threshold-plot
+#| fig-height: 5
+#| fig-width: 8
+
+df_f1_by_rp |>
+    ggplot(aes(x = rp, y = f1, color = signal)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 3) +
+    scale_x_continuous(breaks = 1:7) +
+    scale_color_manual(values = c(
+        "CDI (April)" = hdx_hex("sapphire-hdx"),
+        "SEAS5 (March)" = hdx_hex("tomato-hdx"),
+        "Combined OR" = hdx_hex("mint-hdx")
+    )) +
+    labs(
+        title = "How Well Do Different RP Thresholds Predict CERF Allocation?",
+        subtitle = glue("Merged 5-province area | {min(df_cerf_analysis$year)}\u2013{max(df_cerf_analysis$year)}"),
+        x = "RP Threshold",
+        y = "F1 Score",
+        color = NULL
+    )
+```
+
+```{r}
+#| label: f1-threshold-table
+
+df_f1_by_rp |>
+    filter(rp %in% 2:6) |>
+    mutate(across(c(f1, precision, recall), \(x) round(x, 3))) |>
+    pivot_wider(
+        names_from = signal,
+        values_from = c(f1, precision, recall),
+        names_glue = "{signal}_{.value}"
+    ) |>
+    select(rp, starts_with("CDI"), starts_with("SEAS5"), starts_with("Combined")) |>
+    gt() |>
+    tab_header(
+        title = "Classification Metrics by RP Threshold",
+        subtitle = "CERF allocation as outcome"
+    ) |>
+    tab_spanner(label = "CDI (April)", columns = starts_with("CDI")) |>
+    tab_spanner(label = "SEAS5 (March)", columns = starts_with("SEAS5")) |>
+    tab_spanner(label = "Combined OR", columns = starts_with("Combined")) |>
+    cols_label(
+        rp = "RP",
+        `CDI (April)_f1` = "F1",
+        `CDI (April)_precision` = "Prec",
+        `CDI (April)_recall` = "Rec",
+        `SEAS5 (March)_f1` = "F1",
+        `SEAS5 (March)_precision` = "Prec",
+        `SEAS5 (March)_recall` = "Rec",
+        `Combined OR_f1` = "F1",
+        `Combined OR_precision` = "Prec",
+        `Combined OR_recall` = "Rec"
+    )
+```
+
+## Year-by-Year Alignment
+
+```{r}
+#| label: cerf-alignment-table
+
+df_cerf_analysis |>
+    mutate(
+        cdi_rp4 = if_else(cdi_rp >= 4, "yes", "no"),
+        seas5_rp4 = if_else(seas5_rp >= 4, "yes", "no"),
+        combined = if_else(cdi_rp >= 4 | seas5_rp >= 4, "yes", "no")
+    ) |>
+    select(year, cerf, drought_actual, cdi_rp4, seas5_rp4, combined) |>
+    arrange(desc(year)) |>
+    rename(
+        Year = year,
+        CERF = cerf,
+        `ASI Drought` = drought_actual,
+        `CDI RP4` = cdi_rp4,
+        `SEAS5 RP4` = seas5_rp4,
+        `Combined` = combined
+    ) |>
+    gt() |>
+    tab_header(
+        title = "Year-by-Year: Trigger Decisions vs CERF Allocations",
+        subtitle = glue("{min(df_cerf_analysis$year)}\u2013{max(df_cerf_analysis$year)}")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "tomato", alpha = 0.4),
+        locations = cells_body(columns = CERF, rows = CERF == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "gold", alpha = 0.3),
+        locations = cells_body(columns = `ASI Drought`, rows = `ASI Drought` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `CDI RP4`, rows = `CDI RP4` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `SEAS5 RP4`, rows = `SEAS5 RP4` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = Combined, rows = Combined == "yes")
+    ) |>
+    tab_spanner(label = "Trigger (RP4)", columns = c(`CDI RP4`, `SEAS5 RP4`, `Combined`)) |>
+    tab_footnote(
+        footnote = "Red = CERF allocation | Gold = ASI drought | Blue = trigger fires",
+        locations = cells_column_spanners()
+    )
+```
+
+::: {.callout-note}
+## Interpretation
+
+CERF Rapid Response allocations and ASI-defined droughts overlap substantially but are not identical — CERF reflects humanitarian decision-making which incorporates factors beyond meteorological drought (e.g., conflict, food prices, displacement). Years where the trigger aligns with CERF but not ASI (or vice versa) highlight where the two framings diverge. Underfunded Emergencies allocations (2008, 2010) are excluded as they represent a different funding mechanism with different triggering criteria.
+:::

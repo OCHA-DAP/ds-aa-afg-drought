@@ -1,7 +1,7 @@
 project:
   type: book
 
-jupyter: dsci_playground
+jupyter: ds-aa-afg-drought
 
 book:
   title: "Anticipatory Action - Drought Afghanistan - 2025"
@@ -19,6 +19,8 @@ book:
     - 08_weight_selection.qmd
     - 09_pre_season_allocation_options.qmd
     - 12_2026_trigger_modeling.qmd
+    - 13_2026_trigger_proposal.qmd
+    - 14_cerf_allocation_alignment.qmd
     - summary.qmd
     - references.qmd
   appendices:

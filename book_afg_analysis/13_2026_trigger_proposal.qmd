@@ -1,0 +1,488 @@
+---
+title: "2026 Trigger Proposal (Combined RP)"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+execute:
+  warning: false
+  message: false
+project:
+  execute-dir: project
+---
+
+## Introduction
+
+This chapter proposes a **two-stage trigger** for the 2026 anticipatory action framework. The idea is to combine two independent signals at different lead times using OR logic:
+
+1. **SEAS5 March window** (early lead time): If the COPERNICUS SEAS5 seasonal precipitation forecast exceeds a return period threshold, trigger early.
+2. **CDI April window** (better observational data): If the ridge-based Combined Drought Index exceeds a return period threshold, trigger in April.
+
+A year triggers if **either** signal fires. This increases sensitivity (fewer missed droughts) at the cost of more frequent activation.
+
+See @sec-2026-trigger-modeling for CDI model derivation and validation.
+
+```{r}
+#| label: setup
+
+box::use(
+    dplyr[...],
+    tidyr[...],
+    ggplot2[...],
+    gghdx[...],
+    cumulus[...],
+    purrr[...],
+    glue[glue],
+    tibble[tibble]
+)
+
+library(tidymodels)
+library(gt)
+gghdx()
+```
+
+```{r}
+#| label: config
+
+# Return period threshold for defining drought
+RP_THRESHOLD <- 4
+
+# Random seed
+SEED <- 42
+
+# Bootstrap resamples
+N_BOOTSTRAP <- 30
+
+# Feature set paths
+FEATURE_PATHS <- list(
+    march = "ds-aa-afg-drought/processed/vector/2026_mar_pub_feature_set_v1.parquet",
+    april = "ds-aa-afg-drought/processed/vector/2026_april_pub_feature_set_v1.parquet"
+)
+
+# Variables to exclude from CDI model (same as ch12)
+APRIL_EXCLUDE_VARS <- c("total_precipitation_sum", "seas5 Apr", "seas5 May")
+```
+
+## Data & Model
+
+```{r}
+#| label: load-data
+
+# Load feature sets
+df_mar_raw <- blob_read(name = FEATURE_PATHS$march, container = "projects")
+df_apr_raw <- blob_read(name = FEATURE_PATHS$april, container = "projects")
+
+# Prepare modeling data with empirical RP thresholding
+prepare_model_data <- function(df, rp_threshold = RP_THRESHOLD) {
+    df |>
+        filter(!is.na(outcome_asi_zscore)) |>
+        arrange(desc(outcome_asi_zscore)) |>
+        mutate(
+            rank = row_number(),
+            q_rank = rank / (n() + 1),
+            rp_emp = 1 / q_rank,
+            drought = factor(
+                if_else(rp_emp >= rp_threshold, "yes", "no"),
+                levels = c("yes", "no")
+            )
+        ) |>
+        select(-outcome_asi_zscore, -rank, -q_rank, -rp_emp,
+               -starts_with("adm0_name"), -pub_date, -timestep)
+}
+
+df_mar <- prepare_model_data(df_mar_raw)
+df_apr <- prepare_model_data(df_apr_raw)
+```
+
+```{r}
+#| label: fit-ridge
+
+# Ridge specification
+ridge_spec <- logistic_reg(penalty = tune(), mixture = 0) |>
+    set_engine("glmnet") |>
+    set_mode("classification")
+
+# Recipe (exclude composite components + precip_cumsum, same as ch12)
+ridge_recipe <- recipe(drought ~ ., data = df_apr) |>
+    step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS, "precip_cumsum"))) |>
+    step_zv(all_predictors())
+
+ridge_wf <- workflow() |>
+    add_recipe(ridge_recipe) |>
+    add_model(ridge_spec)
+
+# Tune penalty
+set.seed(SEED)
+ridge_boots <- bootstraps(df_apr, times = N_BOOTSTRAP, strata = drought)
+penalty_grid <- grid_regular(penalty(range = c(-4, 0)), levels = 30)
+
+ridge_tune <- tune_grid(
+    ridge_wf,
+    resamples = ridge_boots,
+    grid = penalty_grid,
+    metrics = metric_set(roc_auc, f_meas),
+    control = control_grid(save_pred = TRUE)
+)
+
+best_penalty <- select_best(ridge_tune, metric = "f_meas")
+final_ridge_fit <- fit(finalize_workflow(ridge_wf, best_penalty), data = df_apr)
+
+# Extract CDI weights
+coefs_ridge <- final_ridge_fit |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)")
+
+cdi_weights <- coefs_ridge |>
+    mutate(
+        weight = -estimate / sum(abs(estimate)),
+        contribution_pct = abs(weight) * 100
+    ) |>
+    arrange(desc(contribution_pct)) |>
+    select(term, estimate, weight, contribution_pct)
+```
+
+```{r}
+#| label: compute-historical
+
+# CDI calculation helper
+calc_cdi <- function(data, weights_df) {
+    cdi <- rep(0, nrow(data))
+    for (i in seq_len(nrow(weights_df))) {
+        feat <- weights_df$term[i]
+        w <- weights_df$weight[i]
+        if (feat %in% colnames(data)) {
+            cdi <- cdi + w * data[[feat]]
+        }
+    }
+    cdi
+}
+
+# Empirical RP function (higher value = worse drought = higher RP)
+rp_empirical <- function(x) {
+    r <- rank(-x, ties.method = "average")
+    q <- r / (length(x) + 1)
+    1 / q
+}
+
+# Build historical record with both signals
+df_historical <- tibble(
+    year = df_apr$pub_year,
+    drought_actual = df_apr$drought,
+    cdi = calc_cdi(df_apr, cdi_weights),
+    seas5_mam = df_mar$`seas5 Mar-Apr-May`
+) |>
+    mutate(
+        cdi_rp = rp_empirical(cdi),
+        seas5_rp = rp_empirical(seas5_mam)
+    )
+```
+
+## Combined RP Heatmap
+
+The heatmap below shows the **effective return period** of the combined two-stage trigger across all combinations of CDI and SEAS5 thresholds. OR logic means a year triggers if *either* signal exceeds its threshold.
+
+```{r}
+#| label: combined-rp-grid
+
+rp_grid <- expand_grid(
+    cdi_threshold = 3:7,
+    seas5_threshold = 3:7
+) |>
+    pmap_dfr(function(cdi_threshold, seas5_threshold) {
+        n_either <- df_historical |>
+            filter(cdi_rp >= cdi_threshold | seas5_rp >= seas5_threshold) |>
+            nrow()
+
+        tibble(
+            cdi_threshold = cdi_threshold,
+            seas5_threshold = seas5_threshold,
+            n_triggered = n_either,
+            n_years = nrow(df_historical),
+            rp_combined = if (n_either > 0) round(nrow(df_historical) / n_either, 1) else Inf
+        )
+    })
+```
+
+```{r}
+#| label: combined-rp-heatmap
+#| fig-height: 6
+#| fig-width: 7
+
+rp_grid |>
+    mutate(
+        rp_label = if_else(
+            is.infinite(rp_combined),
+            "never",
+            as.character(rp_combined)
+        ),
+        rp_fill = if_else(
+            is.infinite(rp_combined),
+            max(rp_combined[is.finite(rp_combined)]) + 5,
+            rp_combined
+        ),
+        target_zone = rp_combined >= 3 & rp_combined <= 5 & is.finite(rp_combined)
+    ) |>
+    ggplot(aes(
+        x = factor(cdi_threshold),
+        y = factor(seas5_threshold),
+        fill = rp_fill
+    )) +
+    geom_tile(color = "white", linewidth = 1) +
+    geom_text(aes(label = rp_label), fontface = "bold", size = 4.5) +
+    geom_tile(
+        data = \(d) filter(d, target_zone),
+        aes(x = factor(cdi_threshold), y = factor(seas5_threshold)),
+        fill = NA, color = "black", linewidth = 1.5
+    ) +
+    scale_fill_gradient2(
+        low = "tomato", mid = "khaki", high = "steelblue",
+        midpoint = 5,
+        name = "Combined\nRP (years)"
+    ) +
+    labs(
+        title = "Combined Return Period: Two-Stage Trigger (OR Logic)",
+        subtitle = "Black border = RP 3\u20135 target zone",
+        x = "CDI Threshold (RP, years)",
+        y = "SEAS5 March Threshold (RP, years)"
+    ) +
+    theme(panel.grid = element_blank())
+```
+
+**Interpretation**: Lower-left cells (both thresholds lenient) fire frequently and have low combined RP. Upper-right cells (both thresholds strict) fire rarely. The **RP 3–5 target zone** (black border) identifies threshold pairs consistent with the program's desired activation frequency. Because OR logic combines two signals, the combined RP is always less than or equal to the minimum of the individual RPs.
+
+## Trigger Table
+
+The table below shows three candidate trigger configurations applied to all `r nrow(df_historical)` years. Columns:
+
+- **SEAS5 RP4**: SEAS5 March forecast exceeds 4-year RP threshold
+- **SEAS5 RP5**: SEAS5 March forecast exceeds 5-year RP threshold
+- **CDI RP4**: April CDI exceeds 4-year RP threshold
+
+```{r}
+#| label: trigger-table
+
+df_trigger <- df_historical |>
+    mutate(
+        seas5_rp4 = if_else(seas5_rp >= 4, "yes", "no"),
+        seas5_rp5 = if_else(seas5_rp >= 5, "yes", "no"),
+        cdi_rp4 = if_else(cdi_rp >= 4, "yes", "no")
+    ) |>
+    select(year, drought_actual, seas5_rp4, seas5_rp5, cdi_rp4) |>
+    arrange(desc(year))
+
+df_trigger |>
+    rename(
+        Year = year,
+        Actual = drought_actual,
+        `SEAS5 RP4` = seas5_rp4,
+        `SEAS5 RP5` = seas5_rp5,
+        `CDI RP4` = cdi_rp4
+    ) |>
+    gt() |>
+    tab_header(
+        title = "Year-by-Year Trigger Decisions",
+        subtitle = "All 42 years | Red = actual drought | Blue = triggered"
+    ) |>
+    tab_style(
+        style = cell_fill(color = "tomato", alpha = 0.4),
+        locations = cells_body(columns = Actual, rows = Actual == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `SEAS5 RP4`, rows = `SEAS5 RP4` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `SEAS5 RP5`, rows = `SEAS5 RP5` == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `CDI RP4`, rows = `CDI RP4` == "yes")
+    ) |>
+    tab_spanner(
+        label = "Trigger Decision",
+        columns = c(`SEAS5 RP4`, `SEAS5 RP5`, `CDI RP4`)
+    ) |>
+    tab_footnote(
+        footnote = "Red = actual drought year | Blue = trigger fires",
+        locations = cells_column_spanners()
+    )
+```
+
+## SEAS5 Early Warning Value
+
+Adding SEAS5 to the combined trigger does **not** rescue any drought years that CDI misses — every drought caught by SEAS5 is already caught by CDI RP4. The two missed droughts (2007 and 2025) are missed by both signals. From a pure detection standpoint, SEAS5 adds only false positives.
+
+However, SEAS5 still has value as an **early warning signal**. Because the March forecast is available one month before the April CDI, a SEAS5 trigger gives agencies an earlier window to act. The question becomes: at what SEAS5 threshold do we get the most early warnings with the fewest false early alerts?
+
+```{r}
+#| label: early-warning-by-year
+
+df_early <- df_historical |>
+    mutate(
+        cdi_fires = cdi_rp >= RP_THRESHOLD,
+        seas5_fires_rp = floor(seas5_rp)
+    ) |>
+    filter(drought_actual == "yes") |>
+    arrange(desc(seas5_rp)) |>
+    mutate(
+        seas5_earliest = case_when(
+            seas5_rp >= 3 ~ paste0("RP>=", pmin(seas5_fires_rp, 7)),
+            TRUE ~ "never"
+        ),
+        cdi_fires_label = if_else(cdi_fires, "yes", "no")
+    ) |>
+    select(year, cdi_fires_label, seas5_rp, seas5_earliest)
+
+df_early |>
+    rename(
+        Year = year,
+        `CDI RP4` = cdi_fires_label,
+        `SEAS5 RP` = seas5_rp,
+        `SEAS5 fires at` = seas5_earliest
+    ) |>
+    gt() |>
+    tab_header(
+        title = "Drought Years: When Does Each Signal Fire?",
+        subtitle = "CDI fires in April; SEAS5 fires in March (one month earlier)"
+    ) |>
+    fmt_number(columns = `SEAS5 RP`, decimals = 1) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.4),
+        locations = cells_body(columns = `CDI RP4`, rows = `CDI RP4` == "yes")
+    )
+```
+
+For each SEAS5 threshold, we can count how many drought years get early warning vs how many non-drought years produce false early alerts:
+
+```{r}
+#| label: early-warning-summary
+
+df_ew_summary <- map_dfr(3:7, function(rp) {
+    seas5_fires <- df_historical$seas5_rp >= rp
+
+    droughts_early <- sum(seas5_fires & df_historical$drought_actual == "yes")
+    false_early <- sum(seas5_fires & df_historical$drought_actual == "no")
+    n_drought <- sum(df_historical$drought_actual == "yes")
+
+    tibble(
+        seas5_threshold = paste0("RP>=", rp),
+        droughts_with_early_warning = droughts_early,
+        total_droughts = n_drought,
+        pct_early = round(droughts_early / n_drought * 100, 0),
+        false_early_alerts = false_early,
+        early_to_false_ratio = if (false_early > 0) {
+            paste0(round(droughts_early / false_early, 1), ":1")
+        } else {
+            paste0(droughts_early, ":0")
+        }
+    )
+})
+
+df_ew_summary |>
+    rename(
+        `SEAS5 Threshold` = seas5_threshold,
+        `Droughts w/ early warning` = droughts_with_early_warning,
+        `Total droughts` = total_droughts,
+        `% early` = pct_early,
+        `False early alerts` = false_early_alerts,
+        `Early:False ratio` = early_to_false_ratio
+    ) |>
+    gt() |>
+    tab_header(
+        title = "SEAS5 Early Warning Performance by Threshold",
+        subtitle = "How many droughts get a one-month head start?"
+    )
+```
+
+::: {.callout-note}
+## SEAS5 Threshold Recommendation
+
+**RP ≥ 4** maximizes early warning value:
+
+- **6 of 10** drought years get early warning (March instead of April)
+- **4 false early alerts** over 42 years
+- **Best early:false ratio** (1.5:1)
+
+Raising to RP ≥ 5 drops 2021 and 2023 (recent droughts) without removing any false positives. Lowering to RP ≥ 3 adds one more drought (2022) but also five more false alerts, dropping the ratio to 1:1.
+:::
+
+## The 2007 Anomaly {#sec-2007-anomaly}
+
+::: {.callout-warning}
+## 2007: False Positive or Misattributed Outcome?
+
+2007 consistently appears as a **false positive** across trigger configurations — the CDI triggers but the ASI outcome does not classify 2007 as a drought year. However, closer inspection suggests the *outcome variable* may be misleading, not the trigger.
+:::
+
+### Component-Level Evidence
+
+The table below compares 2007's indicator z-scores to the average across confirmed drought years:
+
+```{r}
+#| label: 2007-components
+
+cdi_component_cols <- cdi_weights$term
+
+df_components_2007 <- df_apr |>
+    mutate(year = pub_year) |>
+    select(year, drought, all_of(cdi_component_cols))
+
+# 2007 values
+vals_2007 <- df_components_2007 |>
+    filter(year == 2007) |>
+    pivot_longer(cols = all_of(cdi_component_cols),
+                 names_to = "component", values_to = "zscore_2007") |>
+    select(component, zscore_2007)
+
+# Drought year averages
+vals_drought_avg <- df_components_2007 |>
+    filter(drought == "yes") |>
+    summarise(across(all_of(cdi_component_cols), mean)) |>
+    pivot_longer(everything(), names_to = "component", values_to = "drought_avg")
+
+# 2007 rank per component
+vals_rank <- df_components_2007 |>
+    mutate(across(
+        all_of(cdi_component_cols),
+        \(x) rank(-x, ties.method = "average"),
+        .names = "{.col}_rank"
+    )) |>
+    filter(year == 2007) |>
+    select(ends_with("_rank")) |>
+    pivot_longer(everything(), names_to = "component", values_to = "rank") |>
+    mutate(
+        component = gsub("_rank$", "", component),
+        component_rp = round(nrow(df_components_2007) / rank, 1)
+    )
+
+vals_2007 |>
+    left_join(vals_drought_avg, by = "component") |>
+    left_join(vals_rank, by = "component") |>
+    select(component, zscore_2007, drought_avg, rank, component_rp) |>
+    mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+    knitr::kable(
+        col.names = c("Component", "2007 Z-score", "Drought Avg", "Rank (of 42)", "Component RP"),
+        caption = "2007 component-level z-scores vs drought year averages"
+    )
+```
+
+### Explanation: 2006 Drought Displacement
+
+2006 was a confirmed severe drought year. A [Joint Appeal for Afghanistan Drought](https://reliefweb.int/report/afghanistan/joint-appeal-afghanistan-drought-jul-2006) was launched in July 2006 due to inadequate April–May rainfall. [UNHCR](https://www.unhcr.org/4918482e4.html) and [ReliefWeb situation reports](https://reliefweb.int/report/afghanistan/afghanistan-drought-situation-provinces-balkh-juzjan-and-faryab) document significant displacement from exactly our AOI provinces (Faryab, Badghis, Sar-e-Pul, Balkh, Jawzjan) during the 2006 drought — families left, some dismantling their houses indicating no intent to return, and WFP planting surveys showed exceptionally low planting levels across Jawzjan, Faryab, and Samangan.
+
+The likely mechanism for 2007's anomalous ASI signal:
+
+1. **2006 drought** caused widespread crop failure and population displacement in northern provinces
+2. Displaced farming households left fields **fallow** in 2007
+3. The FAO Agricultural Stress Index (ASI) measures vegetation health via remote sensing — it **cannot distinguish fallow fields from drought-stressed crops**
+4. Fallow fields in 2007 registered as low vegetation, producing an elevated ASI z-score
+5. This makes 2007 appear as a "drought year" in the outcome variable when it was actually a **displacement aftermath**
+
+### Implication for the Trigger System
+
+The 2007 case is instructive: the trigger system's early-season indicators (precipitation forecasts, soil moisture, snow cover) correctly show **no drought signal** in 2007. The apparent false positive reflects a limitation of the outcome variable (ASI), not the trigger. If anything, a trigger system that *does not* fire for 2007 is behaving correctly — there was no meteorological drought to anticipate.
+
+This means the true precision of the CDI trigger may be *higher* than the LOOCV estimate, since at least one "false positive" (2007) may actually be correct.
