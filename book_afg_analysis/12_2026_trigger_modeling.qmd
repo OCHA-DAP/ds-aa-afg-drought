@@ -42,7 +42,8 @@ box::use(
     cumulus[...],
     purrr[...],
     glue[glue],
-    tibble[tibble]
+    tibble[tibble],
+    .. / R / utils[rp_empirical]
 )
 
 library(tidymodels)
@@ -67,8 +68,11 @@ FEATURE_PATHS <- list(
     april = "ds-aa-afg-drought/processed/vector/2026_april_pub_feature_set_v1.parquet"
 )
 
-# Variables to exclude (use composite instead of individual SEAS5 components)
+# Variables to exclude per model variant
+# Model 1 (Composite): uses mixed_fcast_obsv, excludes individual forecast components
 APRIL_EXCLUDE_VARS <- c("total_precipitation_sum", "seas5 Apr", "seas5 May")
+# Model 2 (Individual components): uses individual months, excludes composite
+APRIL_EXCLUDE_VARS_MODEL2 <- c("mixed_fcast_obsv")
 MARCH_EXCLUDE_VARS <- c()
 ```
 
@@ -630,12 +634,10 @@ df_apr_cdi <- df_apr |>
         year = pub_year
     )
 
-# CDI threshold at RP percentile
-cdi_threshold <- quantile(df_apr_cdi$CDI, 1 - 1 / RP_THRESHOLD)
-
+# CDI empirical RPs (Weibull plotting position) — trigger threshold
+# is derived from F1-optimized probability in the threshold-analysis chunk
 df_apr_cdi <- df_apr_cdi |>
-    mutate(trigger = factor(if_else(CDI >= cdi_threshold, "yes", "no"),
-                            levels = c("yes", "no")))
+    mutate(cdi_rp = rp_empirical(CDI, direction = "-1"))
 ```
 
 ## Threshold Selection
@@ -645,8 +647,8 @@ df_apr_cdi <- df_apr_cdi |>
 Our model outputs continuous values (CDI or predicted probabilities). We need a **threshold** to convert these to yes/no trigger decisions. Three approaches:
 
 1. **Default P > 0.5**: Standard classification threshold
-2. **F1-optimized threshold**: Threshold that maximizes F1 score
-3. **RP-based CDI threshold**: Threshold at the `r RP_THRESHOLD`-year return period percentile
+2. **F1-optimized threshold**: Probability threshold that maximizes F1 score
+3. **CDI (F1-equivalent)**: The CDI value equivalent to the F1-optimized probability threshold, expressed as a Weibull percentile/RP
 
 ```{r}
 #| label: threshold-analysis
@@ -684,12 +686,33 @@ best_prob_threshold <- threshold_results |>
     slice(1) |>
     pull(threshold)
 
+# Derive CDI threshold from F1-optimized probability
+# Since CDI and probability rankings are identical (same model, monotonic transform),
+# the F1-optimized probability maps to a specific CDI cutoff
+n_trigger_tuned <- sum(df_apr_probs$prob_drought > best_prob_threshold)
+cdi_threshold <- min(df_apr_probs$CDI[df_apr_probs$prob_drought > best_prob_threshold])
+
+# Weibull RP and percentile equivalent of the F1-optimized threshold
+rp_f1_equivalent <- round((nrow(df_apr_probs) + 1) / n_trigger_tuned, 2)
+weibull_pctile <- round((1 - n_trigger_tuned / (nrow(df_apr_probs) + 1)) * 100, 1)
+
 df_apr_compare <- df_apr_probs |>
     mutate(
         trigger_tuned = factor(
             if_else(prob_drought > best_prob_threshold, "yes", "no"),
             levels = c("yes", "no")
+        ),
+        trigger = factor(
+            if_else(CDI >= cdi_threshold, "yes", "no"),
+            levels = c("yes", "no")
         )
+    )
+
+# Update df_apr_cdi for downstream use (plots, confusion matrix)
+df_apr_cdi <- df_apr_cdi |>
+    mutate(
+        trigger = factor(if_else(CDI >= cdi_threshold, "yes", "no"),
+                         levels = c("yes", "no"))
     )
 ```
 
@@ -735,9 +758,12 @@ comparison_table <- bind_rows(
     calc_trigger_metrics(df_apr_compare$trigger_default, df_apr_compare$drought) |>
         mutate(approach = "P > 0.5 (default)", threshold = "0.50"),
     calc_trigger_metrics(df_apr_compare$trigger_tuned, df_apr_compare$drought) |>
-        mutate(approach = "P > tuned", threshold = as.character(best_prob_threshold)),
+        mutate(approach = "P > tuned (F1)", threshold = as.character(best_prob_threshold)),
     calc_trigger_metrics(df_apr_compare$trigger, df_apr_compare$drought) |>
-        mutate(approach = "CDI (RP-based)", threshold = paste0(round(cdi_threshold, 2), " (75th %ile)"))
+        mutate(
+            approach = "CDI (F1-equivalent)",
+            threshold = glue("CDI ≥ {round(cdi_threshold, 3)} ({weibull_pctile}th %ile)")
+        )
 ) |>
     select(approach, threshold, precision, recall, f1, n_triggered)
 
@@ -749,14 +775,14 @@ comparison_table |>
     )
 ```
 
-**Ranking equivalence**: Since CDI is derived from the same model, probability and CDI rankings are identical (correlation = `r round(cor(rank(-df_apr_compare$prob_drought), rank(-df_apr_compare$CDI)), 4)`).
+**Ranking equivalence**: Since CDI is derived from the same model, probability and CDI rankings are identical (correlation = `r round(cor(rank(-df_apr_compare$prob_drought), rank(-df_apr_compare$CDI)), 4)`). The F1-optimized probability threshold (P > `r best_prob_threshold`) maps exactly to CDI ≥ `r round(cdi_threshold, 3)` — both trigger `r n_trigger_tuned` years.
 
 ::: {.callout-note}
-## Threshold Convergence
+## Threshold Equivalence
 
-The **F1-optimized threshold** (P > `r best_prob_threshold`) triggers `r sum(df_apr_compare$trigger_tuned == "yes")` of `r nrow(df_apr_compare)` years (`r round(sum(df_apr_compare$trigger_tuned == "yes") / nrow(df_apr_compare) * 100, 0)`%), corresponding to roughly the **`r round((1 - sum(df_apr_compare$trigger_tuned == "yes") / nrow(df_apr_compare)) * 100, 0)`th percentile**.
+The **F1-optimized threshold** (P > `r best_prob_threshold`) triggers `r n_trigger_tuned` of `r nrow(df_apr_compare)` years (`r round(n_trigger_tuned / nrow(df_apr_compare) * 100, 1)`%), corresponding to the **`r weibull_pctile`th percentile** (Weibull plotting position: rank/(n+1)), or equivalently a return period of **`r rp_f1_equivalent` years**.
 
-This closely matches the RP=`r RP_THRESHOLD` policy threshold (75th percentile, ~25% trigger rate). The statistically optimal threshold aligns with the operationally desired trigger frequency - a fortunate convergence that won't always occur.
+This is close to the policy target of RP`r RP_THRESHOLD` (75th percentile). The statistically optimal threshold approximately recovers the operationally desired trigger frequency.
 :::
 
 ## Model Validation (LOOCV)
@@ -804,7 +830,8 @@ loocv_ridge_results <- map_dfr(1:nrow(df_apr), function(i) {
             train_cdi <- train_cdi + w * train[[feat]]
         }
     }
-    threshold <- quantile(train_cdi, 1 - 1 / RP_THRESHOLD)
+    train_rp <- rp_empirical(train_cdi, direction = "-1")
+    threshold <- min(train_cdi[train_rp >= RP_THRESHOLD])
 
     # Calculate CDI for test observation
     test_cdi <- 0
@@ -1096,6 +1123,181 @@ The critical difference is **confidence in the estimates**:
 ## Bottom Line
 
 The 2025 grid search likely found real signal, but performance estimates are optimistically biased due to in-sample optimization. The 2026 ridge approach provides more defensible estimates of true out-of-sample performance through LOOCV validation and regularization. The methodological differences (province-level vs merged area) mean direct F1 comparison is not meaningful.
+:::
+
+---
+
+## Appendix E: Composite vs Individual Forecast Components {#appendix-e-composite-vs-individual}
+
+The main CDI model uses `mixed_fcast_obsv` — an equal-weighted average of observed March precipitation, forecasted April, and forecasted May. A natural question: **does letting the model weight these three months individually improve performance?**
+
+We fit a second ridge model that replaces `mixed_fcast_obsv` with `total_precipitation_sum`, `seas5 Apr`, and `seas5 May` as separate features, then compare LOOCV performance.
+
+```{r}
+#| label: appendix-m2-ridge
+
+# Model 2: individual forecast components
+ridge_recipe_m2 <- recipe(drought ~ ., data = df_apr) |>
+    step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS_MODEL2, "precip_cumsum"))) |>
+    step_zv(all_predictors())
+
+ridge_wf_m2 <- workflow() |>
+    add_recipe(ridge_recipe_m2) |>
+    add_model(ridge_spec)
+
+set.seed(SEED)
+ridge_boots_m2 <- bootstraps(df_apr, times = N_BOOTSTRAP, strata = drought)
+
+ridge_tune_m2 <- tune_grid(
+    ridge_wf_m2,
+    resamples = ridge_boots_m2,
+    grid = penalty_grid,
+    metrics = metric_set(roc_auc, f_meas, precision, recall),
+    control = control_grid(save_pred = TRUE)
+)
+
+best_penalty_m2 <- select_best(ridge_tune_m2, metric = "f_meas")
+final_ridge_fit_m2 <- fit(
+    ridge_wf_m2 |> finalize_workflow(best_penalty_m2),
+    data = df_apr
+)
+
+coefs_ridge_m2 <- final_ridge_fit_m2 |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)")
+
+cdi_weights_m2 <- coefs_ridge_m2 |>
+    mutate(
+        weight = -estimate / sum(abs(estimate)),
+        contribution_pct = abs(weight) * 100
+    ) |>
+    arrange(desc(contribution_pct)) |>
+    select(term, estimate, weight, contribution_pct)
+```
+
+### Learned Weights
+
+Ridge does **not** weight the three months equally:
+
+```{r}
+#| label: appendix-m2-weights
+
+cdi_weights_m2 |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Indicator", "Ridge Coef", "CDI Weight", "Contribution %"),
+        caption = "CDI weights — individual components model"
+    )
+```
+
+The April forecast receives ~3x the weight of observed March precipitation or May forecast. However, the total precipitation-related contribution (~31%) is similar to the composite's weight (~28%) — the other indicators absorb the difference.
+
+### LOOCV Comparison
+
+```{r}
+#| label: appendix-m2-loocv
+
+# LOOCV for model 2
+loocv_m2_results <- map_dfr(1:nrow(df_apr), function(i) {
+    train <- df_apr[-i, ]
+    test <- df_apr[i, ]
+
+    rec <- recipe(drought ~ ., data = train) |>
+        step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS_MODEL2, "precip_cumsum"))) |>
+        step_zv(all_predictors())
+    spec <- logistic_reg(penalty = best_penalty_m2$penalty, mixture = 0) |>
+        set_engine("glmnet") |> set_mode("classification")
+    wf <- workflow() |> add_recipe(rec) |> add_model(spec)
+    fit_result <- fit(wf, data = train)
+
+    # Get probability for ROC AUC
+    prob <- predict(fit_result, test, type = "prob")$.pred_yes
+
+    # CDI-based trigger
+    coefs <- fit_result |> extract_fit_parsnip() |> tidy() |>
+        filter(term != "(Intercept)") |>
+        mutate(weight = -estimate / sum(abs(estimate)))
+
+    train_cdi <- rep(0, nrow(train))
+    for (j in seq_len(nrow(coefs))) {
+        feat <- coefs$term[j]; w <- coefs$weight[j]
+        if (feat %in% colnames(train)) train_cdi <- train_cdi + w * train[[feat]]
+    }
+    train_rp <- rp_empirical(train_cdi, direction = "-1")
+    threshold <- min(train_cdi[train_rp >= RP_THRESHOLD])
+
+    test_cdi <- 0
+    for (j in seq_len(nrow(coefs))) {
+        feat <- coefs$term[j]; w <- coefs$weight[j]
+        if (feat %in% colnames(test)) test_cdi <- test_cdi + w * test[[feat]]
+    }
+
+    tibble(
+        year = test$pub_year,
+        actual = test$drought,
+        prob = prob,
+        predicted = if_else(test_cdi >= threshold, "yes", "no")
+    )
+})
+
+# Also get probabilities from composite LOOCV for ROC AUC
+loocv_composite_probs <- map_dfr(1:nrow(df_apr), function(i) {
+    train <- df_apr[-i, ]
+    test <- df_apr[i, ]
+
+    rec <- recipe(drought ~ ., data = train) |>
+        step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS, "precip_cumsum"))) |>
+        step_zv(all_predictors())
+    spec <- logistic_reg(penalty = best_penalty$penalty, mixture = 0) |>
+        set_engine("glmnet") |> set_mode("classification")
+    wf <- workflow() |> add_recipe(rec) |> add_model(spec)
+    fit_result <- fit(wf, data = train)
+
+    tibble(
+        year = test$pub_year,
+        actual = test$drought,
+        prob = predict(fit_result, test, type = "prob")$.pred_yes
+    )
+})
+
+# Confusion matrix for model 2
+loocv_m2_conf <- table(
+    Predicted = factor(loocv_m2_results$predicted, levels = c("yes", "no")),
+    Actual = factor(loocv_m2_results$actual, levels = c("yes", "no"))
+)
+tp_m2 <- loocv_m2_conf["yes", "yes"]
+fp_m2 <- loocv_m2_conf["yes", "no"]
+fn_m2 <- loocv_m2_conf["no", "yes"]
+
+# Comparison table with ROC AUC
+tibble(
+    Model = c("Composite forecast", "Individual components"),
+    `N Features` = c(nrow(cdi_weights), nrow(cdi_weights_m2)),
+    `ROC AUC` = c(
+        round(yardstick::roc_auc_vec(loocv_composite_probs$actual, loocv_composite_probs$prob), 3),
+        round(yardstick::roc_auc_vec(loocv_m2_results$actual, loocv_m2_results$prob), 3)
+    ),
+    Precision = c(
+        round(tp_ridge_loo / (tp_ridge_loo + fp_ridge_loo), 3),
+        round(tp_m2 / (tp_m2 + fp_m2), 3)
+    ),
+    Recall = c(
+        round(tp_ridge_loo / (tp_ridge_loo + fn_ridge_loo), 3),
+        round(tp_m2 / (tp_m2 + fn_m2), 3)
+    ),
+    F1 = c(
+        round(2 * tp_ridge_loo / (2 * tp_ridge_loo + fp_ridge_loo + fn_ridge_loo), 3),
+        round(2 * tp_m2 / (2 * tp_m2 + fp_m2 + fn_m2), 3)
+    )
+) |>
+    knitr::kable(caption = "LOOCV comparison: Composite vs Individual component CDI")
+```
+
+::: {.callout-note}
+## Finding
+
+The two models produce **identical LOOCV performance** — same ROC AUC, F1, precision, and recall. The CDI scores are correlated at r = 0.99, so the RP-based threshold selects the same years in every fold. Ridge does allocate unequal weight across the three months (favoring the April forecast), but this doesn't change any trigger decisions. The equal-weighted `mixed_fcast_obsv` composite is a valid simplification.
 :::
 
 ---
