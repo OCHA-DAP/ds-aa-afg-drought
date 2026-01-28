@@ -360,6 +360,129 @@ df_f1_by_rp |>
     )
 ```
 
+## Asymmetric RP Threshold Heatmap
+
+The plot above shows performance when both signals use the same RP threshold. But CDI and SEAS5 may have different optimal thresholds. The heatmap below explores all combinations, with marginal bar plots showing each signal's standalone performance.
+
+```{r}
+#| label: asymmetric-rp-grid
+
+# Compute F1 for all CDI × SEAS5 RP combinations
+df_asymmetric <- expand_grid(
+    cdi_rp_thresh = 2:7,
+    seas5_rp_thresh = 2:7
+) |>
+    pmap_dfr(function(cdi_rp_thresh, seas5_rp_thresh) {
+        combined_flag <- factor(
+            if_else(
+                df_cerf_analysis$cdi_rp >= cdi_rp_thresh |
+                df_cerf_analysis$seas5_rp >= seas5_rp_thresh,
+                "yes", "no"
+            ),
+            levels = c("yes", "no")
+        )
+
+        f1 <- yardstick::f_meas_vec(df_cerf_analysis$cerf, combined_flag)
+
+        tibble(
+            cdi_rp_thresh = cdi_rp_thresh,
+            seas5_rp_thresh = seas5_rp_thresh,
+            f1 = if_else(is.na(f1), 0, f1)
+        )
+    })
+
+# Marginal F1 for CDI alone
+df_cdi_marginal <- map_dfr(2:7, function(rp) {
+    flag <- factor(
+        if_else(df_cerf_analysis$cdi_rp >= rp, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    f1 <- yardstick::f_meas_vec(df_cerf_analysis$cerf, flag)
+    tibble(rp = rp, f1 = if_else(is.na(f1), 0, f1))
+})
+
+# Marginal F1 for SEAS5 alone
+df_seas5_marginal <- map_dfr(2:7, function(rp) {
+    flag <- factor(
+        if_else(df_cerf_analysis$seas5_rp >= rp, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    f1 <- yardstick::f_meas_vec(df_cerf_analysis$cerf, flag)
+    tibble(rp = rp, f1 = if_else(is.na(f1), 0, f1))
+})
+```
+
+```{r}
+#| label: asymmetric-heatmap-plot
+#| fig-height: 7
+#| fig-width: 8
+
+library(patchwork)
+
+# Main heatmap
+p_heat <- df_asymmetric |>
+    ggplot(aes(x = factor(cdi_rp_thresh), y = factor(seas5_rp_thresh), fill = f1)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = round(f1, 2)), size = 3.5, fontface = "bold") +
+    scale_fill_gradient2(
+        low = "white", mid = "khaki", high = hdx_hex("mint-hdx"),
+        midpoint = 0.4,
+        limits = c(0, max(df_asymmetric$f1)),
+        name = "F1"
+    ) +
+    labs(x = "CDI RP Threshold", y = "SEAS5 RP Threshold") +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = "none"
+    )
+
+# Top marginal bar (CDI)
+p_top <- df_cdi_marginal |>
+    ggplot(aes(x = factor(rp), y = f1)) +
+    geom_col(fill = hdx_hex("sapphire-hdx"), width = 0.7) +
+    geom_text(aes(label = round(f1, 2)), vjust = -0.3, size = 3) +
+    scale_y_continuous(limits = c(0, max(df_cdi_marginal$f1) * 1.15), expand = c(0, 0)) +
+    labs(x = NULL, y = "F1", title = "CDI alone") +
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid = element_blank()
+    )
+
+# Right marginal bar (SEAS5)
+p_right <- df_seas5_marginal |>
+    ggplot(aes(x = f1, y = factor(rp))) +
+    geom_col(fill = hdx_hex("tomato-hdx"), width = 0.7) +
+    geom_text(aes(label = round(f1, 2)), hjust = -0.2, size = 3) +
+    scale_x_continuous(limits = c(0, max(df_seas5_marginal$f1) * 1.15), expand = c(0, 0)) +
+    labs(x = "F1", y = NULL, title = "SEAS5 alone") +
+    theme(
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank()
+    )
+
+# Empty corner
+p_empty <- ggplot() + theme_void()
+
+# Combine with patchwork
+(p_top + p_empty + p_heat + p_right) +
+    plot_layout(
+        widths = c(4, 1),
+        heights = c(1, 4)
+    ) +
+    plot_annotation(
+        title = "Combined Trigger F1 (OR Logic) by RP Threshold",
+        subtitle = "Heatmap: combined | Top: CDI alone | Right: SEAS5 alone"
+    )
+```
+
+::: {.callout-note}
+## Interpretation
+
+The heatmap shows that **lowering the CDI threshold toward RP 3** improves CERF alignment regardless of SEAS5 threshold. This suggests CERF allocations respond to conditions that are somewhat less extreme than our ASI RP4 drought definition — humanitarian need is triggered by a broader range of conditions including conflict, food prices, and compounding factors beyond pure agricultural drought severity.
+:::
+
 ## Year-by-Year Alignment
 
 ```{r}
