@@ -1636,12 +1636,11 @@ The predicted probability has a specific meaning: **P(drought) = probability tha
 
 This is a meaningful quantity, but:
 
-1. **Calibration is assumed, not verified** - With n=42 years and ridge regularization, we haven't confirmed that "70% predicted" corresponds to 70% actual drought frequency
-2. **We use percentile thresholds operationally** - The RP-based CDI threshold framework doesn't require calibrated probabilities
-3. **CDI is more interpretable** - "CDI = 1.5" relates to input z-scores; "P = 0.72" requires calibration context
+1. **We use F1-optimized thresholds** - The threshold is tuned to maximize classification performance, then expressed as an equivalent CDI value
+2. **CDI is more interpretable** - "CDI = 1.5" relates to input z-scores; "P = 0.72" requires calibration context
 
 ::: {.callout-note}
 ## Summary
 
-The CDI is mathematically equivalent to the ridge model's linear predictor (r = 1) and produces identical year rankings as the predicted probability. For percentile-based triggering, they yield the same decisions. CDI is preferred operationally for its interpretability and consistency with the return period framework. Probability would be appropriate if partners requested probabilistic risk communication.
+The CDI is mathematically equivalent to the ridge model's linear predictor (r = 1) and produces identical year rankings as the predicted probability. We tune the probability threshold to maximize F1, then derive the equivalent CDI cutoff — both produce identical trigger decisions. The F1-optimized threshold corresponds to approximately RP 3.9 (close to the policy target of RP 4). CDI is preferred operationally for its interpretability; probability would be appropriate if partners requested probabilistic risk communication.
 :::
