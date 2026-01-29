@@ -263,12 +263,12 @@ bind_rows(roc_data_cdi, roc_data_seas5) |>
 
 ## F1 by RP Threshold
 
-For each RP threshold (1–7), we flag years where CDI or SEAS5 exceeds the threshold and compute classification metrics against CERF allocation.
+For each RP threshold, we flag years where CDI or SEAS5 exceeds the threshold and compute classification metrics against CERF allocation.
 
 ```{r}
 #| label: f1-by-threshold
 
-df_f1_by_rp <- map_dfr(1:7, function(rp) {
+df_f1_by_rp <- map_dfr(seq(1, 7, by = 0.1), function(rp) {
     cdi_flag <- factor(
         if_else(df_cerf_analysis$cdi_rp >= rp, "yes", "no"),
         levels = c("yes", "no")
@@ -309,8 +309,8 @@ df_f1_by_rp <- map_dfr(1:7, function(rp) {
 
 df_f1_by_rp |>
     ggplot(aes(x = rp, y = f1, color = signal)) +
-    geom_line(linewidth = 1.2) +
-    geom_point(size = 3) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 1) +
     scale_x_continuous(breaks = 1:7) +
     scale_color_manual(values = c(
         "CDI (April)" = hdx_hex("sapphire-hdx"),
@@ -492,8 +492,8 @@ The overview heatmap uses integer RP thresholds. The zoomed view below uses 0.1 
 
 ```{r}
 #| label: zoomed-heatmap
-#| fig-height: 6
-#| fig-width: 7
+#| fig-height: 7
+#| fig-width: 8
 
 # Fine-grained RP breaks for zoom
 rp_fine <- seq(3, 5, by = 0.2)
@@ -523,13 +523,34 @@ df_zoom <- expand_grid(
         )
     })
 
+# Marginal F1 for CDI alone (zoomed range)
+df_cdi_zoom <- map_dfr(rp_fine, function(rp) {
+    flag <- factor(
+        if_else(df_cerf_analysis$cdi_rp >= rp, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    f1 <- yardstick::f_meas_vec(df_cerf_analysis$cerf, flag)
+    tibble(rp = rp, f1 = if_else(is.na(f1), 0, f1))
+})
+
+# Marginal F1 for SEAS5 alone (zoomed range)
+df_seas5_zoom <- map_dfr(rp_fine, function(rp) {
+    flag <- factor(
+        if_else(df_cerf_analysis$seas5_rp >= rp, "yes", "no"),
+        levels = c("yes", "no")
+    )
+    f1 <- yardstick::f_meas_vec(df_cerf_analysis$cerf, flag)
+    tibble(rp = rp, f1 = if_else(is.na(f1), 0, f1))
+})
+
 # Find position of our tuned threshold (snap to nearest grid point)
 tuned_cdi_snap <- rp_fine[which.min(abs(rp_fine - tuned_rp))]
 
-df_zoom |>
+# Main heatmap
+p_heat_zoom <- df_zoom |>
     ggplot(aes(x = factor(cdi_rp_thresh), y = factor(seas5_rp_thresh), fill = f1)) +
     geom_tile(color = "white", linewidth = 0.3) +
-    geom_text(aes(label = round(f1, 2)), size = 2.5) +
+    geom_text(aes(label = round(f1, 2)), size = 2.2) +
     # Highlight our tuned threshold
     annotate("rect",
              xmin = which(rp_fine == tuned_cdi_snap) - 0.5,
@@ -543,23 +564,72 @@ df_zoom |>
         limits = c(0, max(df_zoom$f1)),
         name = "F1"
     ) +
-    labs(
-        title = "Zoomed: Combined Trigger F1 (RP 3–5 range)",
-        subtitle = glue("Black border = proposed threshold (CDI ≈ RP {tuned_rp}, SEAS5 RP 4)"),
-        x = "CDI RP Threshold",
-        y = "SEAS5 RP Threshold"
-    ) +
+    labs(x = "CDI RP Threshold", y = "SEAS5 RP Threshold") +
     theme(
         panel.grid = element_blank(),
+        legend.position = "none",
+        plot.margin = margin(0, 0, 5, 5),
         axis.text.x = element_text(size = 7, angle = 45, hjust = 1),
         axis.text.y = element_text(size = 7)
+    )
+
+# Top marginal bar (CDI)
+p_top_zoom <- df_cdi_zoom |>
+    ggplot(aes(x = factor(rp), y = f1)) +
+    geom_col(fill = hdx_hex("sapphire-hdx"), width = 0.7) +
+    geom_text(aes(label = round(f1, 2)), vjust = -0.3, size = 2) +
+    scale_y_continuous(limits = c(0, max(df_cdi_zoom$f1) * 1.15), expand = c(0, 0)) +
+    labs(x = NULL, y = NULL, title = "CDI alone") +
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        plot.margin = margin(0, 0, -10, 0)
+    )
+
+# Right marginal bar (SEAS5)
+p_right_zoom <- df_seas5_zoom |>
+    ggplot(aes(x = f1, y = factor(rp))) +
+    geom_col(fill = hdx_hex("tomato-hdx"), width = 0.7) +
+    geom_text(aes(label = round(f1, 2)), hjust = -0.2, size = 2) +
+    scale_x_continuous(limits = c(0, max(df_seas5_zoom$f1) * 1.15), expand = c(0, 0)) +
+    labs(x = NULL, y = NULL, title = "SEAS5 alone") +
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        plot.margin = margin(0, 0, 0, -10)
+    )
+
+# Empty corner
+p_empty_zoom <- ggplot() + theme_void()
+
+# Combine with patchwork
+(p_top_zoom + p_empty_zoom + p_heat_zoom + p_right_zoom) +
+    plot_layout(
+        widths = c(4, 1),
+        heights = c(1, 4)
+    ) +
+    plot_annotation(
+        title = "Zoomed: Combined Trigger F1 (RP 3–5 range)",
+        subtitle = glue("Black border = proposed threshold (CDI ≈ RP {tuned_rp}, SEAS5 RP 4)")
     )
 ```
 
 ::: {.callout-note}
 ## Interpretation
 
-F1 peaks around RP 3–4 for both signals, declining at stricter thresholds (fewer triggers, more missed CERF years) or looser thresholds (more false positives). Our F1-tuned CDI threshold (~RP 3.9) falls within this optimal range. Within the CERF period, CDI at RP 4 catches 6 of 7 CERF allocation years — the only miss is 2012 (cdi_rp = 1.4), which would require an impractically low threshold to capture.
+CERF alignment shows a **plateau** in the RP 3–5 range — lowering the threshold doesn't improve performance (the same years trigger within the CERF period), and raising it only marginally affects F1 until you start missing CERF years at RP ≥ 5. This means CERF performance alone doesn't determine the optimal threshold.
+
+The **early:false ratio** (see previous chapter) breaks the tie: within the CERF-optimal plateau, SEAS5 RP ≥ 4 maximizes early warning value (6/10 droughts get March warning) while minimizing false early alerts (4 over 42 years, ratio 1.5:1). Lowering to RP 3 adds false alerts without improving CERF alignment; raising to RP 5 loses recent droughts (2021, 2023) without removing false positives.
+
+**Bottom line**: RP ~4 sits in the sweet spot — optimal for CERF alignment AND best early:false ratio for anticipatory action.
 :::
 
 ## Year-by-Year Alignment
