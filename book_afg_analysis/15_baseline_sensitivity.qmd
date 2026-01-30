@@ -605,7 +605,9 @@ calc_ew_metrics <- function(df, seas5_rp_col, baseline_label) {
             fp_total = fp_total,
             fp_added = fp_added,
             years_fp_added = years_added_str,
-            ratio = if (fp_added > 0) round(droughts_early / fp_added, 1) else droughts_early
+            # When fp_added = 0, ratio is infinite (use Inf for plotting)
+            ratio = if (fp_added > 0) round(droughts_early / fp_added, 1) else Inf,
+            ratio_label = if (fp_added > 0) as.character(round(droughts_early / fp_added, 1)) else paste0(droughts_early, ":0")
         )
     })
 }
@@ -628,7 +630,7 @@ df_ew_operational <- bind_rows(df_ew_1984_full, df_ew_1991_full)
 
 df_ew_operational |>
     filter(seas5_rp %in% c(4, 6)) |>
-    select(baseline, seas5_rp, droughts_early, pct_early, fp_added, years_fp_added, ratio) |>
+    select(baseline, seas5_rp, droughts_early, pct_early, fp_added, years_fp_added, ratio_label) |>
     gt() |>
     tab_header(
         title = "SEAS5 Early Warning: Operational Performance",
@@ -641,7 +643,7 @@ df_ew_operational |>
         pct_early = "% Early",
         fp_added = "FP Added",
         years_fp_added = "FP Years",
-        ratio = "Early:FP"
+        ratio_label = "Early:FP"
     ) |>
     tab_style(
         style = cell_fill(color = "#FFF3E0"),
@@ -676,23 +678,23 @@ df_comparison_overlap <- df_comparison |>
 n_years_overlap <- nrow(df_comparison_overlap)
 n_droughts_overlap <- sum(df_comparison_overlap$drought_actual == "yes")
 
-# Both baselines evaluated on the same overlapping years (1991-2025)
-df_ew_1984 <- calc_ew_metrics(df_comparison_overlap, "seas5_rp_1984", "1984-2025")
-df_ew_1991 <- calc_ew_metrics(df_comparison_overlap, "seas5_rp_1991", "1991-2025")
-
-df_ew_both <- bind_rows(df_ew_1984, df_ew_1991)
+# Use operational evaluation: each baseline on its FULL period
+# This correctly shows 1984 baseline has 2 FPs at RP4 (1985, 2010)
+# Clean up baseline labels for table
+df_ew_both <- df_ew_operational |>
+    mutate(baseline = gsub(" \\(n=\\d+\\)", "", baseline))
 ```
 
-**Evaluation period**: `r n_years_overlap` years (1991-2025) with `r n_droughts_overlap` drought events.
+**Evaluation period**: Each baseline evaluated on its full record (1984-2025: 42 years, 11 droughts; 1991-2025: 35 years, 10 droughts).
 
 ```{r}
 #| label: early-warning-table
 
 df_ew_both |>
-    select(baseline, seas5_rp, droughts_early, pct_early, fp_added, years_fp_added, ratio) |>
+    select(baseline, seas5_rp, droughts_early, pct_early, fp_added, years_fp_added, ratio_label) |>
     pivot_wider(
         names_from = baseline,
-        values_from = c(droughts_early, pct_early, fp_added, years_fp_added, ratio),
+        values_from = c(droughts_early, pct_early, fp_added, years_fp_added, ratio_label),
         names_glue = "{baseline}_{.value}"
     ) |>
     select(
@@ -700,17 +702,17 @@ df_ew_both |>
         `1984-2025_droughts_early`, `1991-2025_droughts_early`,
         `1984-2025_pct_early`, `1991-2025_pct_early`,
         `1984-2025_fp_added`, `1991-2025_fp_added`,
-        `1984-2025_ratio`, `1991-2025_ratio`
+        `1984-2025_ratio_label`, `1991-2025_ratio_label`
     ) |>
     gt() |>
     tab_header(
         title = "SEAS5 Early Warning Performance by Baseline",
-        subtitle = "Comparing 1984-2025 vs 1991-2025 climatology"
+        subtitle = "Each baseline evaluated on its full record"
     ) |>
     tab_spanner(label = "Droughts Early", columns = contains("droughts_early")) |>
     tab_spanner(label = "% Early", columns = contains("pct_early")) |>
     tab_spanner(label = "FP Added", columns = contains("fp_added")) |>
-    tab_spanner(label = "Early:FP Ratio", columns = contains("ratio")) |>
+    tab_spanner(label = "Early:FP Ratio", columns = contains("ratio_label")) |>
     cols_label(
         seas5_rp = "SEAS5 RP",
         `1984-2025_droughts_early` = "1984",
@@ -719,8 +721,8 @@ df_ew_both |>
         `1991-2025_pct_early` = "1991",
         `1984-2025_fp_added` = "1984",
         `1991-2025_fp_added` = "1991",
-        `1984-2025_ratio` = "1984",
-        `1991-2025_ratio` = "1991"
+        `1984-2025_ratio_label` = "1984",
+        `1991-2025_ratio_label` = "1991"
     )
 ```
 
@@ -730,12 +732,13 @@ df_ew_both |>
 #| fig-width: 10
 
 p_early <- df_ew_both |>
+    filter(seas5_rp <= 6) |>
     ggplot(aes(x = seas5_rp, y = droughts_early, color = baseline, group = baseline)) +
     geom_line(linewidth = 1) +
     geom_point(size = 3) +
     scale_color_manual(values = c("1984-2025" = hdx_hex("sapphire-hdx"),
                                    "1991-2025" = hdx_hex("tomato-hdx"))) +
-    scale_x_continuous(breaks = 3:7) +
+    scale_x_continuous(breaks = 3:6) +
     labs(
         title = "Droughts with Early Warning",
         x = "SEAS5 RP Threshold",
@@ -743,18 +746,52 @@ p_early <- df_ew_both |>
         color = "Baseline"
     )
 
-p_ratio <- df_ew_both |>
-    ggplot(aes(x = seas5_rp, y = ratio, color = baseline, group = baseline)) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 3) +
+# Filter to RP 3-6, identify infinite ratios
+df_ratio_plot <- df_ew_both |>
+    filter(seas5_rp <= 6) |>
+    mutate(is_inf = is.infinite(ratio))
+
+# Separate finite points (for line/dots) and infinite points (for curve to ∞)
+df_finite <- df_ratio_plot |> filter(!is_inf)
+df_inf <- df_ratio_plot |> filter(is_inf)
+
+# For baselines that go to infinity at RP 6: get the last finite point to start curve
+# Only for baselines that have infinite ratio at RP 6
+baselines_with_inf <- df_inf$baseline
+df_curve_start <- df_finite |>
+    filter(baseline %in% baselines_with_inf) |>
+    group_by(baseline) |>
+    filter(seas5_rp == max(seas5_rp)) |>
+    ungroup()
+
+# Arrow endpoint
+y_max <- max(df_finite$ratio, na.rm = TRUE)
+y_arrow <- y_max + 3
+
+p_ratio <- ggplot() +
+    # Main line and points for all finite data
+    geom_line(data = df_finite,
+              aes(x = seas5_rp, y = ratio, color = baseline, group = baseline),
+              linewidth = 1) +
+    geom_point(data = df_finite,
+               aes(x = seas5_rp, y = ratio, color = baseline), size = 3) +
+    # Curved arrow ONLY for baselines with infinite ratio at RP 6
+    geom_curve(data = df_curve_start,
+               aes(x = seas5_rp, y = ratio, xend = 6, yend = y_arrow, color = baseline),
+               curvature = 0.3, linewidth = 1,
+               arrow = arrow(length = unit(0.12, "inches"), type = "closed"),
+               show.legend = FALSE) +
+    # ∞ label (only if there are infinite points)
+    {if(nrow(df_inf) > 0) annotate("text", x = 6.08, y = y_arrow, label = "∞", size = 6, fontface = "bold")} +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey50") +
-    annotate("text", x = 7, y = 1, label = "1:1 break-even", hjust = 1, vjust = 1.5,
-             size = 3, color = "grey50") +
+    annotate("text", x = 5.9, y = 1.4, label = "1:1 break-even", hjust = 1, size = 3, color = "grey50") +
     scale_color_manual(values = c("1984-2025" = hdx_hex("sapphire-hdx"),
                                    "1991-2025" = hdx_hex("tomato-hdx"))) +
-    scale_x_continuous(breaks = 3:7) +
+    scale_x_continuous(breaks = 3:6, limits = c(3, 6.3)) +
+    coord_cartesian(ylim = c(0, y_arrow + 1.5)) +
     labs(
         title = "Early Warning Value (Early:FP Added)",
+        subtitle = "1991 baseline: zero FPs at RP ≥ 6 (ratio → ∞)",
         x = "SEAS5 RP Threshold",
         y = "Ratio",
         color = "Baseline"
@@ -979,10 +1016,10 @@ df_ew_same <- bind_rows(df_ew_1984_same, df_ew_1991_same)
 #| label: same-denom-ew-table
 
 df_ew_same |>
-    select(baseline, seas5_rp, droughts_early, pct_early, fp_added, ratio) |>
+    select(baseline, seas5_rp, droughts_early, pct_early, fp_added, ratio_label) |>
     pivot_wider(
         names_from = baseline,
-        values_from = c(droughts_early, pct_early, fp_added, ratio),
+        values_from = c(droughts_early, pct_early, fp_added, ratio_label),
         names_glue = "{baseline}_{.value}"
     ) |>
     select(
@@ -990,7 +1027,7 @@ df_ew_same |>
         `1984-2025_droughts_early`, `1991-2025_droughts_early`,
         `1984-2025_pct_early`, `1991-2025_pct_early`,
         `1984-2025_fp_added`, `1991-2025_fp_added`,
-        `1984-2025_ratio`, `1991-2025_ratio`
+        `1984-2025_ratio_label`, `1991-2025_ratio_label`
     ) |>
     gt() |>
     tab_header(
@@ -1000,7 +1037,7 @@ df_ew_same |>
     tab_spanner(label = "Droughts Early", columns = contains("droughts_early")) |>
     tab_spanner(label = "% Early", columns = contains("pct_early")) |>
     tab_spanner(label = "FP Added", columns = contains("fp_added")) |>
-    tab_spanner(label = "Early:FP Ratio", columns = contains("ratio")) |>
+    tab_spanner(label = "Early:FP Ratio", columns = contains("ratio_label")) |>
     cols_label(
         seas5_rp = "SEAS5 RP",
         `1984-2025_droughts_early` = "1984",
@@ -1009,8 +1046,8 @@ df_ew_same |>
         `1991-2025_pct_early` = "1991",
         `1984-2025_fp_added` = "1984",
         `1991-2025_fp_added` = "1991",
-        `1984-2025_ratio` = "1984",
-        `1991-2025_ratio` = "1991"
+        `1984-2025_ratio_label` = "1984",
+        `1991-2025_ratio_label` = "1991"
     )
 ```
 
@@ -1020,12 +1057,13 @@ df_ew_same |>
 #| fig-width: 10
 
 p_early_same <- df_ew_same |>
+    filter(seas5_rp <= 6) |>
     ggplot(aes(x = seas5_rp, y = droughts_early, color = baseline, group = baseline)) +
     geom_line(linewidth = 1) +
     geom_point(size = 3) +
     scale_color_manual(values = c("1984-2025" = hdx_hex("sapphire-hdx"),
                                    "1991-2025" = hdx_hex("tomato-hdx"))) +
-    scale_x_continuous(breaks = 3:7) +
+    scale_x_continuous(breaks = 3:6) +
     labs(
         title = "Droughts with Early Warning",
         subtitle = "Same RP denominator (35 years)",
@@ -1034,19 +1072,47 @@ p_early_same <- df_ew_same |>
         color = "Baseline"
     )
 
-p_ratio_same <- df_ew_same |>
-    ggplot(aes(x = seas5_rp, y = ratio, color = baseline, group = baseline)) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 3) +
+# Filter to RP 3-6, separate finite and infinite
+df_ratio_same_plot <- df_ew_same |>
+    filter(seas5_rp <= 6) |>
+    mutate(is_inf = is.infinite(ratio))
+
+df_finite_same <- df_ratio_same_plot |> filter(!is_inf)
+df_inf_same <- df_ratio_same_plot |> filter(is_inf)
+
+# Only curve to infinity for baselines that have infinite ratio at RP 6
+baselines_with_inf_same <- df_inf_same$baseline
+df_curve_start_same <- df_finite_same |>
+    filter(baseline %in% baselines_with_inf_same) |>
+    group_by(baseline) |>
+    filter(seas5_rp == max(seas5_rp)) |>
+    ungroup()
+
+y_max_same <- max(df_finite_same$ratio, na.rm = TRUE)
+y_arrow_same <- y_max_same + 3
+
+p_ratio_same <- ggplot() +
+    geom_line(data = df_finite_same,
+              aes(x = seas5_rp, y = ratio, color = baseline, group = baseline),
+              linewidth = 1) +
+    geom_point(data = df_finite_same,
+               aes(x = seas5_rp, y = ratio, color = baseline), size = 3) +
+    # Curved arrow ONLY for baselines with infinite ratio at RP 6
+    geom_curve(data = df_curve_start_same,
+               aes(x = seas5_rp, y = ratio, xend = 6, yend = y_arrow_same, color = baseline),
+               curvature = 0.3, linewidth = 1,
+               arrow = arrow(length = unit(0.12, "inches"), type = "closed"),
+               show.legend = FALSE) +
+    {if(nrow(df_inf_same) > 0) annotate("text", x = 6.08, y = y_arrow_same, label = "∞", size = 6, fontface = "bold")} +
     geom_hline(yintercept = 1, linetype = "dashed", color = "grey50") +
-    annotate("text", x = 7, y = 1, label = "1:1 break-even", hjust = 1, vjust = 1.5,
-             size = 3, color = "grey50") +
+    annotate("text", x = 5.9, y = 1.4, label = "1:1 break-even", hjust = 1, size = 3, color = "grey50") +
     scale_color_manual(values = c("1984-2025" = hdx_hex("sapphire-hdx"),
                                    "1991-2025" = hdx_hex("tomato-hdx"))) +
-    scale_x_continuous(breaks = 3:7) +
+    scale_x_continuous(breaks = 3:6, limits = c(3, 6.3)) +
+    coord_cartesian(ylim = c(0, y_arrow_same + 1.5)) +
     labs(
         title = "Early Warning Value (Early:FP Added)",
-        subtitle = "Same RP denominator (35 years)",
+        subtitle = "Same RP denominator (35 years) — At RP ≥ 6: ratio → ∞",
         x = "SEAS5 RP Threshold",
         y = "Ratio",
         color = "Baseline"
@@ -1070,9 +1136,9 @@ When both baselines use the **same 35-year period** for RP calculation:
 ```{r}
 #| label: summary-stats
 
-# Key metrics at RP4 - original (different denominators)
-ew_1984_rp4 <- df_ew_1984 |> filter(seas5_rp == 4)
-ew_1991_rp4 <- df_ew_1991 |> filter(seas5_rp == 4)
+# Key metrics at RP4 - operational (each baseline on its full period)
+ew_1984_rp4 <- df_ew_both |> filter(baseline == "1984-2025", seas5_rp == 4)
+ew_1991_rp4 <- df_ew_both |> filter(baseline == "1991-2025", seas5_rp == 4)
 
 # Key metrics at RP4 - same denominator
 ew_1984_rp4_same <- df_ew_1984_same |> filter(seas5_rp == 4)
@@ -1507,6 +1573,18 @@ combined_recall_b <- round(combined_tp_b / (combined_tp_b + combined_fn_b), 2)
 combined_f1_b <- round(2 * combined_precision_b * combined_recall_b / (combined_precision_b + combined_recall_b), 2)
 combined_rp_effective_b <- round((n_years_1984 + 1) / n_combined_triggers_b, 1)
 
+# Extract years for Config B SEAS5
+seas5_fp_years_b <- df_eval_1984$year[seas5_fires_b & df_eval_1984$drought_actual == "no"]
+seas5_fn_years_b <- df_eval_1984$year[!seas5_fires_b & df_eval_1984$drought_actual == "yes"]
+seas5_fp_str_b <- format_with_years(seas5_fp_b, seas5_fp_years_b)
+seas5_fn_str_b <- format_with_years(seas5_fn_b, seas5_fn_years_b)
+
+# Extract years for Config B Combined
+combined_fp_years_b <- df_eval_1984$year[df_eval_1984$combined_fires & df_eval_1984$drought_actual == "no"]
+combined_fn_years_b <- df_eval_1984$year[!df_eval_1984$combined_fires & df_eval_1984$drought_actual == "yes"]
+combined_fp_str_b <- format_with_years(combined_fp_b, combined_fp_years_b)
+combined_fn_str_b <- format_with_years(combined_fn_b, combined_fn_years_b)
+
 # ============================================================================
 # Configuration C: 1991-2025 (n=35), SEAS5 RP >= 6
 # ============================================================================
@@ -1537,6 +1615,27 @@ combined_recall_c <- round(combined_tp_c / (combined_tp_c + combined_fn_c), 2)
 combined_f1_c <- round(2 * combined_precision_c * combined_recall_c / (combined_precision_c + combined_recall_c), 2)
 combined_rp_effective_c <- round((n_years_combined + 1) / n_combined_triggers_c, 1)
 
+# Extract years for Config C SEAS5
+seas5_fp_years_c <- df_eval_1991_rp6$year[seas5_fires_c & df_eval_1991_rp6$drought_actual == "no"]
+seas5_fn_years_c <- df_eval_1991_rp6$year[!seas5_fires_c & df_eval_1991_rp6$drought_actual == "yes"]
+seas5_fp_str_c <- format_with_years(seas5_fp_c, seas5_fp_years_c)
+seas5_fn_str_c <- format_with_years(seas5_fn_c, seas5_fn_years_c)
+
+# Extract years for Config C Combined
+combined_fp_years_c <- df_eval_1991_rp6$year[df_eval_1991_rp6$combined_fires_c & df_eval_1991_rp6$drought_actual == "no"]
+combined_fn_years_c <- df_eval_1991_rp6$year[!df_eval_1991_rp6$combined_fires_c & df_eval_1991_rp6$drought_actual == "yes"]
+combined_fp_str_c <- format_with_years(combined_fp_c, combined_fp_years_c)
+combined_fn_str_c <- format_with_years(combined_fn_c, combined_fn_years_c)
+
+# ============================================================================
+# Calculate FPs ADDED by SEAS5 (beyond CDI) for interpretation
+# ============================================================================
+# Config A: SEAS5 FPs that are not already CDI FPs
+seas5_fp_added_a <- sum(seas5_fires_a & !df_combined_eval$cdi_fires & df_combined_eval$drought_actual == "no", na.rm = TRUE)
+
+# Config C: SEAS5 FPs that are not already CDI FPs
+seas5_fp_added_c <- sum(seas5_fires_c & !df_eval_1991_rp6$cdi_fires & df_eval_1991_rp6$drought_actual == "no", na.rm = TRUE)
+
 # ============================================================================
 # Build combined comparison table
 # ============================================================================
@@ -1559,8 +1658,8 @@ tibble(
         as.character(n_droughts_total),
         as.character(n_cdi_triggers),
         as.character(cdi_tp),
-        as.character(cdi_fp),
-        as.character(cdi_fn),
+        cdi_fp_str,
+        cdi_fn_str,
         as.character(cdi_precision),
         as.character(cdi_recall),
         as.character(cdi_f1),
@@ -1572,8 +1671,8 @@ tibble(
         as.character(n_droughts_combined),
         as.character(n_seas5_triggers_a),
         as.character(seas5_tp_a),
-        as.character(seas5_fp_a),
-        as.character(seas5_fn_a),
+        seas5_fp_str_a,
+        seas5_fn_str_a,
         as.character(seas5_precision_a),
         as.character(seas5_recall_a),
         as.character(seas5_f1_a),
@@ -1584,8 +1683,8 @@ tibble(
         as.character(n_droughts_combined),
         as.character(n_combined_triggers),
         as.character(combined_tp),
-        as.character(combined_fp),
-        as.character(combined_fn),
+        combined_fp_str_a,
+        combined_fn_str_a,
         as.character(combined_precision),
         as.character(combined_recall),
         as.character(combined_f1),
@@ -1597,8 +1696,8 @@ tibble(
         as.character(n_droughts_1984),
         as.character(n_seas5_triggers_b),
         as.character(seas5_tp_b),
-        as.character(seas5_fp_b),
-        as.character(seas5_fn_b),
+        seas5_fp_str_b,
+        seas5_fn_str_b,
         as.character(seas5_precision_b),
         as.character(seas5_recall_b),
         as.character(seas5_f1_b),
@@ -1609,8 +1708,8 @@ tibble(
         as.character(n_droughts_1984),
         as.character(n_combined_triggers_b),
         as.character(combined_tp_b),
-        as.character(combined_fp_b),
-        as.character(combined_fn_b),
+        combined_fp_str_b,
+        combined_fn_str_b,
         as.character(combined_precision_b),
         as.character(combined_recall_b),
         as.character(combined_f1_b),
@@ -1622,8 +1721,8 @@ tibble(
         as.character(n_droughts_combined),
         as.character(n_seas5_triggers_c),
         as.character(seas5_tp_c),
-        as.character(seas5_fp_c),
-        as.character(seas5_fn_c),
+        seas5_fp_str_c,
+        seas5_fn_str_c,
         as.character(seas5_precision_c),
         as.character(seas5_recall_c),
         as.character(seas5_f1_c),
@@ -1634,8 +1733,8 @@ tibble(
         as.character(n_droughts_combined),
         as.character(n_combined_triggers_c),
         as.character(combined_tp_c),
-        as.character(combined_fp_c),
-        as.character(combined_fn_c),
+        combined_fp_str_c,
+        combined_fn_str_c,
         as.character(combined_precision_c),
         as.character(combined_recall_c),
         as.character(combined_f1_c),
@@ -1790,60 +1889,14 @@ tibble(
 - Precision of `r cdi_precision * 100`% (`r cdi_fp` false positive(s) in `r n_years_total` years)
 - F1 score of `r cdi_f1`
 
-**SEAS5 (March early warning)** adds value without degrading precision (evaluated on 1991-2025):
+**SEAS5 (March early warning)** provides lead time options (evaluated on 1991-2025):
 
-- Provides **one month earlier warning** for `r ew_1984_rp4_same$pct_early`% of droughts
-- Adds only `r ew_1984_rp4_same$fp_added` false positive(s) beyond CDI
-- Excellent `r ew_1984_rp4_same$ratio`:1 early warning to false positive ratio
+- **RP ≥ 4**: Identifies `r seas5_recall_a * 100`% of droughts (`r seas5_tp_a`/`r n_droughts_combined`) with `r seas5_fp_added_a` FP(s) added beyond CDI
+- **RP ≥ 6**: Identifies `r seas5_recall_c * 100`% of droughts (`r seas5_tp_c`/`r n_droughts_combined`) with `r seas5_fp_added_c` FP(s) added beyond CDI
 
-**Combined trigger** maintains the target activation frequency (evaluated on 1991-2025 where both signals available):
+**Combined trigger (CDI OR SEAS5)** performance depends on SEAS5 threshold (evaluated on 1991-2025):
 
-- Effective return period of ~`r combined_rp_effective` years (within RP 3-5 target)
-- OR logic ensures no drought is missed if either signal fires
-- `r combined_recall * 100`% recall with `r combined_precision * 100`% precision
+- **With SEAS5 RP ≥ 4**: `r combined_recall * 100`% recall, `r combined_precision * 100`% precision, F1 = `r combined_f1`
+- **With SEAS5 RP ≥ 6**: `r combined_recall_c * 100`% recall, `r combined_precision_c * 100`% precision, F1 = `r combined_f1_c`
 
 :::
-
-### Operational Timeline
-
-```{r}
-#| label: timeline
-#| fig-height: 3
-#| fig-width: 8
-
-timeline_df <- tibble(
-    stage = factor(c("SEAS5 Check", "CDI Check", "Action Window"),
-                   levels = c("SEAS5 Check", "CDI Check", "Action Window")),
-    start = as.Date(c("2026-03-01", "2026-04-01", "2026-03-15")),
-    end = as.Date(c("2026-03-15", "2026-04-15", "2026-05-31")),
-    type = c("trigger", "trigger", "action")
-)
-
-ggplot(timeline_df, aes(y = stage)) +
-    geom_segment(aes(x = start, xend = end, yend = stage, color = type),
-                 linewidth = 8, lineend = "round") +
-    geom_vline(xintercept = as.Date("2026-03-01"), linetype = "dashed", color = "grey50") +
-    geom_vline(xintercept = as.Date("2026-04-01"), linetype = "dashed", color = "grey50") +
-    annotate("text", x = as.Date("2026-03-01"), y = 0.5, label = "Mar 1",
-             vjust = -0.5, size = 3, color = "grey50") +
-    annotate("text", x = as.Date("2026-04-01"), y = 0.5, label = "Apr 1",
-             vjust = -0.5, size = 3, color = "grey50") +
-    scale_x_date(date_labels = "%b %d", date_breaks = "2 weeks",
-                 limits = as.Date(c("2026-02-15", "2026-06-15"))) +
-    scale_color_manual(values = c("trigger" = hdx_hex("sapphire-hdx"),
-                                   "action" = hdx_hex("mint-hdx")),
-                       guide = "none") +
-    labs(
-        title = "Trigger Timeline",
-        subtitle = "Two decision points with overlapping action window",
-        x = NULL, y = NULL
-    ) +
-    theme(
-        panel.grid.major.y = element_blank(),
-        panel.grid.minor = element_blank()
-    )
-```
-
-**March (SEAS5)**: If SEAS5 MAM forecast exceeds RP4 threshold → early mobilization begins
-
-**April (CDI)**: If CDI exceeds F1-optimized threshold → trigger confirmed (or newly triggered if SEAS5 didn't fire)
