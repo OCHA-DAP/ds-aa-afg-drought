@@ -9,6 +9,7 @@ book:
   date: "12/10/2024"
   chapters:
     - index.qmd
+    - 00_key_findings.qmd
     - intro.qmd
     - 02_prioritization_rainfall.qmd
     - 03_initial_proposal_faryab.qmd
@@ -26,6 +27,8 @@ book:
   appendices:
     - 10_asi_provincial_correlation.qmd
     - 11_multi_year_drought.qmd
+    - 15_baseline_sensitivity.qmd
+    - 16_performance_comparison.qmd
 
 bibliography: references.bib
 
