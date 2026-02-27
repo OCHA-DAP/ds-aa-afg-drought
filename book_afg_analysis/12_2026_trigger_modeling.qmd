@@ -43,6 +43,8 @@ box::use(
     purrr[...],
     glue[glue],
     tibble[tibble],
+    ggfx[with_outer_glow],
+    ggrepel[geom_text_repel],
     .. / R / utils[rp_empirical]
 )
 
@@ -933,43 +935,146 @@ ggplot(df_apr_cdi, aes(x = year, y = CDI)) +
 ### Component Contributions
 
 ```{r}
-#| label: cdi-components
-#| fig-height: 7
+#| label: fig-cdi-components
+#| fig-cap: "CDI Components and Weighted Index"
+#| fig-height: 6
 #| fig-width: 10
 
-weight_labels <- cdi_weights |>
-    mutate(label = paste0(term, " (", round(weight * 100, 0), "%)")) |>
-    select(term, label)
+# Color palette matching monitoring plot style
+pal_components <- c(
+    "CDI" = "black",
+    "VHI" = "#CCEBC5",
+    "MAM precip (mixed obs forecast)" = "#DECBE4",
+    "Snow Cover" = "#FFFF90",
+    "ASI" = "#FBB4AE",
+    "Soil moisture" = "#fec44f"
+)
+
+# Map component names to nice labels
+component_label_map <- c(
+    "vhi" = "VHI",
+    "mixed_fcast_obsv" = "MAM precip (mixed obs forecast)",
+    "snow_cover" = "Snow Cover",
+    "asi" = "ASI",
+    "volumetric_soil_water_1m" = "Soil moisture"
+)
 
 df_components <- df_apr_cdi |>
     select(year, drought, all_of(cdi_weights$term), CDI) |>
     pivot_longer(cols = all_of(cdi_weights$term),
                  names_to = "component", values_to = "zscore") |>
-    left_join(weight_labels, by = c("component" = "term"))
+    mutate(
+        parameter_label = component_label_map[component],
+        parameter_label = factor(parameter_label, levels = names(pal_components))
+    )
 
-ggplot() +
-    geom_line(data = df_components,
-              aes(x = year, y = zscore, color = label),
-              alpha = 0.6, linewidth = 0.7) +
-    geom_line(data = df_apr_cdi, aes(x = year, y = CDI),
-              color = "black", linewidth = 1.5) +
-    geom_hline(yintercept = cdi_threshold, linetype = "dashed", color = "red") +
-    geom_point(data = df_apr_cdi |> filter(drought == "yes"),
-               aes(x = year, y = CDI), color = "red", size = 3) +
-    scale_color_brewer(palette = "Set2") +
-    labs(
-        title = "CDI Components and Weighted Index",
-        subtitle = "Black = CDI | Red dots = drought years | Colored = components",
-        x = "Year", y = "Z-score / CDI", color = "Component"
+# CDI data for separate layer
+df_cdi_line <- df_apr_cdi |>
+    mutate(parameter_label = "CDI")
+
+# Drought years for points and labels
+df_drought_years <- df_apr_cdi |>
+    filter(drought == "yes")
+
+p_cdi_components <- ggplot() +
+    # Component lines with shadow
+    ggfx::with_shadow(
+        geom_line(
+            data = df_components,
+            aes(x = year, y = zscore, color = parameter_label, group = parameter_label),
+            alpha = 1, linewidth = 0.5
+        ),
+        sigma = 1.0, x_offset = 0.5, y_offset = 0.25
     ) +
-    theme(legend.position = "bottom") +
-    guides(color = guide_legend(nrow = 2))
+    # Threshold line
+    geom_hline(
+        yintercept = cdi_threshold,
+        color = hdx_hex("tomato-dark"),
+        linetype = "dashed", linewidth = 0.5
+    ) +
+    # CDI line with shadow (on top)
+    ggfx::with_shadow(
+        geom_line(
+            data = df_cdi_line,
+            aes(x = year, y = CDI),
+            color = "black", linewidth = 1
+        ),
+        sigma = 2, x_offset = 0.5, y_offset = 0.25
+    ) +
+    # Drought year points
+    geom_point(
+        data = df_drought_years,
+        aes(x = year, y = CDI),
+        color = hdx_hex("tomato-hdx"),
+        size = 2.5, alpha = 0.7
+    ) +
+    # Threshold label
+    geom_label(
+        aes(x = 1990, y = cdi_threshold,
+            label = paste0("Threshold: ", round(cdi_threshold, 2))),
+        vjust = -0.3, hjust = 0,
+        color = hdx_hex("tomato-dark"),
+        size = 4, alpha = 0.5,
+        label.padding = unit(0.15, "cm")
+    ) +
+    # Year labels for drought years
+    geom_text_repel(
+        data = df_drought_years,
+        aes(x = year, y = CDI, label = year),
+        color = hdx_hex("tomato-hdx"),
+        vjust = -2, size = 3.5, alpha = 1
+    ) +
+    # Scales
+    scale_color_manual(values = pal_components, drop = FALSE, name = NULL) +
+    scale_x_continuous(
+        breaks = seq(1985, 2025, by = 5),
+        expand = expansion(mult = c(0.01, 0.03))
+    ) +
+    # Labels
+    labs(
+        title = "Drought AA Afghanistan: 2026 April Trigger",
+        subtitle = "Red dashed line represents RP 4 threshold",
+        x = NULL,
+        y = "Indicator anomaly"
+    ) +
+    theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 14),
+        title = element_text(size = 16),
+        legend.key.width = unit(1, "cm"),
+        plot.subtitle = element_text(size = 14, color = "grey40"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        axis.text.y = element_text(angle = 90, size = 10, hjust = 0.5),
+        axis.text.x = element_text(size = 10),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank()
+    ) +
+    guides(color = guide_legend(nrow = 1, override.aes = list(linewidth = 2)))
+
+ggsave("outputs/figures/fig-cdi-components.png", p_cdi_components, width = 10, height = 6, dpi = 300)
+
+# Paper version with larger text
+p_cdi_components_paper <- p_cdi_components +
+    theme(
+        axis.title.y = element_text(size = 16),
+        title = element_text(size = 18),
+        plot.subtitle = element_text(size = 16, color = "grey40"),
+        legend.text = element_text(size = 14),
+        axis.text.y = element_text(angle = 90, size = 12, hjust = 0.5),
+        axis.text.x = element_text(size = 12)
+    )
+ggsave("outputs/figures/paper/fig-cdi-components.png", p_cdi_components_paper, width = 10, height = 6, dpi = 300)
+
+p_cdi_components
 ```
 
 ### Year-by-Year Trigger Decisions
 
 ```{r}
-#| label: trigger-table
+#| label: tbl-trigger-comparison
+#| tbl-cap: "Trigger Comparison: April Window (All Years)"
 
 library(gt)
 
@@ -1118,6 +1223,78 @@ The critical difference is **confidence in the estimates**:
 | Degrees of freedom | ~200,000 combinations tested | ~10 hyperparameters |
 | Overfitting risk | High | Low (regularized) |
 | Generalization | Uncertain | More reliable |
+
+### Weight Comparison
+
+```{r}
+#| label: weight-comparison-stacked
+#| fig-height: 5
+#| fig-width: 7
+
+# 2025 weights (from design_weights() / weight set 11209)
+df_weights_2025 <- tibble(
+    indicator = c("Snow Cover", "Precip Cumsum", "Soil Moisture",
+                  "MAM Precip (mixed)", "ASI", "VHI"),
+    weight = c(0.15, 0.05, 0.05, 0.25, 0.25, 0.25),
+    model = "2025"
+)
+
+# 2026 weights from ridge regression (live from cdi_weights)
+indicator_label_map <- c(
+    "vhi" = "VHI",
+    "mixed_fcast_obsv" = "MAM Precip (mixed)",
+    "snow_cover" = "Snow Cover",
+    "asi" = "ASI",
+    "volumetric_soil_water_1m" = "Soil Moisture"
+)
+
+df_weights_2026 <- cdi_weights |>
+    mutate(
+        indicator = indicator_label_map[term],
+        model = "2026"
+    ) |>
+    select(indicator, weight, model)
+
+# Combine
+df_weights_all <- bind_rows(df_weights_2025, df_weights_2026) |>
+    mutate(
+        indicator = factor(indicator, levels = c(
+            "VHI", "ASI", "MAM Precip (mixed)",
+            "Snow Cover", "Soil Moisture", "Precip Cumsum"
+        )),
+        pct_label = paste0(round(weight * 100, 0), "%")
+    )
+
+pal_indicators <- c(
+    "VHI" = "#CCEBC5",
+    "ASI" = "#FBB4AE",
+    "MAM Precip (mixed)" = "#DECBE4",
+    "Snow Cover" = "#FFFF90",
+    "Soil Moisture" = "#fec44f",
+    "Precip Cumsum" = "#B3CDE3"
+)
+
+ggplot(df_weights_all, aes(x = model, y = weight, fill = indicator)) +
+    geom_col(width = 0.6, color = "grey30", linewidth = 0.3) +
+    geom_text(
+        aes(label = pct_label),
+        position = position_stack(vjust = 0.5),
+        size = 3.5, fontface = "bold"
+    ) +
+    scale_fill_manual(values = pal_indicators, drop = FALSE) +
+    scale_y_continuous(labels = scales::percent, expand = c(0, 0)) +
+    labs(
+        title = "CDI Component Weights: 2025 vs 2026",
+        subtitle = "2025: grid search | 2026: ridge regression",
+        x = NULL, y = "Weight", fill = "Indicator"
+    ) +
+    theme(
+        legend.position = "right",
+        panel.grid.major.x = element_blank()
+    )
+```
+
+The 2026 model drops `precip_cumsum` (redundant with other precipitation indicators — see [Appendix F](#appendix-f-cumulative-precip)) and redistributes weight toward soil moisture and snow cover. The precipitation composite and VHI/ASI remain the dominant contributors in both years.
 
 ::: {.callout-note}
 ## Bottom Line
@@ -1644,3 +1821,267 @@ This is a meaningful quantity, but:
 
 The CDI is mathematically equivalent to the ridge model's linear predictor (r = 1) and produces identical year rankings as the predicted probability. We tune the probability threshold to maximize F1, then derive the equivalent CDI cutoff — both produce identical trigger decisions. The F1-optimized threshold corresponds to approximately RP 3.9 (close to the policy target of RP 4). CDI is preferred operationally for its interpretability; probability would be appropriate if partners requested probabilistic risk communication.
 :::
+
+---
+
+## Appendix F: Including Cumulative Precipitation {#appendix-f-cumulative-precip}
+
+The 2025 trigger included cumulative precipitation (`precip_cumsum`) as one of the six CDI components. In the main 2026 model above, we excluded it due to collinearity concerns with other precipitation-related variables. This appendix tests whether including it improves model performance.
+
+### Model with All 2025 Variables
+
+We fit a ridge model including `precip_cumsum` alongside the other indicators, matching the 2025 variable set (except using the composite `mixed_fcast_obsv` instead of individual forecast months).
+
+```{r}
+#| label: appendix-f-ridge-with-precip
+
+# Ridge model INCLUDING precip_cumsum
+ridge_recipe_precip <- recipe(drought ~ ., data = df_apr) |>
+    step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS))) |>  # Note: NOT removing precip_cumsum
+    step_zv(all_predictors())
+
+ridge_wf_precip <- workflow() |>
+    add_recipe(ridge_recipe_precip) |>
+    add_model(ridge_spec)
+
+# Bootstrap resampling with penalty tuning
+set.seed(SEED)
+ridge_boots_precip <- bootstraps(df_apr, times = N_BOOTSTRAP, strata = drought)
+
+ridge_tune_precip <- tune_grid(
+    ridge_wf_precip,
+    resamples = ridge_boots_precip,
+    grid = penalty_grid,
+    metrics = metric_set(roc_auc, f_meas, precision, recall),
+    control = control_grid(save_pred = TRUE)
+)
+
+# Select best penalty
+best_penalty_precip <- select_best(ridge_tune_precip, metric = "f_meas")
+final_ridge_fit_precip <- fit(
+    ridge_wf_precip |> finalize_workflow(best_penalty_precip),
+    data = df_apr
+)
+
+# Extract coefficients
+coefs_ridge_precip <- final_ridge_fit_precip |>
+    extract_fit_parsnip() |>
+    tidy() |>
+    filter(term != "(Intercept)")
+
+cdi_weights_precip <- coefs_ridge_precip |>
+    mutate(
+        weight = -estimate / sum(abs(estimate)),
+        contribution_pct = abs(weight) * 100
+    ) |>
+    arrange(desc(contribution_pct)) |>
+    select(term, estimate, weight, contribution_pct)
+```
+
+### CDI Weights with Cumulative Precipitation
+
+```{r}
+#| label: appendix-f-weights-table
+
+cdi_weights_precip |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Indicator", "Ridge Coef", "CDI Weight", "Contribution %"),
+        caption = "CDI weights including cumulative precipitation"
+    )
+```
+
+### LOOCV Performance Comparison
+
+```{r}
+#| label: appendix-f-loocv
+
+# LOOCV for model with precip_cumsum
+loocv_precip_results <- map_dfr(1:nrow(df_apr), function(i) {
+    train <- df_apr[-i, ]
+    test <- df_apr[i, ]
+
+    rec <- recipe(drought ~ ., data = train) |>
+        step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS))) |>
+        step_zv(all_predictors())
+
+    spec <- logistic_reg(penalty = best_penalty_precip$penalty, mixture = 0) |>
+        set_engine("glmnet") |>
+        set_mode("classification")
+
+    wf <- workflow() |>
+        add_recipe(rec) |>
+        add_model(spec)
+
+    fit_result <- fit(wf, data = train)
+
+    # Get probability for ROC AUC
+    prob <- predict(fit_result, test, type = "prob")$.pred_yes
+
+    # CDI-based trigger
+    coefs <- fit_result |>
+        extract_fit_parsnip() |>
+        tidy() |>
+        filter(term != "(Intercept)") |>
+        mutate(weight = -estimate / sum(abs(estimate)))
+
+    train_cdi <- rep(0, nrow(train))
+    for (j in seq_len(nrow(coefs))) {
+        feat <- coefs$term[j]
+        w <- coefs$weight[j]
+        if (feat %in% colnames(train)) {
+            train_cdi <- train_cdi + w * train[[feat]]
+        }
+    }
+    train_rp <- rp_empirical(train_cdi, direction = "-1")
+    threshold <- min(train_cdi[train_rp >= RP_THRESHOLD])
+
+    test_cdi <- 0
+    for (j in seq_len(nrow(coefs))) {
+        feat <- coefs$term[j]
+        w <- coefs$weight[j]
+        if (feat %in% colnames(test)) {
+            test_cdi <- test_cdi + w * test[[feat]]
+        }
+    }
+
+    tibble(
+        year = test$pub_year,
+        actual = test$drought,
+        prob = prob,
+        predicted = if_else(test_cdi >= threshold, "yes", "no")
+    )
+})
+
+# Confusion matrix
+loocv_precip_conf <- table(
+    Predicted = factor(loocv_precip_results$predicted, levels = c("yes", "no")),
+    Actual = factor(loocv_precip_results$actual, levels = c("yes", "no"))
+)
+
+tp_precip <- loocv_precip_conf["yes", "yes"]
+fp_precip <- loocv_precip_conf["yes", "no"]
+fn_precip <- loocv_precip_conf["no", "yes"]
+```
+
+```{r}
+#| label: appendix-f-comparison
+
+# Comparison table
+tibble(
+    Model = c("Without precip_cumsum (main)", "With precip_cumsum"),
+    `N Features` = c(nrow(cdi_weights), nrow(cdi_weights_precip)),
+    `ROC AUC` = c(
+        round(yardstick::roc_auc_vec(loocv_composite_probs$actual, loocv_composite_probs$prob), 3),
+        round(yardstick::roc_auc_vec(loocv_precip_results$actual, loocv_precip_results$prob), 3)
+    ),
+    Precision = c(
+        round(tp_ridge_loo / (tp_ridge_loo + fp_ridge_loo), 3),
+        round(tp_precip / (tp_precip + fp_precip), 3)
+    ),
+    Recall = c(
+        round(tp_ridge_loo / (tp_ridge_loo + fn_ridge_loo), 3),
+        round(tp_precip / (tp_precip + fn_precip), 3)
+    ),
+    F1 = c(
+        round(2 * tp_ridge_loo / (2 * tp_ridge_loo + fp_ridge_loo + fn_ridge_loo), 3),
+        round(2 * tp_precip / (2 * tp_precip + fp_precip + fn_precip), 3)
+    )
+) |>
+    knitr::kable(caption = "LOOCV comparison: With vs without cumulative precipitation")
+```
+
+### LOOCV Confusion Matrices
+
+```{r}
+#| label: appendix-f-confusion
+
+cat("Without precip_cumsum (main model):\n")
+loocv_ridge_conf |>
+    as.data.frame.matrix() |>
+    knitr::kable()
+
+cat("\nWith precip_cumsum:\n")
+loocv_precip_conf |>
+    as.data.frame.matrix() |>
+    knitr::kable()
+```
+
+### Weight Comparison
+
+How does including cumulative precipitation change the weights assigned to other components?
+
+```{r}
+#| label: appendix-f-weight-comparison
+#| fig-height: 5
+#| fig-width: 8
+
+# Combine weights for comparison
+df_weight_compare <- bind_rows(
+    cdi_weights |> mutate(model = "Without precip_cumsum"),
+    cdi_weights_precip |> mutate(model = "With precip_cumsum")
+) |>
+    select(model, term, weight, contribution_pct)
+
+df_weight_compare |>
+    ggplot(aes(x = reorder(term, contribution_pct), y = contribution_pct, fill = model)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+    geom_text(
+        aes(label = paste0(round(contribution_pct, 0), "%")),
+        position = position_dodge(width = 0.8),
+        hjust = -0.1, size = 3
+    ) +
+    coord_flip() +
+    scale_fill_manual(values = c("Without precip_cumsum" = "steelblue",
+                                  "With precip_cumsum" = "tomato")) +
+    scale_y_continuous(limits = c(0, 35), expand = c(0, 0)) +
+    labs(
+        title = "CDI Component Weights: With vs Without Cumulative Precipitation",
+        x = NULL, y = "Contribution (%)", fill = "Model"
+    ) +
+    theme(legend.position = "top")
+```
+
+::: {.callout-note}
+## Finding
+
+Including cumulative precipitation (`precip_cumsum`) in the April CDI model produces similar LOOCV performance to the main model without it. The variable receives a weight of approximately `r round(cdi_weights_precip$contribution_pct[cdi_weights_precip$term == "precip_cumsum"], 0)`%, redistributing weight away from the other indicators.
+
+The similar performance suggests that cumulative precipitation provides partially redundant information — its signal is already captured by other indicators (soil moisture, the mixed forecast/observation composite). For operational simplicity, the main 5-component model is preferred.
+:::
+
+### Year-by-Year Comparison
+
+Do the two models trigger on the same years?
+
+```{r}
+#| label: appendix-f-year-comparison
+
+# Merge predictions
+df_year_compare <- loocv_ridge_results |>
+    select(year, actual, predicted_main = predicted) |>
+    left_join(
+        loocv_precip_results |> select(year, predicted_precip = predicted),
+        by = "year"
+    ) |>
+    mutate(
+        agree = predicted_main == predicted_precip,
+        both_correct = predicted_main == actual & predicted_precip == actual,
+        main_only_correct = predicted_main == actual & predicted_precip != actual,
+        precip_only_correct = predicted_precip == actual & predicted_main != actual
+    )
+
+# Summary
+cat("Agreement between models:\n")
+cat("  Same prediction:", sum(df_year_compare$agree), "of", nrow(df_year_compare), "years\n")
+cat("  Disagreements:", sum(!df_year_compare$agree), "years\n\n")
+
+# Show disagreements if any
+if (sum(!df_year_compare$agree) > 0) {
+    cat("Years where models disagree:\n")
+    df_year_compare |>
+        filter(!agree) |>
+        select(year, actual, predicted_main, predicted_precip) |>
+        knitr::kable(col.names = c("Year", "Actual", "Main Model", "With Precip"))
+}
+```

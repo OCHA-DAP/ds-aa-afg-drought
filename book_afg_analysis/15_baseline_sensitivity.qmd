@@ -800,6 +800,129 @@ p_ratio <- ggplot() +
 p_early + p_ratio + plot_layout(guides = "collect") & theme(legend.position = "bottom")
 ```
 
+### Simplified View: 1991 Baseline Only
+
+This plot shows the tradeoff more directly using only the recommended 1991-2025 baseline:
+
+```{r}
+#| label: early-warning-1991-only
+#| fig-height: 5
+#| fig-width: 12
+
+# Filter to just 1991 baseline
+df_1991_only <- df_ew_both |>
+    filter(baseline == "1991-2025", seas5_rp <= 7)
+
+df_1991_long <- df_1991_only |>
+    select(seas5_rp, droughts_early, fp_added) |>
+    pivot_longer(
+        cols = c(droughts_early, fp_added),
+        names_to = "metric",
+        values_to = "count"
+    ) |>
+    mutate(
+        metric = case_when(
+            metric == "droughts_early" ~ "Droughts with early warning",
+            metric == "fp_added" ~ "False positives added"
+        ),
+        metric = factor(metric, levels = c("Droughts with early warning", "False positives added"))
+    )
+
+# Left plot: counts
+p_counts_1991 <- ggplot(df_1991_long, aes(x = seas5_rp, y = count, color = metric, group = metric)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 4) +
+    geom_text(
+        aes(label = count),
+        vjust = -1, size = 4, fontface = "bold", show.legend = FALSE
+    ) +
+    scale_color_manual(
+        values = c(
+            "Droughts with early warning" = hdx_hex("mint-hdx"),
+            "False positives added" = hdx_hex("tomato-hdx")
+        ),
+        name = NULL
+    ) +
+    scale_x_continuous(breaks = 3:7) +
+    scale_y_continuous(limits = c(-0.5, 8), breaks = 0:8) +
+    geom_hline(yintercept = 0, color = "grey70") +
+    labs(
+        title = "Early Warnings & False Positives",
+        x = "SEAS5 RP Threshold",
+        y = "Count (years)"
+    ) +
+    theme(
+        legend.position = "top",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text = element_text(size = 11),
+        axis.title = element_text(size = 12)
+    )
+
+# Right plot: ratio with curved arrow to infinity
+df_ratio_1991 <- df_1991_only |>
+    filter(seas5_rp <= 6) |>
+    mutate(is_inf = is.infinite(ratio))
+
+df_finite_1991 <- df_ratio_1991 |> filter(!is_inf)
+df_inf_1991 <- df_ratio_1991 |> filter(is_inf)
+
+# Get last finite point for curve start
+df_curve_start_1991 <- df_finite_1991 |>
+    filter(seas5_rp == max(seas5_rp))
+
+y_max_1991 <- max(df_finite_1991$ratio, na.rm = TRUE)
+y_arrow_1991 <- y_max_1991 + 3
+
+p_ratio_1991 <- ggplot() +
+    # Main line and points for finite data
+    geom_line(data = df_finite_1991,
+              aes(x = seas5_rp, y = ratio),
+              color = hdx_hex("sapphire-hdx"), linewidth = 1.2) +
+    geom_point(data = df_finite_1991,
+               aes(x = seas5_rp, y = ratio),
+               color = hdx_hex("sapphire-hdx"), size = 4) +
+    # Curved arrow to infinity
+    geom_curve(data = df_curve_start_1991,
+               aes(x = seas5_rp, y = ratio, xend = 6, yend = y_arrow_1991),
+               color = hdx_hex("sapphire-hdx"),
+               curvature = 0.3, linewidth = 1.2,
+               arrow = arrow(length = unit(0.15, "inches"), type = "closed")) +
+    # ∞ label
+    annotate("text", x = 6.1, y = y_arrow_1991, label = "∞",
+             size = 8, fontface = "bold", color = hdx_hex("sapphire-hdx")) +
+    scale_x_continuous(breaks = 3:6, limits = c(3, 6.5)) +
+    coord_cartesian(ylim = c(0, y_arrow_1991 + 2)) +
+    labs(
+        title = "Early Warning Value (Early:FP Ratio)",
+        subtitle = "Zero FPs at RP ≥ 6 → ratio goes to ∞",
+        x = "SEAS5 RP Threshold",
+        y = "Ratio (Early Warnings : FPs Added)"
+    ) +
+    theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 11, color = "grey40"),
+        axis.text = element_text(size = 11),
+        axis.title = element_text(size = 12)
+    )
+
+p_counts_1991 + p_ratio_1991 +
+    plot_annotation(
+        title = "SEAS5 Early Warning Tradeoff (1991-2025 Baseline)",
+        theme = theme(plot.title = element_text(size = 16, face = "bold"))
+    )
+```
+
+::: {.callout-tip}
+## Key Takeaway
+
+With the **1991-2025 baseline**:
+
+- **RP ≥ 4**: 6 droughts get early warning, but adds 1 false positive (2010)
+- **RP ≥ 6**: 4 droughts get early warning, with **zero** false positives added
+
+The RP ≥ 6 threshold eliminates false positives while still providing early warning for 40% of droughts.
+:::
+
 ### False Positives Added: Detail
 
 ```{r}
@@ -1052,7 +1175,8 @@ df_ew_same |>
 ```
 
 ```{r}
-#| label: same-denom-ew-plot
+#| label: fig-seas5-early-warning
+#| fig-cap: "Droughts with Early Warning by SEAS5 Threshold"
 #| fig-height: 5
 #| fig-width: 10
 
@@ -1118,7 +1242,25 @@ p_ratio_same <- ggplot() +
         color = "Baseline"
     )
 
-p_early_same + p_ratio_same + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+p_seas5_early_warning <- p_early_same + p_ratio_same + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
+ggsave("outputs/figures/fig-seas5-early-warning.png", p_seas5_early_warning, width = 10, height = 5, dpi = 300)
+
+# Paper version with larger text
+paper_theme <- theme(
+    text = element_text(size = 14),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16),
+    plot.subtitle = element_text(size = 13),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13),
+    legend.position = "bottom"
+)
+p_seas5_paper <- (p_early_same + paper_theme) + (p_ratio_same + paper_theme) + plot_layout(guides = "collect")
+ggsave("outputs/figures/paper/fig-seas5-early-warning.png", p_seas5_paper, width = 10, height = 5, dpi = 300)
+
+p_seas5_early_warning
 ```
 
 ::: {.callout-note}

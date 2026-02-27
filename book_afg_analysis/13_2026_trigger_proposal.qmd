@@ -361,6 +361,149 @@ rp_grid_zoom |>
 
 At CDI ≈ RP `r rp_f1_equivalent` and SEAS5 RP 4, the combined trigger has an effective return period of approximately **`r rp_grid_zoom |> filter(cdi_threshold == tuned_cdi_snap, seas5_threshold == 4) |> pull(rp_combined)` years** — within the target RP 3–5 range for anticipatory action.
 
+## Exact RP Calculations {#exact-rp-calculations}
+
+This section provides explicit, transparent calculations for the return periods used in the 2026 trigger system.
+
+### Component Thresholds
+
+```{r}
+#| label: exact-rp-setup
+
+# CDI threshold and equivalent RP
+n_cdi_fires <- sum(df_historical$cdi >= cdi_threshold)
+cdi_rp_exact <- (nrow(df_historical) + 1) / n_cdi_fires
+
+# SEAS5 thresholds (testing RP 4 and RP 6)
+n_seas5_rp4_fires <- sum(df_historical$seas5_rp >= 4)
+n_seas5_rp6_fires <- sum(df_historical$seas5_rp >= 6)
+
+seas5_rp4_exact <- (nrow(df_historical) + 1) / n_seas5_rp4_fires
+seas5_rp6_exact <- (nrow(df_historical) + 1) / n_seas5_rp6_fires
+
+# Years where each fires
+years_cdi_fires <- df_historical$year[df_historical$cdi >= cdi_threshold]
+years_seas5_rp4_fires <- df_historical$year[df_historical$seas5_rp >= 4]
+years_seas5_rp6_fires <- df_historical$year[df_historical$seas5_rp >= 6]
+
+# Combined (OR logic)
+years_combined_rp4 <- unique(c(years_cdi_fires, years_seas5_rp4_fires))
+years_combined_rp6 <- unique(c(years_cdi_fires, years_seas5_rp6_fires))
+
+n_combined_rp4 <- length(years_combined_rp4)
+n_combined_rp6 <- length(years_combined_rp6)
+
+combined_rp_rp4 <- round(nrow(df_historical) / n_combined_rp4, 2)
+combined_rp_rp6 <- round(nrow(df_historical) / n_combined_rp6, 2)
+```
+
+| Component | Threshold | Years Firing | Empirical RP |
+|-----------|-----------|--------------|--------------|
+| **CDI (April)** | F1-optimized | `r n_cdi_fires` of `r nrow(df_historical)` | **`r round(cdi_rp_exact, 2)` years** |
+| **SEAS5 (March)** | RP ≥ 4 | `r n_seas5_rp4_fires` of `r nrow(df_historical)` | `r round(seas5_rp4_exact, 2)` years |
+| **SEAS5 (March)** | RP ≥ 6 | `r n_seas5_rp6_fires` of `r nrow(df_historical)` | `r round(seas5_rp6_exact, 2)` years |
+
+### Combined RP Calculation (OR Logic)
+
+The combined trigger fires if **either** CDI OR SEAS5 exceeds its threshold. The combined RP is calculated as:
+$$
+\text{Combined RP} = \frac{N_{\text{years}}}{\text{Years where (CDI fires) OR (SEAS5 fires)}}
+$$
+
+#### Option A: CDI + SEAS5 RP ≥ 4
+
+```{r}
+#| label: exact-rp-option-a
+#| results: asis
+
+cat("**Years where CDI fires:**\n\n")
+cat(paste(sort(years_cdi_fires), collapse = ", "), "\n\n")
+
+cat("**Years where SEAS5 RP ≥ 4 fires:**\n\n")
+cat(paste(sort(years_seas5_rp4_fires), collapse = ", "), "\n\n")
+
+cat("**Years where EITHER fires (union):**\n\n")
+cat(paste(sort(years_combined_rp4), collapse = ", "), "\n\n")
+
+cat(glue("**Calculation:** {nrow(df_historical)} years ÷ {n_combined_rp4} years triggered = **{combined_rp_rp4} year RP**\n"))
+```
+
+#### Option B: CDI + SEAS5 RP ≥ 6
+
+```{r}
+#| label: exact-rp-option-b
+#| results: asis
+
+cat("**Years where CDI fires:**\n\n")
+cat(paste(sort(years_cdi_fires), collapse = ", "), "\n\n")
+
+cat("**Years where SEAS5 RP ≥ 6 fires:**\n\n")
+cat(paste(sort(years_seas5_rp6_fires), collapse = ", "), "\n\n")
+
+cat("**Years where EITHER fires (union):**\n\n")
+cat(paste(sort(years_combined_rp6), collapse = ", "), "\n\n")
+
+cat(glue("**Calculation:** {nrow(df_historical)} years ÷ {n_combined_rp6} years triggered = **{combined_rp_rp6} year RP**\n"))
+```
+
+### Summary Table
+
+```{r}
+#| label: exact-rp-summary-table
+
+tibble(
+    `Trigger Configuration` = c(
+        "CDI only (April)",
+        "SEAS5 RP ≥ 4 only (March)",
+        "SEAS5 RP ≥ 6 only (March)",
+        "CDI OR SEAS5 RP ≥ 4",
+        "CDI OR SEAS5 RP ≥ 6"
+    ),
+    `Years Triggered` = c(
+        n_cdi_fires,
+        n_seas5_rp4_fires,
+        n_seas5_rp6_fires,
+        n_combined_rp4,
+        n_combined_rp6
+    ),
+    `Empirical RP` = c(
+        round(cdi_rp_exact, 2),
+        round(seas5_rp4_exact, 2),
+        round(seas5_rp6_exact, 2),
+        combined_rp_rp4,
+        combined_rp_rp6
+    )
+) |>
+    gt() |>
+    tab_header(
+        title = "Exact Return Period Calculations",
+        subtitle = glue("Based on {nrow(df_historical)} years of historical data (1984-2025)")
+    ) |>
+    cols_label(
+        `Trigger Configuration` = "Configuration",
+        `Years Triggered` = "N Years Fired",
+        `Empirical RP` = "RP (years)"
+    ) |>
+    tab_style(
+        style = cell_fill(color = "#E8F5E9"),
+        locations = cells_body(rows = `Trigger Configuration` == "CDI OR SEAS5 RP ≥ 6")
+    ) |>
+    tab_footnote(
+        footnote = "Green row = recommended configuration",
+        locations = cells_column_labels(columns = `Trigger Configuration`)
+    )
+```
+
+::: {.callout-important}
+## Key Numbers
+
+- **CDI threshold**: F1-optimized, equivalent to RP `r round(cdi_rp_exact, 2)` years
+- **SEAS5 threshold (recommended)**: RP ≥ 6
+- **Combined trigger RP**: `r combined_rp_rp6` years (CDI OR SEAS5 RP≥6)
+
+The combined trigger fires approximately every `r combined_rp_rp6` years, within the target range of 3-5 years for anticipatory action.
+:::
+
 ## Trigger Table
 
 The table below shows trigger configurations applied to all `r nrow(df_historical)` years. Columns:
@@ -784,3 +927,141 @@ The likely mechanism for 2007's anomalous ASI signal:
 The 2007 case is instructive: the trigger system's early-season indicators (precipitation forecasts, soil moisture, snow cover) correctly show **no drought signal** in 2007. The apparent false positive reflects a limitation of the outcome variable (ASI), not the trigger. If anything, a trigger system that *does not* fire for 2007 is behaving correctly — there was no meteorological drought to anticipate.
 
 This means the true precision of the CDI trigger may be *higher* than the LOOCV estimate, since at least one "false positive" (2007) may actually be correct.
+
+## Export Trigger Thresholds {#sec-export-thresholds}
+
+This section exports the final trigger thresholds as a single parquet file for use by the monitoring pipeline. It contains:
+
+- **SEAS5 MAM threshold** in mm (back-transformed from the RP6 z-score)
+- **CDI threshold** value (F1-optimized)
+- **CDI component weights** for computing CDI from z-scored indicators
+
+```{r}
+#| label: seas5-backtransform
+
+# --- SEAS5 RP6 z-score from empirical distribution ---
+# Interpolate to find the exact z-score corresponding to RP=6
+seas5_rp_to_z <- approxfun(
+    x = df_historical$seas5_rp,
+    y = df_historical$seas5_mam,
+    rule = 2
+)
+seas5_zscore_rp6 <- seas5_rp_to_z(6)
+
+# --- Load raw SEAS5 data to get mean/sd for back-transformation ---
+# Replicates the feature set creation pipeline (data-raw/16_*)
+PROVINCES_AOI <- c("Faryab", "Sar-e-Pul", "Jawzjan", "Balkh", "Badghis")
+
+df_seas5_raw <- cumulus::pg_load_seas5_historical(
+    iso3 = "AFG",
+    adm_name = PROVINCES_AOI,
+    adm_level = 1,
+    convert_units = TRUE
+)
+
+# Area weights for province aggregation (same source as feature set creation)
+df_area <- blob_read(
+    name = "ds-aa-afg-drought/raw/vector/historical_era5_land_ndjfmam_lte2025.parquet",
+    container = "projects"
+) |>
+    janitor::clean_names() |>
+    filter(adm1_name %in% PROVINCES_AOI) |>
+    distinct(adm1_name, shape_area)
+
+# Aggregate to MAM season, March-issued forecasts, area-weighted regional mean
+df_seas5_mam_mm <- cumulus::seas5_aggregate_forecast(
+    df = df_seas5_raw,
+    value = "mean",
+    valid_months = c(3, 4, 5),
+    by = c("iso3", "pcode", "name", "issued_date")
+) |>
+    filter(lubridate::month(issued_date) == 3) |>
+    rename(adm1_name = name, value = mean) |>
+    left_join(df_area, by = "adm1_name") |>
+    group_by(issued_date) |>
+    summarise(
+        value = weighted.mean(value, w = shape_area, na.rm = TRUE),
+        .groups = "drop"
+    ) |>
+    filter(lubridate::year(issued_date) >= 1984)
+
+# Back-transform: z = -(value - mean) / sd  →  value = mean - z * sd
+seas5_mean_mm <- mean(df_seas5_mam_mm$value)
+seas5_sd_mm <- sd(df_seas5_mam_mm$value)
+seas5_mm_rp6 <- seas5_mean_mm - seas5_zscore_rp6 * seas5_sd_mm
+```
+
+```{r}
+#| label: build-thresholds-df
+
+df_thresholds <- tibble(
+    indicator = c("seas5_mam", "cdi"),
+    window = c("march", "april"),
+    threshold_value = c(seas5_mm_rp6, cdi_threshold),
+    threshold_unit = c("mm", "cdi_index"),
+    rp_equivalent = c(6, rp_f1_equivalent),
+    w_mixed_fcast_obsv = c(NA_real_, cdi_weights$weight[cdi_weights$term == "mixed_fcast_obsv"]),
+    w_asi = c(NA_real_, cdi_weights$weight[cdi_weights$term == "asi"]),
+    w_snow_cover = c(NA_real_, cdi_weights$weight[cdi_weights$term == "snow_cover"]),
+    w_vhi = c(NA_real_, cdi_weights$weight[cdi_weights$term == "vhi"]),
+    w_volumetric_soil_water_1m = c(NA_real_, cdi_weights$weight[cdi_weights$term == "volumetric_soil_water_1m"])
+)
+
+df_thresholds |>
+    knitr::kable(
+        digits = 3,
+        caption = "Trigger thresholds for 2026 monitoring pipeline"
+    )
+```
+
+```{r}
+#| label: verify-backtransform
+#| results: asis
+
+# Sanity check: verify back-transformation by joining on year
+df_verify <- df_seas5_mam_mm |>
+    mutate(
+        pub_year = lubridate::year(issued_date),
+        derived_z = -(value - seas5_mean_mm) / seas5_sd_mm
+    ) |>
+    inner_join(
+        tibble(pub_year = df_historical$year, feature_z = df_historical$seas5_mam),
+        by = "pub_year"
+    )
+
+z_cor <- round(cor(df_verify$derived_z, df_verify$feature_z), 6)
+
+cat(glue("**Back-transformation verification:**\n\n"))
+cat(glue("- SEAS5 mean (mm): {round(seas5_mean_mm, 2)}\n\n"))
+cat(glue("- SEAS5 sd (mm): {round(seas5_sd_mm, 2)}\n\n"))
+cat(glue("- RP6 z-score: {round(seas5_zscore_rp6, 3)}\n\n"))
+cat(glue("- **RP6 threshold (mm): {round(seas5_mm_rp6, 2)}**\n\n"))
+cat(glue("- Correlation (re-derived z vs feature set z, joined by year): {z_cor}\n\n"))
+```
+
+```{r}
+#| label: write-thresholds
+#| eval: false
+
+blob_write(
+    df = df_thresholds,
+    name = "ds-aa-afg-drought/monitoring_inputs/2026/trigger_thresholds.parquet",
+    stage = "dev",
+    container = "projects"
+)
+```
+
+::: {.callout-note}
+## Thresholds Exported
+
+The trigger thresholds have been written to blob at:
+
+`ds-aa-afg-drought/monitoring_inputs/2026/trigger_thresholds.parquet`
+
+To use in the monitoring pipeline:
+
+1. **SEAS5 (March)**: Compare regional area-weighted MAM forecast (mm) against `threshold_value` where `indicator == "seas5_mam"`. **Trigger if forecast ≤ threshold** (low precipitation = drought).
+2. **CDI (April)**: Compute CDI from z-scored indicators using the `w_*` columns, then compare against `threshold_value` where `indicator == "cdi"`. **Trigger if CDI ≥ threshold** (high CDI = drought).
+
+Note: SEAS5 and CDI have **opposite directionality** — SEAS5 triggers on values *below* the threshold (dry forecast), CDI triggers on values *above* the threshold (drought signal).
+:::

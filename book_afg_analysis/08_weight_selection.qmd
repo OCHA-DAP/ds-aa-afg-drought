@@ -17,9 +17,9 @@ execute:
   out.width: "100%"
 jupyter:
   kernelspec:
-    name: "dsci_playground"
+    name: "ds-aa-afg-drought"
     language: "python"
-    display_name: "dsci_playground"
+    display_name: "ds-aa-afg-drought"
 project:
   execute-dir: project
 ---

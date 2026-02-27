@@ -767,160 +767,143 @@ The trigger system is validated at multiple levels:
 This provides reasonable confidence that the trigger captures "real" droughts worth acting on. However, direct validation against food security outcomes remains a gap that could strengthen the evidence base for future iterations.
 :::
 
-## Appendix: RP Threshold Sensitivity
+## Appendix: ASI Threshold Sensitivity
 
-A key modeling choice is defining "drought" as ASI RP ≥ 4. This appendix tests whether RP 3 or RP 5 would produce better CERF alignment.
+A key modeling choice is defining "drought" as ASI RP ≥ 4. This appendix tests how well ASI itself (without the CDI model) aligns with CERF allocations at different RP thresholds.
+
+::: {.callout-note}
+## Methodology Note
+
+**ASI return periods** are calculated using the full 42-year record (1984–2025). Each year is ranked by ASI z-score and assigned an empirical return period based on its position in the historical distribution.
+
+**CERF alignment** is evaluated only on the ~20-year period where CERF Rapid Response data exists (2006–2025). The "Years ≥ RP" column counts how many years *within this evaluation window* exceed the given threshold — not the total count across all 42 years.
+
+This explains why RP 3 and RP 4 may show identical counts: years that fall between these thresholds in the full record happen to be outside the 2006–2025 CERF evaluation period.
+:::
 
 ```{r}
 #| label: rp-sensitivity-setup
 
-# Function to fit model and evaluate CERF alignment for a given RP threshold
-fit_and_evaluate <- function(rp_threshold, df_apr_raw, df_cerf_yr) {
+# Get ASI values for each year (from the outcome variable we already have)
+df_asi <- df_apr_raw |>
+    filter(!is.na(outcome_asi_zscore)) |>
+    select(pub_year, outcome_asi_zscore) |>
+    arrange(desc(outcome_asi_zscore)) |>
+    mutate(
+        rank = row_number(),
+        asi_rp = rp_empirical(outcome_asi_zscore, direction = "-1")
+    )
 
-    # Prepare data with this RP threshold
-    df <- df_apr_raw |>
-        filter(!is.na(outcome_asi_zscore)) |>
-        arrange(desc(outcome_asi_zscore)) |>
-        mutate(
-            rank = row_number(),
-            q_rank = rank / (n() + 1),
-            rp_emp = 1 / q_rank,
-            drought = factor(
-                if_else(rp_emp >= rp_threshold, "yes", "no"),
-                levels = c("yes", "no")
-            )
-        )
+# Join with CERF data (limited to 2005-2024)
+df_asi_cerf <- df_asi |>
+    inner_join(df_cerf_yr, by = c("pub_year" = "yr"))
 
-    n_drought_years <- sum(df$drought == "yes")
-
-    # Fit ridge model
-    df_model <- df |>
-        select(-outcome_asi_zscore, -rank, -q_rank, -rp_emp,
-               -starts_with("adm0_name"), -pub_date, -timestep)
-
-    recipe_spec <- recipe(drought ~ ., data = df_model) |>
-        step_rm(all_of(c("pub_year", APRIL_EXCLUDE_VARS, "precip_cumsum"))) |>
-        step_zv(all_predictors())
-
-    ridge_spec <- logistic_reg(penalty = tune(), mixture = 0) |>
-        set_engine("glmnet") |>
-        set_mode("classification")
-
-    wf <- workflow() |>
-        add_recipe(recipe_spec) |>
-        add_model(ridge_spec)
-
-    set.seed(SEED)
-    boots <- bootstraps(df_model, times = 15, strata = drought)
-    grid <- grid_regular(penalty(range = c(-4, 0)), levels = 20)
-
-    tune_res <- tune_grid(wf, resamples = boots, grid = grid,
-                          metrics = metric_set(f_meas),
-                          control = control_grid(save_pred = FALSE, verbose = FALSE))
-
-    best_pen <- select_best(tune_res, metric = "f_meas")
-    final_fit <- fit(finalize_workflow(wf, best_pen), data = df_model)
-
-    # Get CDI weights and threshold
-    coefs <- final_fit |>
-        extract_fit_parsnip() |>
-        tidy() |>
-        filter(term != "(Intercept)")
-
-    weights <- coefs |>
-        mutate(weight = -estimate / sum(abs(estimate)))
-
-    # Calculate CDI
-    calc_cdi_local <- function(data, weights_df) {
-        cdi <- rep(0, nrow(data))
-        for (i in seq_len(nrow(weights_df))) {
-            feat <- weights_df$term[i]
-            w <- weights_df$weight[i]
-            if (feat %in% colnames(data)) {
-                cdi <- cdi + w * data[[feat]]
-            }
-        }
-        cdi
-    }
-
-    cdi_vals <- calc_cdi_local(df_model, weights)
-    prob_drought <- predict(final_fit, df_model, type = "prob")$.pred_yes
-
-    # F1-optimized threshold
-    thresholds <- seq(0.1, 0.9, by = 0.05)
-    best_thresh <- map_dfr(thresholds, function(t) {
-        pred <- factor(if_else(prob_drought > t, "yes", "no"), levels = c("yes", "no"))
-        tibble(threshold = t, f1 = yardstick::f_meas_vec(df_model$drought, pred))
-    }) |>
-        filter(f1 == max(f1, na.rm = TRUE)) |>
-        slice(1) |>
-        pull(threshold)
-
-    cdi_threshold <- min(cdi_vals[prob_drought > best_thresh])
-
-    # Build historical for CERF analysis
-    df_hist <- tibble(
-        year = df$pub_year,
-        cdi = cdi_vals
-    ) |>
-        mutate(cdi_rp = rp_empirical(cdi, direction = "-1"))
-
-    # Join with CERF
-    df_cerf_eval <- df_hist |>
-        inner_join(df_cerf_yr, by = c("year" = "yr"))
-
-    # Evaluate CERF alignment
-    cdi_flag <- factor(
-        if_else(df_cerf_eval$cdi >= cdi_threshold, "yes", "no"),
+# Evaluate ASI vs CERF at different RP thresholds
+df_rp_sensitivity <- map_dfr(2:8, function(rp) {
+    asi_flag <- factor(
+        if_else(df_asi_cerf$asi_rp >= rp, "yes", "no"),
         levels = c("yes", "no")
     )
 
-    cerf_f1 <- yardstick::f_meas_vec(df_cerf_eval$cerf, cdi_flag)
-    cerf_auc <- yardstick::roc_auc_vec(df_cerf_eval$cerf, df_cerf_eval$cdi)
-    cerf_precision <- yardstick::precision_vec(df_cerf_eval$cerf, cdi_flag)
-    cerf_recall <- yardstick::recall_vec(df_cerf_eval$cerf, cdi_flag)
+    # Handle edge case where all predictions are same class
+    if (length(unique(asi_flag)) == 1) {
+        return(tibble(
+            rp_threshold = rp,
+            n_drought_years = sum(asi_flag == "yes"),
+            cerf_f1 = NA_real_,
+            cerf_precision = NA_real_,
+            cerf_recall = NA_real_,
+            trigger_years = list(df_asi_cerf$pub_year[asi_flag == "yes"])
+        ))
+    }
 
-    # Years that trigger
-    trigger_years <- df_cerf_eval$year[df_cerf_eval$cdi >= cdi_threshold]
+    cerf_f1 <- yardstick::f_meas_vec(df_asi_cerf$cerf, asi_flag)
+    cerf_precision <- yardstick::precision_vec(df_asi_cerf$cerf, asi_flag)
+    cerf_recall <- yardstick::recall_vec(df_asi_cerf$cerf, asi_flag)
 
     tibble(
-        rp_threshold = rp_threshold,
-        n_drought_years = n_drought_years,
-        cerf_auc = cerf_auc,
+        rp_threshold = rp,
+        n_drought_years = sum(asi_flag == "yes"),
         cerf_f1 = cerf_f1,
         cerf_precision = cerf_precision,
         cerf_recall = cerf_recall,
-        trigger_years = list(trigger_years)
+        trigger_years = list(df_asi_cerf$pub_year[asi_flag == "yes"])
     )
-}
-
-# Run for RP 3, 4, 5
-df_rp_sensitivity <- map_dfr(c(3, 4, 5), function(rp) {
-    fit_and_evaluate(rp, df_apr_raw, df_cerf_yr)
 })
+
+# Also calculate AUC (threshold-free) using continuous ASI
+asi_auc <- yardstick::roc_auc_vec(df_asi_cerf$cerf, df_asi_cerf$outcome_asi_zscore)
 ```
 
-### CERF Alignment by Training RP
+### How well does ASI predict CERF allocations?
+
+The plot below shows F1, precision, and recall for ASI at different RP thresholds against CERF Rapid Response allocations.
+
+```{r}
+#| label: fig-asi-cerf-alignment
+#| fig-cap: "ASI vs CERF Alignment by RP Threshold"
+#| fig-height: 4.5
+#| fig-width: 8
+
+p_asi_cerf <- df_rp_sensitivity |>
+    select(rp_threshold, cerf_f1, cerf_precision, cerf_recall) |>
+    pivot_longer(cols = c(cerf_f1, cerf_precision, cerf_recall),
+                 names_to = "metric", values_to = "value") |>
+    mutate(metric = case_when(
+        metric == "cerf_f1" ~ "F1",
+        metric == "cerf_precision" ~ "Precision",
+        metric == "cerf_recall" ~ "Recall"
+    )) |>
+    ggplot(aes(x = rp_threshold, y = value, color = metric)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 3) +
+    geom_vline(xintercept = 4, linetype = "dashed", alpha = 0.5) +
+    annotate("text", x = 4.15, y = 0.95, label = "RP 4\n(current)", hjust = 0, size = 3) +
+    scale_x_continuous(breaks = 2:8) +
+    scale_y_continuous(limits = c(0, 1)) +
+    scale_color_manual(values = c(
+        "F1" = hdx_hex("tomato-hdx"),
+        "Precision" = hdx_hex("sapphire-hdx"),
+        "Recall" = hdx_hex("mint-hdx")
+    )) +
+    labs(
+        title = "ASI vs CERF Alignment by RP Threshold",
+        subtitle = glue("How well does ASI RP ≥ X predict CERF Rapid Response allocations? (AUC = {round(asi_auc, 2)})"),
+        x = "ASI RP Threshold",
+        y = "Score",
+        color = "Metric"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+
+ggsave("outputs/figures/fig-asi-cerf-alignment.png", p_asi_cerf, width = 8, height = 4.5, dpi = 300)
+
+# Paper version with larger text
+p_asi_cerf_paper <- p_asi_cerf + theme_minimal(base_size = 14) + theme(legend.position = "bottom")
+ggsave("outputs/figures/paper/fig-asi-cerf-alignment.png", p_asi_cerf_paper, width = 8, height = 4.5, dpi = 300)
+
+p_asi_cerf
+```
 
 ```{r}
 #| label: rp-sensitivity-table
 
 df_rp_sensitivity |>
-    select(rp_threshold, n_drought_years, cerf_auc, cerf_f1, cerf_precision, cerf_recall) |>
+    select(rp_threshold, n_drought_years, cerf_f1, cerf_precision, cerf_recall) |>
     gt() |>
     tab_header(
-        title = "CERF Alignment by ASI RP Training Threshold",
-        subtitle = "How does the choice of 'drought' definition affect CERF prediction?"
+        title = "ASI-CERF Alignment by RP Threshold",
+        subtitle = glue("Evaluating ASI RP ≥ X as predictor of CERF allocations (n = {nrow(df_asi_cerf)} years)")
     ) |>
     cols_label(
-        rp_threshold = "Training RP",
-        n_drought_years = "Drought Years",
-        cerf_auc = "AUC",
+        rp_threshold = "RP Threshold",
+        n_drought_years = "Years ≥ RP",
         cerf_f1 = "F1",
         cerf_precision = "Precision",
         cerf_recall = "Recall"
     ) |>
-    fmt_number(columns = c(cerf_auc, cerf_f1, cerf_precision, cerf_recall), decimals = 3) |>
+    fmt_number(columns = c(cerf_f1, cerf_precision, cerf_recall), decimals = 3) |>
+    sub_missing(missing_text = "—") |>
     tab_style(
         style = cell_fill(color = "lightgreen"),
         locations = cells_body(rows = rp_threshold == 4)
@@ -928,62 +911,63 @@ df_rp_sensitivity |>
     tab_footnote(
         footnote = "Green = current choice (RP ≥ 4)",
         locations = cells_column_labels(columns = rp_threshold)
+    ) |>
+    tab_footnote(
+        footnote = "Count within CERF evaluation period (2006–2025) only; ASI RPs based on full 42-year climatology",
+        locations = cells_column_labels(columns = n_drought_years)
     )
 ```
 
-### Which Years Trigger Under Each Threshold?
+### Which ASI years align with CERF?
 
 ```{r}
-#| label: rp-sensitivity-years
+#| label: tbl-asi-cerf-years
+#| tbl-cap: "ASI Drought Years vs CERF Allocations"
 
-# Extract trigger years for comparison
-trigger_rp3 <- df_rp_sensitivity |> filter(rp_threshold == 3) |> pull(trigger_years) |> unlist()
-trigger_rp4 <- df_rp_sensitivity |> filter(rp_threshold == 4) |> pull(trigger_years) |> unlist()
-trigger_rp5 <- df_rp_sensitivity |> filter(rp_threshold == 5) |> pull(trigger_years) |> unlist()
+# Show ASI drought years vs CERF years
+cerf_years <- df_cerf_yr |> filter(cerf == "yes") |> pull(yr)
 
-# Build comparison table
-all_years <- sort(unique(c(trigger_rp3, trigger_rp4, trigger_rp5)))
-
-tibble(
-    year = all_years,
-    rp3 = if_else(all_years %in% trigger_rp3, "✓", ""),
-    rp4 = if_else(all_years %in% trigger_rp4, "✓", ""),
-    rp5 = if_else(all_years %in% trigger_rp5, "✓", ""),
-    cerf = if_else(all_years %in% (df_cerf_yr |> filter(cerf == "yes") |> pull(yr)), "✓", "")
-) |>
-    arrange(desc(year)) |>
+df_asi_cerf |>
+    mutate(
+        asi_rp3 = if_else(asi_rp >= 3, "✓", ""),
+        asi_rp4 = if_else(asi_rp >= 4, "✓", ""),
+        asi_rp5 = if_else(asi_rp >= 5, "✓", ""),
+        cerf = if_else(pub_year %in% cerf_years, "✓", "")
+    ) |>
+    select(pub_year, asi_rp3, asi_rp4, asi_rp5, cerf) |>
+    arrange(desc(pub_year)) |>
     gt() |>
     tab_header(
-        title = "Trigger Years by Training RP Threshold",
-        subtitle = "Which years fire under each definition of 'drought'?"
+        title = "ASI Drought Years vs CERF Allocations",
+        subtitle = "Does ASI RP ≥ X capture CERF years?"
     ) |>
     cols_label(
-        year = "Year",
-        rp3 = "RP ≥ 3",
-        rp4 = "RP ≥ 4",
-        rp5 = "RP ≥ 5",
+        pub_year = "Year",
+        asi_rp3 = "RP ≥ 3",
+        asi_rp4 = "RP ≥ 4",
+        asi_rp5 = "RP ≥ 5",
         cerf = "CERF"
     ) |>
     tab_style(
         style = cell_fill(color = "tomato", alpha = 0.3),
         locations = cells_body(columns = cerf, rows = cerf == "✓")
     ) |>
-    tab_spanner(label = "Training Threshold", columns = c(rp3, rp4, rp5))
+    tab_style(
+        style = cell_fill(color = "lightgreen", alpha = 0.3),
+        locations = cells_body(columns = asi_rp4)
+    ) |>
+    tab_spanner(label = "ASI Threshold", columns = c(asi_rp3, asi_rp4, asi_rp5))
 ```
 
 ::: {.callout-note}
-## RP Sensitivity Findings
+## ASI Threshold Findings
 
-The choice of RP threshold for defining "drought" affects:
+**Key observations:**
 
-1. **Number of positive training examples**: RP 3 includes more years (~14), RP 5 fewer (~8)
-2. **CERF alignment**: All three thresholds produce similar AUC/F1, suggesting the CDI learns robust drought signals regardless of exact threshold
-3. **Trigger years**: The core drought years (major CERF allocations) are captured at all thresholds; differences occur at the margins
-
-**Why RP 4?**
-
-- Provides balanced class sizes for training (10/42 years)
-- Aligns with typical AA activation frequencies (every 3-5 years)
-- Performance is robust: nearby thresholds (RP 3, RP 5) yield similar CERF alignment
-- The "plateau" in CERF F1 across RP 3-5 indicates we're in a stable operating region
+1. **ASI-CERF relationship**: ASI achieves AUC = `r round(asi_auc, 2)` against CERF allocations, indicating the outcome variable does capture droughts that warranted humanitarian response
+2. **Threshold sensitivity**: The plot shows how precision/recall trade off as the RP threshold increases
+3. **RP 4 rationale**:
+   - Captures ~`r sum(df_asi_cerf$asi_rp >= 4)` years out of `r nrow(df_asi_cerf)` (~`r round(100*sum(df_asi_cerf$asi_rp >= 4)/nrow(df_asi_cerf))`%)
+   - Represents "worse than 1-in-4 years" — severe enough to warrant early action
+   - Aligns with typical AA activation frequencies (every 3-5 years)
 :::
