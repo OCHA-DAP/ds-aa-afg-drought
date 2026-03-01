@@ -1,0 +1,53 @@
+# Window 1 SEAS5 MAM forecast monitoring for 2026 drought trigger
+#
+# Reads SEAS5 from prod postgres, thresholds + area weights from dev blob.
+# Uploads plot + JSON summary to dev blob.
+# Sends email notification via Listmonk.
+
+name: SEAS5 W1 Monitor (2026)
+
+on:
+  schedule:
+    # Run March 5 at 06:00 UTC — SEAS5 March forecast typically available
+    # by first few days of the month
+    - cron: "0 6 5 3 *"
+  workflow_dispatch:
+    inputs:
+      year:
+        description: "Forecast year to evaluate (default: current year)"
+        required: false
+        type: string
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    env:
+      DSCI_AZ_DB_PROD_PW: ${{ secrets.DSCI_AZ_DB_PROD_PW }}
+      DSCI_AZ_DB_PROD_UID: ${{ secrets.DSCI_AZ_DB_PROD_UID }}
+      DSCI_AZ_DB_PROD_HOST: ${{ secrets.DSCI_AZ_DB_PROD_HOST }}
+      DSCI_AZ_BLOB_DEV_SAS: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS }}
+      DSCI_AZ_BLOB_DEV_SAS_WRITE: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS_WRITE }}
+      DSCI_LISTMONK_API_USERNAME: ${{ vars.DSCI_LISTMONK_API_USERNAME }}
+      DSCI_LISTMONK_API_KEY: ${{ secrets.DSCI_LISTMONK_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python and install dependencies
+        run: uv sync
+
+      - name: Determine year
+        id: params
+        run: |
+          if [ -n "${{ inputs.year }}" ]; then
+            echo "year=${{ inputs.year }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "year=$(date +%Y)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run SEAS5 W1 monitoring
+        run: |
+          uv run python src/monitoring_2026/w1_monitor_seas5.py \
+            --year ${{ steps.params.outputs.year }}
