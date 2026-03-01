@@ -14,6 +14,7 @@ Outputs (uploaded to blob):
 """
 
 import argparse
+import base64
 import json
 from calendar import monthrange
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import ocha_stratus as stratus
 import pandas as pd
+from listmonk import create_campaign, send_campaign
 from sqlalchemy import text
 
 # ── constants ────────────────────────────────────────────────────────
@@ -282,6 +284,76 @@ def write_summary(df_regional, current_year, threshold_mm, output_path):
     return summary
 
 
+# ── email ─────────────────────────────────────────────────────────────
+TEST_LIST_ID = 16  # TODO: replace with Listmonk list ID
+PROD_LIST_ID = "placeholder"  # TODO: replace with Listmonk list ID
+
+
+def build_email_html(summary: dict, plot_path: Path) -> str:
+    """Build HTML email body with trigger results and inline chart."""
+    triggered = summary["triggered"]
+    status = "ACTIVATED" if triggered else "NOT ACTIVATED"
+    forecast_mm = summary["forecast_mam_mm"]
+    threshold_mm = summary["threshold_mm"]
+    status_color = "#F2645A" if triggered else "#1EBFB3"
+
+    plot_b64 = base64.b64encode(plot_path.read_bytes()).decode()
+
+    return f"""
+Dear colleagues,
+<br><br>
+This is an automated monitoring update for the
+<b>Anticipatory Action framework for drought in Afghanistan</b>,
+Window 1 (SEAS5 seasonal precipitation forecast).
+<br><br>
+<table style="border-collapse:collapse;width:100%;" cellpadding="0"
+ cellspacing="0">
+<tr><td style="padding:12px 16px;background-color:{status_color};
+color:#FFFFFF;font-size:18px;font-weight:bold;text-align:center;">
+Window 1 SEAS5 trigger: {status}</td></tr>
+</table>
+<br>
+<table style="border-collapse:collapse;" cellpadding="8" cellspacing="0">
+<tr>
+  <td style="border:1px solid #DDD;font-weight:bold;">
+  SEAS5 MAM forecast</td>
+  <td style="border:1px solid #DDD;">{forecast_mm:.1f} mm</td>
+</tr>
+<tr>
+  <td style="border:1px solid #DDD;font-weight:bold;">
+  RP6 threshold</td>
+  <td style="border:1px solid #DDD;">{threshold_mm:.1f} mm</td>
+</tr>
+<tr>
+  <td style="border:1px solid #DDD;font-weight:bold;">
+  Trigger direction</td>
+  <td style="border:1px solid #DDD;">
+  Forecast &le; threshold (low precipitation indicates drought risk)
+  </td>
+</tr>
+</table>
+<br>
+The chart below shows the historical and current SEAS5
+March&ndash;April&ndash;May (MAM) precipitation forecast for the five
+northern Afghan provinces (Badghis, Balkh, Faryab, Jawzjan, Sar-e-Pul),
+compared against the return-period 6 threshold.
+<br><br>
+<img src="data:image/png;base64,{plot_b64}"
+ alt="SEAS5 MAM forecast bar chart"
+ style="max-width:100%;height:auto;" />
+<br><br>
+<p style="font-size:12px;color:#666;">
+<b>About the framework:</b> Under the anticipatory action framework
+for drought in Afghanistan, Window 1 evaluates the SEAS5 seasonal
+precipitation forecast issued in March for the
+March&ndash;April&ndash;May season. An area-weighted regional aggregate
+across the five target provinces is compared against a return-period 6
+threshold. If the forecast falls at or below the threshold, the trigger
+is activated.
+</p>
+"""
+
+
 # ── main ─────────────────────────────────────────────────────────────
 def main(year: int):
     print(f"SEAS5 Window 1 monitoring for {year}")
@@ -335,6 +407,27 @@ def main(year: int):
         content_type="application/json",
     )
     print("Upload complete.")
+
+    # email notification
+    triggered = summary["triggered"]
+    status = "ACTIVATED" if triggered else "NOT ACTIVATED"
+    year = summary["issued_year"]
+
+    body_html = build_email_html(summary, plot_path)
+    subject = (
+        "Anticipatory action Afghanistan: "
+        f"Drought W1 SEAS5 forecast [{status}]"
+    )
+
+    campaign_id = create_campaign(
+        name=f"[test] seas5_w1_{year}",
+        subject=subject,
+        list_ids=[TEST_LIST_ID],
+        body=body_html,
+    )
+    print(f"Created campaign with ID: {campaign_id}")
+    send_campaign(campaign_id)
+    print("Campaign sent.")
 
     return summary
 
