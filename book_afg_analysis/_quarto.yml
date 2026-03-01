@@ -18,6 +18,7 @@ book:
     - 07_composite_observational.qmd
     - 08_weight_selection.qmd
     - 09_pre_season_allocation_options.qmd
+    - 12_2026_trigger_modeling.qmd
     - summary.qmd
     - references.qmd
   appendices:
