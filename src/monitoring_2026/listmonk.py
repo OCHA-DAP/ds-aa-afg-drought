@@ -7,6 +7,7 @@ BASE_URL = (
 )
 
 BASE_CAMPAIGN_ID = 8
+BASE_TRANSACTIONAL_ID = 12
 
 USERNAME = os.getenv("DSCI_LISTMONK_API_USERNAME")
 PASSWORD = os.getenv("DSCI_LISTMONK_API_KEY")
@@ -50,3 +51,45 @@ def send_campaign(campaign_id: int):
         json={"status": "running"},
     )
     r.raise_for_status()
+
+
+def send_transactional(
+    to_emails: list[tuple[str, str]],
+    subject: str,
+    template_id: int = BASE_TRANSACTIONAL_ID,
+    cc_emails: list[tuple[str, str]] = None,
+    data: dict = None,
+):
+    payload = {
+        "subscriber_email": to_emails[0][1],
+        "template_id": template_id,
+        "from_email": "OCHA Data Science <ocha-datascience@un.org>",
+        "content_type": "html",
+        "subject": subject,
+        "data": data or {},
+        "headers": [
+            {
+                "To": ", ".join(
+                    [f"{name} <{email}>" for name, email in to_emails]
+                )
+            },
+            {
+                "Cc": ", ".join(
+                    [f"{name} <{email}>" for name, email in cc_emails or []]
+                )
+            },
+        ],
+    }
+
+    r = requests.post(
+        f"{BASE_URL}/tx",
+        auth=(USERNAME, PASSWORD),
+        json=payload,
+    )
+    if not r.ok:
+        print("Status:", r.status_code)
+        print("Response text:", r.text)
+        print("Payload sent:", payload)
+
+    r.raise_for_status()
+    return r.json()
