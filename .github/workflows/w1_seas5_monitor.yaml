@@ -17,6 +17,11 @@ on:
         description: "Forecast year to evaluate (default: current year)"
         required: false
         type: string
+      test:
+        description: "Add [test] prefix to email subject"
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   monitor:
@@ -49,5 +54,6 @@ jobs:
 
       - name: Run SEAS5 W1 monitoring
         run: |
-          uv run python src/monitoring_2026/w1_monitor_seas5.py \
-            --year ${{ steps.params.outputs.year }}
+          uv run python src/monitoring_2026/w1_monitor_seas5_transactional.py \
+            --year ${{ steps.params.outputs.year }} \
+            ${{ inputs.test == true && '--test' || '' }}

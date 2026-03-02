@@ -30,7 +30,7 @@ from sqlalchemy import text
 # ── constants ────────────────────────────────────────────────────────
 PROVINCES_AOI = ["Faryab", "Sar-e-Pul", "Jawzjan", "Balkh", "Badghis"]
 VALID_MONTHS = [3, 4, 5]
-BASELINE_START_YEAR = 1984
+BASELINE_START_YEAR = 1991
 
 THRESHOLD_BLOB = (
     "ds-aa-afg-drought/monitoring_inputs/2026/trigger_thresholds.parquet"

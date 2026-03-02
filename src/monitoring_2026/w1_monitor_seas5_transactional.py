@@ -33,7 +33,7 @@ from sqlalchemy import text
 # ── constants ────────────────────────────────────────────────────────
 PROVINCES_AOI = ["Faryab", "Sar-e-Pul", "Jawzjan", "Balkh", "Badghis"]
 VALID_MONTHS = [3, 4, 5]
-BASELINE_START_YEAR = 1984
+BASELINE_START_YEAR = 1991
 
 THRESHOLD_BLOB = (
     "ds-aa-afg-drought/monitoring_inputs/2026/trigger_thresholds.parquet"
@@ -358,7 +358,7 @@ is activated.
 
 
 # ── main ─────────────────────────────────────────────────────────────
-def main(year: int):
+def main(year: int, test: bool = False):
     print(f"SEAS5 Window 1 monitoring for {year}")
 
     # load threshold, area weights, and admin lookup from blob (dev)
@@ -424,6 +424,8 @@ def main(year: int):
         "Anticipatory action Afghanistan: "
         f"Drought W1 SEAS5 forecast [{status}]"
     )
+    if test:
+        subject = f"[test] {subject}"
 
     print(f"Sending transactional email to {TO_EMAILS}...")
     send_transactional(
@@ -447,5 +449,10 @@ if __name__ == "__main__":
         default=datetime.now().year,
         help="Forecast year to monitor (default: current year)",
     )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Add [test] prefix to subject line",
+    )
     args = parser.parse_args()
-    main(year=args.year)
+    main(year=args.year, test=args.test)
