@@ -39,7 +39,7 @@ AREA_BLOB = (
     "ds-aa-afg-drought/raw/vector/historical_era5_land_ndjfmam_lte2025.parquet"
 )
 ADMIN_LOOKUP_BLOB = "admin_lookup.parquet"
-OUTPUT_BLOB_DIR = "ds-aa-afg-drought/monitoring_outputs/2026"
+OUTPUT_BLOB_BASE = "ds-aa-afg-drought/monitoring_outputs"
 
 
 # ── data loading ─────────────────────────────────────────────────────
@@ -381,27 +381,31 @@ def main(year: int):
     print(f"Regional MAM series: {len(df_regional)} years")
 
     # outputs
+    prefix = f"{year}03"
     out_dir = Path("outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    plot_path = out_dir / "seas5_w1_monitor.png"
-    summary_path = out_dir / "seas5_w1_summary.json"
+    plot_name = f"{prefix}_seas5_w1_monitor.png"
+    summary_name = f"{prefix}_seas5_w1_summary.json"
+    plot_path = out_dir / plot_name
+    summary_path = out_dir / summary_name
 
     make_plot(df_regional, year, threshold_mm, plot_path)
     summary = write_summary(df_regional, year, threshold_mm, summary_path)
 
     # upload to blob
-    print("Uploading outputs to blob...")
+    blob_dir = f"{OUTPUT_BLOB_BASE}/{year}"
+    print(f"Uploading outputs to blob: {blob_dir}/...")
     stratus.upload_blob_data(
         data=plot_path.read_bytes(),
-        blob_name=f"{OUTPUT_BLOB_DIR}/seas5_w1_monitor.png",
+        blob_name=f"{blob_dir}/{plot_name}",
         stage="dev",
         container_name="projects",
         content_type="image/png",
     )
     stratus.upload_blob_data(
         data=json.dumps(summary, indent=2).encode(),
-        blob_name=f"{OUTPUT_BLOB_DIR}/seas5_w1_summary.json",
+        blob_name=f"{blob_dir}/{summary_name}",
         stage="dev",
         container_name="projects",
         content_type="application/json",
