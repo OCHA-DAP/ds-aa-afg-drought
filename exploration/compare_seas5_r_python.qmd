@@ -1,0 +1,255 @@
+---
+title: "SEAS5 MAM Aggregation: R vs Python Comparison"
+format: html
+---
+
+Verify that the Python monitoring pipeline (`w1_monitor_seas5.py`) produces
+identical regional MAM aggregates to the R pipeline used for threshold
+derivation (`data-raw/16_prepare_2026_model_feature_datasets.R`).
+
+## Setup
+
+```{r}
+#| label: setup-r
+library(dplyr)
+library(lubridate)
+library(cumulus)
+library(reticulate)
+library(ggplot2)
+# Point reticulate at the uv-managed venv
+use_virtualenv(here::here(".venv"), required = TRUE)
+```
+
+```{python}
+#| label: setup-python
+import sys
+from pathlib import Path
+
+# ensure project root is on path for imports
+sys.path.insert(0, str(Path.cwd()))
+
+from calendar import monthrange
+
+import numpy as np
+import ocha_stratus as stratus
+import pandas as pd
+from sqlalchemy import text
+```
+
+## Constants
+
+```{r}
+#| label: constants
+PROVINCES_AOI <- c("Faryab", "Sar-e-Pul", "Jawzjan", "Balkh", "Badghis")
+```
+
+## R Pipeline
+
+Replicate the exact logic from `data-raw/16_prepare_2026_model_feature_datasets.R`:
+
+1. Load SEAS5 from DB with `cumulus::pg_load_seas5_historical()` (which applies `mean * days_in_month`)
+2. Aggregate MAM months with `cumulus::seas5_aggregate_forecast()`
+3. Join area weights from ERA5 blob
+4. Compute `weighted.mean()` across provinces
+
+```{r}
+#| label: r-seas5-load
+# Load SEAS5 with unit conversion (daily rate -> monthly mm)
+df_seas5 <- pg_load_seas5_historical(
+  iso3 = "AFG",
+  adm_name = PROVINCES_AOI,
+  adm_level = 1,
+  convert_units = TRUE
+)
+
+# Aggregate to MAM total per province per issued_date (March only)
+df_seas5_mam <- seas5_aggregate_forecast(
+  df = df_seas5,
+  value = "mean",
+  valid_months = c(3, 4, 5),
+  by = c("iso3", "pcode", "name", "issued_date")
+) |>
+  filter(month(issued_date) == 3) |>
+  rename(adm1_name = name, mam_mm = mean)
+
+glimpse(df_seas5_mam)
+```
+
+```{r}
+#| label: r-area-weights
+# Load area weights from ERA5 blob (same source as Python pipeline)
+df_era5 <- blob_read(
+  name = "ds-aa-afg-drought/raw/vector/historical_era5_land_ndjfmam_lte2025.parquet",
+  stage = "dev",
+  container_name = "projects"
+) |>
+  janitor::clean_names()
+
+df_area_lookup <- df_era5 |>
+  filter(adm1_name %in% PROVINCES_AOI) |>
+  distinct(adm1_name, shape_area)
+
+df_area_lookup
+```
+
+```{r}
+#| label: r-regional-aggregate
+# Area-weighted regional mean per year
+df_r_regional <- df_seas5_mam |>
+  left_join(df_area_lookup, by = "adm1_name") |>
+  group_by(issued_date) |>
+  summarise(
+    r_mam_mm = weighted.mean(mam_mm, w = shape_area, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(year = year(issued_date)) |>
+  filter(year >= 1984) |>
+  select(year, r_mam_mm) |>
+  arrange(year)
+
+df_r_regional
+```
+
+## Python Pipeline
+
+Same logic as `w1_monitor_seas5.py`:
+
+1. Query SEAS5 from prod DB
+2. `mean * days_in_month` -> monthly mm
+3. Sum MAM per province
+4. `np.average` with `shape_area` weights
+
+```{python}
+#| label: py-load-data
+# Load area weights
+df_areas = stratus.load_parquet_from_blob(
+    blob_name="ds-aa-afg-drought/raw/vector/historical_era5_land_ndjfmam_lte2025.parquet",
+    stage="dev",
+    container_name="projects",
+)
+
+df_areas.columns = df_areas.columns.str.lower().str.replace(" ", "_")
+df_areas = df_areas.loc[df_areas["adm1_name"].isin(
+    ["Faryab", "Sar-e-Pul", "Jawzjan", "Balkh", "Badghis"]
+)][["adm1_name", "shape_area"]].drop_duplicates()
+
+# Load admin lookup
+df_lookup = stratus.load_parquet_from_blob(
+    blob_name="admin_lookup.parquet",
+    stage="dev",
+    container_name="polygon",
+)
+df_lookup.columns = df_lookup.columns.str.lower()
+df_lookup = df_lookup.loc[
+    (df_lookup["iso3"] == "AFG")
+    & (df_lookup["adm_level"] == 1)
+    & (df_lookup["adm1_name"].isin(
+        ["Faryab", "Sar-e-Pul", "Jawzjan", "Balkh", "Badghis"]
+    )),
+    ["adm1_name", "adm1_pcode"],
+].drop_duplicates()
+pcodes = df_lookup["adm1_pcode"].tolist()
+print(f"Pcodes: {pcodes}")
+print(f"Area weights:\n{df_areas}")
+```
+
+```{python}
+#| label: py-query-aggregate
+# Query SEAS5 from prod
+engine = stratus.get_engine(stage="prod")
+pcode_list = ", ".join(f"'{p}'" for p in pcodes)
+sql = text(f"""
+    SELECT iso3, pcode, valid_date, issued_date, leadtime, mean
+    FROM seas5
+    WHERE iso3 = 'AFG'
+      AND adm_level = 1
+      AND pcode IN ({pcode_list})
+      AND EXTRACT(MONTH FROM issued_date) = 3
+      AND EXTRACT(MONTH FROM valid_date) IN (3, 4, 5)
+    ORDER BY issued_date, pcode, valid_date
+""")
+with engine.connect() as conn:
+    df = pd.read_sql(sql, conn)
+
+# daily rate -> monthly mm
+df["days"] = df["valid_date"].apply(lambda d: monthrange(d.year, d.month)[1])
+df["precip_mm"] = df["mean"] * df["days"]
+
+# MAM sum per province
+df_province = (
+    df.groupby(["issued_date", "pcode"], as_index=False)["precip_mm"]
+    .sum()
+    .rename(columns={"precip_mm": "mam_mm"})
+)
+df_province = df_province.merge(
+    df_lookup.rename(columns={"adm1_pcode": "pcode"}), on="pcode", how="left"
+)
+
+# area-weighted regional mean
+df_province = df_province.merge(df_areas, on="adm1_name", how="left")
+
+def _weighted_mean(g):
+    return np.average(g["mam_mm"], weights=g["shape_area"])
+
+df_py_regional = (
+    df_province.groupby("issued_date", as_index=False)
+    .apply(_weighted_mean, include_groups=False)
+    .rename(columns={None: "py_mam_mm"})
+)
+df_py_regional["year"] = pd.to_datetime(df_py_regional["issued_date"]).dt.year
+df_py_regional = (
+    df_py_regional.loc[df_py_regional["year"] >= 1984][["year", "py_mam_mm"]]
+    .sort_values("year")
+    .reset_index(drop=True)
+)
+print(df_py_regional)
+```
+
+## Comparison
+
+```{r}
+#| label: compare
+# Pull Python results into R via reticulate
+df_py <- py$df_py_regional
+
+# Merge
+df_compare <- df_r_regional |>
+  inner_join(df_py, by = "year") |>
+  mutate(
+    diff_mm = r_mam_mm - py_mam_mm,
+    diff_pct = diff_mm / r_mam_mm * 100
+  )
+
+cat("Max absolute difference (mm):", max(abs(df_compare$diff_mm)), "\n")
+cat("Max relative difference (%):", max(abs(df_compare$diff_pct)), "\n")
+cat("Number of years compared:", nrow(df_compare), "\n")
+```
+
+```{r}
+#| label: compare-table
+df_compare |>
+  select(year, r_mam_mm, py_mam_mm, diff_mm) |>
+  mutate(across(where(is.numeric) & !matches("year"), ~round(.x, 4))) |>
+  knitr::kable(
+    col.names = c("Year", "R (mm)", "Python (mm)", "Diff (mm)"),
+    caption = "SEAS5 MAM regional aggregate: R vs Python"
+  )
+```
+
+```{r}
+#| label: compare-plot
+#| fig-width: 8
+#| fig-height: 4
+
+
+ggplot(df_compare, aes(x = r_mam_mm, y = py_mam_mm)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point(alpha = 0.7) +
+  labs(
+    x = "R pipeline (mm)",
+    y = "Python pipeline (mm)",
+    title = "SEAS5 MAM Regional Aggregate: R vs Python",
+    subtitle = "Points on the dashed line = perfect agreement"
+  ) +
+  theme_minimal()
+```
