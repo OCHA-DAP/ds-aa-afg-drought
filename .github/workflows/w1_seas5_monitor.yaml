@@ -7,10 +7,10 @@
 name: SEAS5 W1 Monitor (2026)
 
 on:
-  schedule:
-    # Run March 5 at 06:00 UTC — SEAS5 March forecast typically available
-    # by first few days of the month
-    - cron: "0 6 5 3 *"
+  # schedule:
+  #   # Run March 5 at 06:00 UTC — SEAS5 March forecast typically available
+  #   # by first few days of the month
+  #   - cron: "0 6 5 3 *"
   workflow_dispatch:
     inputs:
       year:

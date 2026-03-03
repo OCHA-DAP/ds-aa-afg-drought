@@ -212,7 +212,7 @@ def make_plot(df_regional, current_year, threshold_mm, output_path):
     if not current_row.empty:
         val = current_row["mam_mm"].iloc[0]
         triggered = val <= threshold_mm
-        status = "TRIGGERED" if triggered else "Not triggered"
+        status = "Threshold reached" if triggered else "Threshold not reached"
         color = "#F2645A" if triggered else "#1EBFB3"
         ax.annotate(
             f"{current_year}: {val:.0f} mm\n{status}",
@@ -277,7 +277,7 @@ def write_summary(df_regional, current_year, threshold_mm, output_path):
     print(f"Summary saved: {output_path}")
 
     # also print to stdout for GHA logs
-    status = "TRIGGERED" if triggered else "NOT TRIGGERED"
+    status = "THRESHOLD REACHED" if triggered else "THRESHOLD NOT REACHED"
     print(f"\n{'=' * 50}")
     print(f"  SEAS5 W1 Result: {status}")
     print(f"  Forecast: {forecast_mm:.1f} mm")
@@ -295,7 +295,7 @@ CC_EMAILS = [("Tristan Downing", "tristan.downing@un.org")]
 def build_email_html(summary: dict, plot_path: Path) -> str:
     """Build HTML email body with trigger results and inline chart."""
     triggered = summary["triggered"]
-    status = "ACTIVATED" if triggered else "NOT ACTIVATED"
+    status = "THRESHOLD REACHED" if triggered else "THRESHOLD NOT REACHED"
     forecast_mm = summary["forecast_mam_mm"]
     threshold_mm = summary["threshold_mm"]
     status_color = "#F2645A" if triggered else "#1EBFB3"
@@ -313,7 +313,7 @@ Window 1 (SEAS5 seasonal precipitation forecast).
  cellspacing="0">
 <tr><td style="padding:12px 16px;background-color:{status_color};
 color:#FFFFFF;font-size:18px;font-weight:bold;text-align:center;">
-Window 1 SEAS5 trigger: {status}</td></tr>
+Window 1 SEAS5: {status}</td></tr>
 </table>
 <br>
 <table style="border-collapse:collapse;" cellpadding="8" cellspacing="0">
@@ -417,7 +417,7 @@ def main(year: int, test: bool = False):
 
     # email notification (transactional)
     triggered = summary["triggered"]
-    status = "ACTIVATED" if triggered else "NOT ACTIVATED"
+    status = "THRESHOLD REACHED" if triggered else "THRESHOLD NOT REACHED"
 
     body_html = build_email_html(summary, plot_path)
     subject = (
