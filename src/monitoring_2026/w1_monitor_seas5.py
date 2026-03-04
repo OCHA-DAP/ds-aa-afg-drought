@@ -348,8 +348,8 @@ for drought in Afghanistan, Window 1 evaluates the SEAS5 seasonal
 precipitation forecast issued in March for the
 March&ndash;April&ndash;May season. An area-weighted regional aggregate
 across the five target provinces is compared against a return-period 6
-threshold. If the forecast falls at or below the threshold, the trigger
-is activated.
+threshold. If the forecast falls at or below the threshold, the
+threshold is considered reached.
 </p>
 """
 

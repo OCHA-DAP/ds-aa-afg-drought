@@ -19,6 +19,7 @@ Outputs (uploaded to blob):
 import argparse
 import base64
 import json
+import re
 from calendar import monthrange
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +44,9 @@ AREA_BLOB = (
 )
 ADMIN_LOOKUP_BLOB = "admin_lookup.parquet"
 OUTPUT_BLOB_BASE = "ds-aa-afg-drought/monitoring_outputs"
+DISTRIBUTION_LIST_BLOB = (
+    "ds-aa-afg-drought/monitoring_inputs/2026/distribution_list.csv"
+)
 
 
 # ── data loading ─────────────────────────────────────────────────────
@@ -288,8 +292,48 @@ def write_summary(df_regional, current_year, threshold_mm, output_path):
 
 
 # ── email ─────────────────────────────────────────────────────────────
-TO_EMAILS = [("Zachary Arno", "zachary.arno@un.org")]
-CC_EMAILS = [("Tristan Downing", "tristan.downing@un.org")]
+def load_distribution_list(group: str = "full_list"):
+    """Load email distribution list from blob and split into to/cc lists.
+
+    Parameters
+    ----------
+    group : str
+        Column name in the CSV to filter on (e.g. 'core_developer',
+        'developers', 'internal_chd', 'full_list').
+
+    Returns
+    -------
+    to_emails, cc_emails : tuple of list[tuple[str, str]]
+        Each entry is (name, email). Name may be empty string.
+    """
+    df = stratus.load_csv_from_blob(
+        blob_name=DISTRIBUTION_LIST_BLOB,
+        stage="dev",
+        container_name="projects",
+    )
+    df = df.loc[df[group].fillna(False).astype(bool)]
+
+    # validate email addresses
+    email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    invalid = df.loc[
+        ~df["email"].str.match(email_re, na=False), "email"
+    ].tolist()
+    if invalid:
+        print(
+            f"WARNING: invalid email addresses in distribution list: {invalid}"
+        )
+
+    df = df.loc[df["email"].str.match(email_re, na=False)]
+
+    def _to_tuples(sub):
+        return [
+            ("" if pd.isna(row.get("name")) else row["name"], row["email"])
+            for _, row in sub.iterrows()
+        ]
+
+    to_emails = _to_tuples(df.loc[df["to_cc"] == "to"])
+    cc_emails = _to_tuples(df.loc[df["to_cc"] == "cc"])
+    return to_emails, cc_emails
 
 
 def build_email_html(summary: dict, plot_path: Path) -> str:
@@ -351,14 +395,14 @@ for drought in Afghanistan, Window 1 evaluates the SEAS5 seasonal
 precipitation forecast issued in March for the
 March&ndash;April&ndash;May season. An area-weighted regional aggregate
 across the five target provinces is compared against a return-period 6
-threshold. If the forecast falls at or below the threshold, the trigger
-is activated.
+threshold. If the forecast falls at or below the threshold, the
+threshold is considered reached.
 </p>
 """
 
 
 # ── main ─────────────────────────────────────────────────────────────
-def main(year: int, test: bool = False):
+def main(year: int, test: bool = False, email_group: str = "core_developer"):
     print(f"SEAS5 Window 1 monitoring for {year}")
 
     # load threshold, area weights, and admin lookup from blob (dev)
@@ -419,6 +463,12 @@ def main(year: int, test: bool = False):
     triggered = summary["triggered"]
     status = "THRESHOLD REACHED" if triggered else "THRESHOLD NOT REACHED"
 
+    to_emails, cc_emails = load_distribution_list(group=email_group)
+    print(
+        f"Distribution list ({email_group}): "
+        f"{len(to_emails)} to, {len(cc_emails)} cc"
+    )
+
     body_html = build_email_html(summary, plot_path)
     subject = (
         "Anticipatory action Afghanistan: "
@@ -427,10 +477,10 @@ def main(year: int, test: bool = False):
     if test:
         subject = f"[test] {subject}"
 
-    print(f"Sending transactional email to {TO_EMAILS}...")
+    print(f"Sending transactional email to {[e for _, e in to_emails]}...")
     send_transactional(
-        to_emails=TO_EMAILS,
-        cc_emails=CC_EMAILS,
+        to_emails=to_emails,
+        cc_emails=cc_emails,
         subject=subject,
         data={"content": body_html},
     )
@@ -454,5 +504,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Add [test] prefix to subject line",
     )
+    parser.add_argument(
+        "--email-group",
+        type=str,
+        default="core_developer",
+        choices=[
+            "core_developer",
+            "developers",
+            "internal_chd",
+            "full_list",
+        ],
+        help="Distribution list group to send to (default: core_developer)",
+    )
     args = parser.parse_args()
-    main(year=args.year, test=args.test)
+    main(year=args.year, test=args.test, email_group=args.email_group)

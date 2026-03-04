@@ -22,6 +22,16 @@ on:
         required: false
         type: boolean
         default: true
+      email_group:
+        description: "Distribution list group"
+        required: false
+        type: choice
+        default: core_developer
+        options:
+          - core_developer
+          - developers
+          - internal_chd
+          - full_list
 
 jobs:
   monitor:
@@ -56,4 +66,5 @@ jobs:
         run: |
           uv run python src/monitoring_2026/w1_monitor_seas5_transactional.py \
             --year ${{ steps.params.outputs.year }} \
+            --email-group ${{ inputs.email_group || 'core_developer' }} \
             ${{ inputs.test == true && '--test' || '' }}
