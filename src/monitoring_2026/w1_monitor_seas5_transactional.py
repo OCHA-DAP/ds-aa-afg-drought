@@ -471,8 +471,8 @@ def main(year: int, test: bool = False, email_group: str = "core_developer"):
 
     body_html = build_email_html(summary, plot_path)
     subject = (
-        "Anticipatory action Afghanistan: "
-        f"Drought W1 SEAS5 forecast [{status}]"
+        "Anticipatory Action Afghanistan: "
+        f"Drought Window 1 SEAS5 forecast [{status}]"
     )
     if test:
         subject = f"[test] {subject}"

@@ -419,8 +419,8 @@ def main(year: int):
 
     body_html = build_email_html(summary, plot_path)
     subject = (
-        "Anticipatory action Afghanistan: "
-        f"Drought W1 SEAS5 forecast [{status}]"
+        "Anticipatory Action Afghanistan: "
+        f"Drought Window 1 SEAS5 forecast [{status}]"
     )
 
     campaign_id = create_campaign(
