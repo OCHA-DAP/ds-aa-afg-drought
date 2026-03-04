@@ -1,7 +1,7 @@
 project:
   type: book
 
-jupyter: dsci_playground
+jupyter: ds-aa-afg-drought
 
 book:
   title: "Anticipatory Action - Drought Afghanistan - 2025"
@@ -9,6 +9,7 @@ book:
   date: "12/10/2024"
   chapters:
     - index.qmd
+    - 00_key_findings.qmd
     - intro.qmd
     - 02_prioritization_rainfall.qmd
     - 03_initial_proposal_faryab.qmd
@@ -19,11 +20,15 @@ book:
     - 08_weight_selection.qmd
     - 09_pre_season_allocation_options.qmd
     - 12_2026_trigger_modeling.qmd
+    - 13_2026_trigger_proposal.qmd
+    - 14_cerf_allocation_alignment.qmd
     - summary.qmd
     - references.qmd
   appendices:
     - 10_asi_provincial_correlation.qmd
     - 11_multi_year_drought.qmd
+    - 15_baseline_sensitivity.qmd
+    - 16_performance_comparison.qmd
 
 bibliography: references.bib
 
