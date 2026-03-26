@@ -8,7 +8,7 @@ All workflows are **manual dispatch only** (no cron). Trigger them from the Acti
 
 ### March: Window 1 (SEAS5 forecast)
 
-SEAS5 March-issued forecasts are typically available in the first few days of March.
+SEAS5 March-issued forecasts are available on the **5th of March**.
 
 1. **Dispatch** `SEAS5 W1 Monitor (2026)` from GitHub Actions
 2. Set `test: true` and `email_group: core_developer` for a test run
@@ -18,28 +18,31 @@ No data ingestion step needed — W1 reads SEAS5 directly from the prod database
 
 ### April: Window 2 (CDI)
 
-ERA5 March data is typically available ~7 days after month end. FAO March dekad 3 data is usually available in the first week of April. SEAS5 April-issued forecasts are available in the first days of April.
+W2 requires ERA5 March data to be downloaded first — this is a separate workflow that must complete before the CDI monitor can run. SEAS5 April-issued forecasts are available on the **5th of April**. ERA5 March data is typically available ~7 days after month end. FAO March dekad 3 data is usually available in the first week of April.
 
-1. **Download ERA5 March data**: dispatch `ERA5 Land Monitor` with `year` and `month: 3`
+1. **Download ERA5 March data**: dispatch `ERA5 Land Monitor` with `year` and `month: 3`. Wait for it to complete.
 2. **Dispatch** `CDI W2 Monitor (2026)` from GitHub Actions
 3. Set `test: true` and `email_group: core_developer` for a test run
 4. Review the email, then re-run with `test: false` and the desired `email_group`
 
 ```mermaid
 flowchart LR
-    A[Download ERA5 March<br>ERA5 Land Monitor GHA] --> B[Run W2 CDI Monitor<br>CDI W2 Monitor GHA]
-    B --> C[Review test email]
-    C --> D[Re-run with<br>full distribution]
+    A[1. Download ERA5 March<br><b>ERA5 Land Monitor</b> GHA<br>must complete first] --> B[2. Run CDI monitor<br><b>CDI W2 Monitor</b> GHA]
+    B --> C[3. Review test email]
+    C --> D[4. Re-run with<br>full distribution]
+
+    style A fill:#FFF3CD,stroke:#856404
+    style B fill:#D4EDDA,stroke:#155724
 ```
 
 ### Data Availability Timeline
 
 | Data | Typical availability | Needed for |
 |---|---|---|
-| SEAS5 March forecast | ~March 1-3 | W1 |
-| ERA5 Land March | ~April 7 | W2 |
-| FAO ASI/VHI March dekad 3 | ~April 1-7 | W2 |
-| SEAS5 April forecast | ~April 1-3 | W2 |
+| SEAS5 March forecast | March 5 | W1 |
+| SEAS5 April forecast | April 5 | W2 |
+| ERA5 Land March | ~April 7 | W2 (must download first via ERA5 Land Monitor) |
+| FAO ASI/VHI March dekad 3 | ~April 1-7 | W2 (fetched live by CDI script) |
 
 ## Pipeline Overview
 
