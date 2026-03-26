@@ -4,6 +4,7 @@
 # ds-aa-afg-drought
 
 <!-- badges: start -->
+
 <!-- badges: end -->
 
 This repo contains analysis/exploratory analysis of climatic variables
@@ -68,8 +69,13 @@ The code in this repository is organized as follows:
     └── blob_utils.py                           # scripts to run monitoring
                                                 # system pipeline
 
-
 ```
+
+## Docs
+
+- [Monitoring Workflows](.github/README.md) — operational runbook for
+  the 2026 drought trigger GHA pipelines (W1 SEAS5, W2 CDI, ERA5
+  ingestion)
 
 ## Development
 
