@@ -11,10 +11,10 @@
 name: ERA5 Land Monitor
 
 on:
-  schedule:
-    # Run on the 8th of each month at 06:00 UTC
-    # ERA5 monthly aggregates are typically available ~7 days after month end
-    - cron: "0 6 8 * *"
+  # schedule:
+  #   # Run on the 8th of each month at 06:00 UTC
+  #   # ERA5 monthly aggregates are typically available ~7 days after month end
+  #   - cron: "0 6 8 * *"
   workflow_dispatch:
     inputs:
       year:
