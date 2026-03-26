@@ -1039,6 +1039,154 @@ cat(glue("- **RP6 threshold (mm): {round(seas5_mm_rp6, 2)}**\n\n"))
 cat(glue("- Correlation (re-derived z vs feature set z, joined by year): {z_cor}\n\n"))
 ```
 
+### Baseline Sensitivity: 1991 vs 1984 {#sec-baseline-sensitivity}
+
+The z-scores and empirical RPs above use the full 1984–2025 SEAS5 record (42 years). Since ASI validation is only possible from 1991 onward, we check whether restricting the SEAS5 baseline to 1991–2024 (34 years) changes which years fire or shifts the mm threshold.
+
+```{r}
+#| label: baseline-comparison
+
+df_mm_all <- df_seas5_mam_mm |>
+    mutate(year = lubridate::year(issued_date))
+
+df_mm_1991 <- df_mm_all |>
+    filter(year >= 1991, year <= 2024)
+
+# Empirical RP under each baseline (low mm = drought = high RP)
+df_mm_all <- df_mm_all |>
+    mutate(rp_1984 = rp_empirical(value, direction = "1"))
+
+df_mm_1991 <- df_mm_1991 |>
+    mutate(rp_1991 = rp_empirical(value, direction = "1"))
+
+# Join for comparison
+df_rp_compare <- df_mm_all |>
+    left_join(df_mm_1991 |> select(year, rp_1991), by = "year") |>
+    arrange(value)
+
+# Years firing at RP >= 6 under each baseline
+years_fire_1984 <- df_rp_compare |> filter(rp_1984 >= 6) |> pull(year) |> sort()
+years_fire_1991 <- df_rp_compare |> filter(!is.na(rp_1991), rp_1991 >= 6) |> pull(year) |> sort()
+
+# Exact mm threshold: the maximum mm value among years with RP >= 6
+# (i.e. the "wettest" year that still qualifies as RP6+ drought)
+mm_exact_1984 <- max(df_rp_compare$value[df_rp_compare$rp_1984 >= 6])
+mm_exact_1991 <- max(df_mm_1991$value[df_mm_1991$rp_1991 >= 6])
+
+# 1991 baseline mean/sd for reference
+seas5_mean_1991 <- mean(df_mm_1991$value)
+seas5_sd_1991 <- sd(df_mm_1991$value)
+```
+
+```{r}
+#| label: baseline-comparison-table
+
+# Show all years with RP >= 6 under either baseline
+df_fire_compare <- df_rp_compare |>
+    filter(rp_1984 >= 6 | (!is.na(rp_1991) & rp_1991 >= 6)) |>
+    mutate(
+        fires_1984 = if_else(rp_1984 >= 6, "yes", "no"),
+        fires_1991 = if_else(!is.na(rp_1991) & rp_1991 >= 6, "yes", "no")
+    ) |>
+    arrange(value) |>
+    select(year, value, rp_1984, rp_1991, fires_1984, fires_1991) |>
+    mutate(across(c(value, rp_1984, rp_1991), \(x) round(x, 2)))
+
+df_fire_compare |>
+    rename(
+        Year = year,
+        `MAM (mm)` = value,
+        `RP (1984)` = rp_1984,
+        `RP (1991)` = rp_1991,
+        `Fires (1984)` = fires_1984,
+        `Fires (1991)` = fires_1991
+    ) |>
+    gt() |>
+    tab_header(
+        title = "SEAS5 RP ≥ 6: Baseline Comparison",
+        subtitle = glue("1984 baseline: {nrow(df_mm_all)} years | 1991 baseline: {nrow(df_mm_1991)} years")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.3),
+        locations = cells_body(columns = `Fires (1984)`, rows = df_fire_compare$fires_1984 == "yes")
+    ) |>
+    tab_style(
+        style = cell_fill(color = "steelblue", alpha = 0.3),
+        locations = cells_body(columns = `Fires (1991)`, rows = df_fire_compare$fires_1991 == "yes")
+    )
+```
+
+```{r}
+#| label: baseline-mm-comparison
+#| results: asis
+
+same_years <- setequal(years_fire_1984, intersect(years_fire_1991, years_fire_1984))
+
+cat("**MM threshold comparison:**\n\n")
+cat(glue("| Baseline | N years | Mean (mm) | SD (mm) | Exact RP≥6 threshold (mm) |\n"))
+cat("|----------|---------|-----------|---------|---------------------------|\n")
+cat(glue("| 1984–2025 | {nrow(df_mm_all)} | {round(seas5_mean_mm, 2)} | {round(seas5_sd_mm, 2)} | {round(mm_exact_1984, 2)} |\n"))
+cat(glue("| 1991–2024 | {nrow(df_mm_1991)} | {round(seas5_mean_1991, 2)} | {round(seas5_sd_1991, 2)} | {round(mm_exact_1991, 2)} |\n"))
+cat(glue("| 1984 (interpolated) | {nrow(df_mm_all)} | — | — | {round(seas5_mm_rp6, 2)} |\n\n"))
+
+cat(glue("**Difference (exact):** {round(mm_exact_1991 - mm_exact_1984, 2)} mm\n\n"))
+
+cat(glue("**Years firing (1984 baseline):** {paste(years_fire_1984, collapse = ', ')}\n\n"))
+cat(glue("**Years firing (1991 baseline):** {paste(years_fire_1991, collapse = ', ')}\n\n"))
+
+if (setequal(years_fire_1984[years_fire_1984 >= 1991], years_fire_1991)) {
+    cat("The same years fire under both baselines (within the 1991–2024 overlap period).\n")
+} else {
+    only_1984 <- setdiff(years_fire_1984[years_fire_1984 >= 1991], years_fire_1991)
+    only_1991 <- setdiff(years_fire_1991, years_fire_1984)
+    if (length(only_1984) > 0) cat(glue("**Only fires under 1984 baseline:** {paste(only_1984, collapse = ', ')}\n\n"))
+    if (length(only_1991) > 0) cat(glue("**Only fires under 1991 baseline:** {paste(only_1991, collapse = ', ')}\n\n"))
+}
+```
+
+```{r}
+#| label: seas5-threshold-timeseries
+#| fig-height: 5
+#| fig-width: 8
+
+df_seas5_ts <- df_seas5_mam_mm |>
+    mutate(
+        year = lubridate::year(issued_date),
+        triggered = value <= seas5_mm_rp6,
+        year_label = paste0("'", formatC(year %% 100, width = 2, flag = "0"))
+    )
+
+ggplot(df_seas5_ts, aes(x = year, y = value)) +
+    geom_hline(
+        yintercept = seas5_mm_rp6,
+        linetype = "dashed", color = "grey40", linewidth = 0.6
+    ) +
+    annotate("text",
+        x = max(df_seas5_ts$year), y = seas5_mm_rp6,
+        label = glue("RP6 threshold: {round(seas5_mm_rp6, 1)} mm"),
+        hjust = 1, vjust = -0.7, size = 3, color = "grey40"
+    ) +
+    geom_line(color = "grey70", linewidth = 0.4) +
+    geom_point(aes(color = triggered), size = 2.5) +
+    geom_text(
+        data = \(d) filter(d, triggered),
+        aes(label = year_label),
+        vjust = -1, size = 2.8, color = hdx_hex("tomato-hdx")
+    ) +
+    scale_color_manual(
+        values = c("FALSE" = hdx_hex("sapphire-hdx"), "TRUE" = hdx_hex("tomato-hdx")),
+        labels = c("FALSE" = "No trigger", "TRUE" = "Triggered"),
+        name = NULL
+    ) +
+    labs(
+        title = "SEAS5 MAM Precipitation Forecast (March-issued)",
+        subtitle = "Area-weighted regional mean | Triggered years fall below RP6 threshold",
+        x = NULL,
+        y = "MAM Precipitation (mm)"
+    ) +
+    theme(legend.position = "bottom")
+```
+
 ```{r}
 #| label: write-thresholds
 #| eval: false
@@ -1065,3 +1213,185 @@ To use in the monitoring pipeline:
 
 Note: SEAS5 and CDI have **opposite directionality** — SEAS5 triggers on values *below* the threshold (dry forecast), CDI triggers on values *above* the threshold (drought signal).
 :::
+
+## Monitoring Artifacts {#sec-monitoring-artifacts}
+
+Export distribution params (mu/sigma) and historical CDI timeseries for the W2 monitoring pipeline. Run once, then set `eval: false`.
+
+```{r}
+#| label: compute-distribution-params
+#| eval: false
+
+# Load raw ERA5 (same source as data-raw/16_prepare_2026_model_feature_datasets.R)
+df_era5_raw <- blob_read(
+    name = "ds-aa-afg-drought/raw/vector/historical_era5_land_ndjfmam_lte2025.parquet",
+    container = "projects"
+) |>
+    janitor::clean_names() |>
+    filter(adm1_name %in% PROVINCES_AOI)
+
+# ERA5 March indicators: snow_cover, total_precipitation_sum, soil moisture (avg layers)
+# Baseline: 1984-2025 inclusive (must exclude 2026+ monitoring data)
+df_era5_march <- df_era5_raw |>
+    filter(
+        lubridate::month(date) == 3,
+        lubridate::year(date) >= 1984,
+        lubridate::year(date) <= 2025
+    ) |>
+    mutate(
+        parameter = if_else(
+            stringr::str_detect(parameter, "volumetric_soil_water_layer"),
+            "volumetric_soil_water_1m", parameter
+        )
+    ) |>
+    group_by(adm1_name, parameter, date, shape_area) |>
+    summarise(value = mean(value), .groups = "drop") |>
+    filter(parameter %in% c("snow_cover", "volumetric_soil_water_1m", "total_precipitation_sum"))
+
+# Area-weighted regional merge
+df_era5_merged <- df_era5_march |>
+    group_by(parameter, date) |>
+    summarise(value = weighted.mean(value, w = shape_area), .groups = "drop") |>
+    filter(lubridate::year(date) >= 1984)
+
+# Load FAO ASI & VHI (same URLs as R/load_funcs.R)
+df_fao_raw <- bind_rows(
+    readr::read_csv(
+        "https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_ASI/DATA/ASI_Dekad_Season1_data.csv",
+        show_col_types = FALSE
+    ) |> mutate(parameter = "asi"),
+    readr::read_csv(
+        "https://www.fao.org/giews/earthobservation/asis/data/country/AFG/MAP_NDVI_ANOMALY/DATA/vhi_adm1_dekad_data.csv",
+        show_col_types = FALSE
+    ) |> mutate(parameter = "vhi")
+) |>
+    janitor::clean_names() |>
+    rename(value = data, adm1_name = province) |>
+    filter(
+        adm1_name %in% PROVINCES_AOI,
+        month == "03", dekad == 3
+    ) |>
+    left_join(df_area, by = "adm1_name")
+
+df_fao_merged <- df_fao_raw |>
+    filter(lubridate::year(date) >= 1984, lubridate::year(date) <= 2025) |>
+    group_by(parameter, date) |>
+    summarise(value = weighted.mean(value, w = shape_area), .groups = "drop")
+
+# SEAS5 April-issued (lt0=Apr, lt1=May) — df_seas5_raw already loaded above
+df_seas5_apr_may <- df_seas5_raw |>
+    filter(
+        lubridate::month(issued_date) == 4,
+        leadtime %in% c(0, 1)
+    ) |>
+    mutate(
+        parameter = glue("seas5 {lubridate::month(valid_date, abbr = TRUE, label = TRUE)}"),
+        date = issued_date
+    ) |>
+    rename(adm1_name = name, value = mean) |>
+    left_join(df_area, by = "adm1_name") |>
+    group_by(parameter, date) |>
+    summarise(value = weighted.mean(value, w = shape_area), .groups = "drop") |>
+    filter(lubridate::year(date) >= 1984, lubridate::year(date) <= 2025)
+
+# Combine all and compute mu/sigma (1984-2025 baseline)
+df_all_merged <- bind_rows(df_era5_merged, df_fao_merged, df_seas5_apr_may)
+
+df_distribution_params <- df_all_merged |>
+    group_by(parameter) |>
+    summarise(mu = mean(value), sigma = sd(value), .groups = "drop")
+
+blob_write(
+    df = df_distribution_params,
+    name = "ds-aa-afg-drought/monitoring_inputs/2026/cdi_distribution_params.parquet",
+    stage = "dev",
+    container = "projects"
+)
+
+cat("Distribution params saved:\n")
+df_distribution_params |> knitr::kable(digits = 4)
+```
+
+```{r}
+#| label: compute-historical-timeseries
+#| eval: false
+
+# Pivot April feature set to long format for monitoring plot
+# df_apr has wide z-scored columns; cdi_weights has term + weight
+
+cdi_features <- cdi_weights$term
+
+df_historical_long <- df_apr |>
+    select(pub_year, all_of(cdi_features)) |>
+    pivot_longer(
+        cols = all_of(cdi_features),
+        names_to = "parameter",
+        values_to = "zscore"
+    )
+
+# Add CDI composite (from df_historical which has calc_cdi output)
+df_cdi_row <- df_historical |>
+    transmute(pub_year = year, parameter = "cdi", zscore = cdi)
+
+df_timeseries <- bind_rows(df_historical_long, df_cdi_row) |>
+    rename(year = pub_year) |>
+    arrange(year, parameter)
+
+blob_write(
+    df = df_timeseries,
+    name = "ds-aa-afg-drought/monitoring_inputs/2026/cdi_historical_timeseries.parquet",
+    stage = "dev",
+    container = "projects"
+)
+
+cat(glue("Historical timeseries saved: {nrow(df_timeseries)} rows, {length(unique(df_timeseries$year))} years\n"))
+cat(glue("Parameters: {paste(unique(df_timeseries$parameter), collapse = ', ')}\n"))
+```
+
+## Appendix: Activation History {#sec-activation-history}
+
+Boolean activation history for both trigger windows. Uses the recommended configuration: SEAS5 RP ≥ 6 (Window 1, March) and CDI F1-optimized threshold (Window 2, April).
+
+```{r}
+#| label: activation-history
+
+df_activation <- df_trigger |>
+    transmute(
+        year,
+        afg_drought_v2_wt1 = seas5_rp6 == "yes",
+        afg_drought_v2_wt2 = cdi_trig == "yes"
+    ) |>
+    arrange(year)
+
+df_activation |>
+    gt() |>
+    tab_header(
+        title = "Activation History: AFG Drought v2",
+        subtitle = glue("{min(df_activation$year)}–{max(df_activation$year)} | wt1 = SEAS5 March, wt2 = CDI April")
+    ) |>
+    cols_label(
+        year = "Year",
+        afg_drought_v2_wt1 = "afg_drought_v2_wt1",
+        afg_drought_v2_wt2 = "afg_drought_v2_wt2"
+    ) |>
+    tab_style(
+        style = cell_fill(color = "tomato", alpha = 0.3),
+        locations = cells_body(columns = afg_drought_v2_wt1, rows = df_activation$afg_drought_v2_wt1)
+    ) |>
+    tab_style(
+        style = cell_fill(color = "tomato", alpha = 0.3),
+        locations = cells_body(columns = afg_drought_v2_wt2, rows = df_activation$afg_drought_v2_wt2)
+    )
+```
+
+```{r}
+#| label: write-activation-history
+#| eval: false
+
+blob_write(
+    df = df_activation,
+    name = "ds-aa-cerf-global-trigger-allocations/aa_historical/yearly/v5/afg_drought_v2.csv",
+    stage = "dev",
+    container = "projects"
+)
+```
