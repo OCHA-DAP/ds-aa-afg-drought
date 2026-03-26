@@ -2,30 +2,69 @@
 
 Automated drought trigger monitoring for the 2026 Anticipatory Action framework in Afghanistan. Two trigger windows evaluate independent drought signals using OR logic — a year triggers if **either** window fires.
 
+All workflows are **manual dispatch only** (no cron). Trigger them from the Actions tab on GitHub or via `gh workflow run`.
+
+## How to Run Monitoring (Step by Step)
+
+### March: Window 1 (SEAS5 forecast)
+
+SEAS5 March-issued forecasts are typically available in the first few days of March.
+
+1. **Dispatch** `SEAS5 W1 Monitor (2026)` from GitHub Actions
+2. Set `test: true` and `email_group: core_developer` for a test run
+3. Review the email, then re-run with `test: false` and the desired `email_group`
+
+No data ingestion step needed — W1 reads SEAS5 directly from the prod database.
+
+### April: Window 2 (CDI)
+
+ERA5 March data is typically available ~7 days after month end. FAO March dekad 3 data is usually available in the first week of April. SEAS5 April-issued forecasts are available in the first days of April.
+
+1. **Download ERA5 March data**: dispatch `ERA5 Land Monitor` with `year` and `month: 3`
+2. **Dispatch** `CDI W2 Monitor (2026)` from GitHub Actions
+3. Set `test: true` and `email_group: core_developer` for a test run
+4. Review the email, then re-run with `test: false` and the desired `email_group`
+
+```mermaid
+flowchart LR
+    A[Download ERA5 March<br>ERA5 Land Monitor GHA] --> B[Run W2 CDI Monitor<br>CDI W2 Monitor GHA]
+    B --> C[Review test email]
+    C --> D[Re-run with<br>full distribution]
+```
+
+### Data Availability Timeline
+
+| Data | Typical availability | Needed for |
+|---|---|---|
+| SEAS5 March forecast | ~March 1-3 | W1 |
+| ERA5 Land March | ~April 7 | W2 |
+| FAO ASI/VHI March dekad 3 | ~April 1-7 | W2 |
+| SEAS5 April forecast | ~April 1-3 | W2 |
+
 ## Pipeline Overview
 
 ```mermaid
 flowchart TB
     subgraph Data Sources
         GEE[Google Earth Engine<br>ERA5 Land Monthly]
-        FAO[FAO GIEWS<br>ASI & VHI CSVs]
+        FAO[FAO GIEWS<br>ASI & VHI]
         DB[(Prod Postgres<br>SEAS5 Forecasts)]
         BLOB[(Azure Blob Dev<br>Thresholds, Params,<br>Historical Data)]
     end
 
     subgraph ERA5 Ingestion
-        ERA5_GHA[era5_land_monitor.yaml<br>Cron: 8th monthly]
+        ERA5_GHA[ERA5 Land Monitor]
         ERA5_PY[download_era5_monthly.py]
     end
 
     subgraph Window 1 - March
-        W1_GHA[w1_seas5_monitor.yaml]
+        W1_GHA[SEAS5 W1 Monitor]
         W1_PY[w1_monitor_seas5_transactional.py]
         W1_CALC[Area-weighted MAM forecast<br>vs RP6 threshold 128.96 mm]
     end
 
     subgraph Window 2 - April
-        W2_GHA[w2_cdi_monitor.yaml]
+        W2_GHA[CDI W2 Monitor]
         W2_PY[w2_monitor_cdi_transactional.py]
         W2_CALC[5 indicators → z-score → CDI<br>vs threshold 0.503]
     end
@@ -58,9 +97,8 @@ Monthly ingestion of ERA5 Land zonal statistics from Google Earth Engine.
 | | |
 |---|---|
 | **Script** | `src/trigger_monitoring/download_era5_monthly.py` |
-| **Schedule** | Manual dispatch (cron disabled) |
-| **Dispatch** | Manual with optional `year` / `month` |
-| **Output** | `monitoring_inputs/{year}/{month}/era5_land.parquet` |
+| **Dispatch inputs** | `year`, `month` (defaults to previous month) |
+| **Output** | `monitoring_inputs/{year}/{month}/era5_land.parquet` on blob |
 | **Secrets** | `GEE_SERVICE_ACCOUNT_KEY`, `DSCI_AZ_BLOB_DEV_SAS_WRITE` |
 
 ### Window 1: SEAS5 (`w1_seas5_monitor.yaml`)
@@ -70,7 +108,7 @@ March seasonal precipitation forecast trigger.
 | | |
 |---|---|
 | **Script** | `src/monitoring_2026/w1_monitor_seas5_transactional.py` |
-| **Schedule** | Manual dispatch (cron disabled) |
+| **Dispatch inputs** | `year`, `test`, `email_group` |
 | **Trigger logic** | Area-weighted MAM forecast <= 128.96 mm (RP6) |
 | **Provinces** | Faryab, Sar-e-Pul, Jawzjan, Balkh, Badghis |
 | **Data sources** | SEAS5 from prod DB, thresholds + area weights from blob |
@@ -83,10 +121,11 @@ April Combined Drought Indicator trigger.
 | | |
 |---|---|
 | **Script** | `src/monitoring_2026/w2_monitor_cdi_transactional.py` |
-| **Schedule** | Manual dispatch (cron disabled) |
+| **Dispatch inputs** | `year`, `test`, `email_group` |
 | **Trigger logic** | CDI >= 0.503 (~RP4) |
 | **Provinces** | Same 5, area-weighted to single regional value |
 | **Data sources** | ERA5 from blob, FAO ASI/VHI from HTTP, SEAS5 from prod DB |
+| **Prerequisite** | ERA5 March data must be downloaded first (see above) |
 | **Secrets** | Same as W1 |
 
 ## CDI Computation
@@ -128,22 +167,48 @@ flowchart LR
 
 All on **dev** stage, `projects` container, prefix `ds-aa-afg-drought/`.
 
+**One-time artifacts** (created by rendering `book_afg_analysis/13_2026_trigger_proposal.qmd`):
+
+| Artifact | Path |
+|---|---|
+| Trigger thresholds + CDI weights | `monitoring_inputs/2026/trigger_thresholds.parquet` |
+| CDI distribution params (mu/sigma) | `monitoring_inputs/2026/cdi_distribution_params.parquet` |
+| Historical CDI timeseries (for plot) | `monitoring_inputs/2026/cdi_historical_timeseries.parquet` |
+| Area weights (province shape_area) | `raw/vector/historical_era5_land_ndjfmam_lte2025.parquet` |
+| Email distribution list | `monitoring_inputs/2026/distribution_list.csv` |
+
+**Recurring artifacts** (created by workflows):
+
 | Artifact | Path | Created by |
 |---|---|---|
-| Trigger thresholds + weights | `monitoring_inputs/2026/trigger_thresholds.parquet` | ch13 (one-time) |
-| CDI distribution params (mu/sigma) | `monitoring_inputs/2026/cdi_distribution_params.parquet` | ch13 (one-time) |
-| Historical CDI timeseries | `monitoring_inputs/2026/cdi_historical_timeseries.parquet` | ch13 (one-time) |
-| Area weights | `raw/vector/historical_era5_land_ndjfmam_lte2025.parquet` | data-raw/15 (one-time) |
-| ERA5 monthly data | `monitoring_inputs/{year}/{month}/era5_land.parquet` | ERA5 GHA (monthly) |
-| Email distribution list | `monitoring_inputs/2026/distribution_list.csv` | Manual |
-| Monitoring outputs | `monitoring_outputs/{year}/*.png, *.json` | W1/W2 scripts |
+| ERA5 monthly zonal stats | `monitoring_inputs/{year}/{month}/era5_land.parquet` | ERA5 Land Monitor |
+| Monitoring plot | `monitoring_outputs/{year}/*_monitor.png` | W1 / W2 Monitor |
+| Monitoring summary | `monitoring_outputs/{year}/*_summary.json` | W1 / W2 Monitor |
 
-## Dispatch Inputs
+## GitHub Secrets Required
 
-Both W1 and W2 workflows accept:
+| Secret | Used by | Description |
+|---|---|---|
+| `DSCI_AZ_DB_PROD_PW` | W1, W2 | Prod postgres password |
+| `DSCI_AZ_DB_PROD_UID` | W1, W2 | Prod postgres username |
+| `DSCI_AZ_DB_PROD_HOST` | W1, W2 | Prod postgres host |
+| `DSCI_AZ_BLOB_DEV_SAS` | W1, W2 | Azure blob read (dev) |
+| `DSCI_AZ_BLOB_DEV_SAS_WRITE` | W1, W2, ERA5 | Azure blob write (dev) |
+| `DSCI_LISTMONK_API_KEY` | W1, W2 | Listmonk API key |
+| `GEE_SERVICE_ACCOUNT_KEY` | ERA5 | GEE service account JSON |
 
-- **year** — framework year (default: current year)
-- **test** — prepend `[test]` to email subject (default: true)
-- **email_group** — `core_developer` | `developers` | `internal_chd` | `full_list`
+| Variable | Used by | Description |
+|---|---|---|
+| `DSCI_LISTMONK_API_USERNAME` | W1, W2 | Listmonk API username |
 
-The `--dry-run` flag is available on the CLI scripts to skip blob upload and email entirely.
+## Local Testing
+
+Scripts can be run locally with the `--dry-run` flag (skips blob upload and email):
+
+```bash
+# W2 CDI (requires ERA5 March data on blob)
+uv run python src/monitoring_2026/w2_monitor_cdi_transactional.py --year 2026 --dry-run
+
+# ERA5 download (requires GEE auth via `earthengine authenticate`)
+uv run python src/trigger_monitoring/download_era5_monthly.py --year 2026 --month 3
+```
