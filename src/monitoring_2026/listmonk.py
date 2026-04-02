@@ -33,7 +33,7 @@ BASE_URL = (
 )
 
 BASE_CAMPAIGN_ID = 8
-BASE_TRANSACTIONAL_ID = 12
+BASE_TRANSACTIONAL_ID = 12  # template set up for transactional emails.
 
 USERNAME = os.getenv("DSCI_LISTMONK_API_USERNAME")
 PASSWORD = os.getenv("DSCI_LISTMONK_API_KEY")
