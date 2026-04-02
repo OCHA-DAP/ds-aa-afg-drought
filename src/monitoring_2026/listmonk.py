@@ -1,3 +1,29 @@
+"""
+Listmonk transactional and campaign email helpers.
+
+Listmonk API: https://listmonk.app/docs/apis/transactional/
+
+Delivery mechanics (from listmonk source, internal/messenger/email/email.go):
+    Listmonk's /api/tx endpoint handles To, Cc, and Bcc headers differently:
+
+    - To header:  COSMETIC ONLY. Sets the display header in the recipient's
+      email client but does NOT add addresses to the SMTP envelope. To
+      actually deliver to "To" recipients, they must be listed in
+      subscriber_emails (with subscriber_mode="external").
+
+    - Cc header:  DELIVERY + DISPLAY. Listmonk parses the Cc header, adds
+      addresses to the SMTP envelope (em.Cc), and then removes the header
+      (smtppool re-adds it). Recipients see Cc in their client AND receive
+      the email.
+
+    - Bcc header: DELIVERY ONLY. Same as Cc — parsed into SMTP envelope
+      (em.Bcc) and removed from headers. Recipients receive the email but
+      are not visible to other recipients.
+
+    Therefore, send_transactional() uses subscriber_emails for To recipients
+    and relies on header parsing for Cc/Bcc delivery.
+"""
+
 import os
 
 import requests
@@ -58,10 +84,28 @@ def send_transactional(
     subject: str,
     template_id: int = BASE_TRANSACTIONAL_ID,
     cc_emails: list[tuple[str, str]] = None,
+    bcc_emails: list[tuple[str, str]] = None,
     data: dict = None,
 ):
+    """Send a transactional email via Listmonk to multiple recipients.
+
+    Parameters
+    ----------
+    to_emails : list of (name, email)
+        Primary recipients. Delivered via subscriber_emails (envelope).
+        Displayed in the To header.
+    cc_emails : list of (name, email), optional
+        CC recipients. Delivered via Cc header (parsed into envelope by
+        Listmonk). Visible to all recipients.
+    bcc_emails : list of (name, email), optional
+        BCC recipients. Delivered via Bcc header (parsed into envelope by
+        Listmonk). Hidden from other recipients.
+    """
+    to_addresses = [email for _, email in to_emails]
+
     payload = {
-        "subscriber_email": to_emails[0][1],
+        "subscriber_emails": to_addresses,
+        "subscriber_mode": "external",
         "template_id": template_id,
         "from_email": "OCHA Data Science <ocha-datascience@un.org>",
         "content_type": "html",
@@ -76,6 +120,11 @@ def send_transactional(
             {
                 "Cc": ", ".join(
                     [f"{name} <{email}>" for name, email in cc_emails or []]
+                )
+            },
+            {
+                "Bcc": ", ".join(
+                    [f"{name} <{email}>" for name, email in bcc_emails or []]
                 )
             },
         ],
