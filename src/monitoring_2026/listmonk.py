@@ -92,16 +92,45 @@ def send_transactional(
     Parameters
     ----------
     to_emails : list of (name, email)
-        Primary recipients. Delivered via subscriber_emails (envelope).
-        Displayed in the To header.
+        Required. At least one recipient. Delivered via subscriber_emails
+        (envelope). Displayed in the To header.
+    subject : str
+        Email subject line.
     cc_emails : list of (name, email), optional
         CC recipients. Delivered via Cc header (parsed into envelope by
         Listmonk). Visible to all recipients.
     bcc_emails : list of (name, email), optional
         BCC recipients. Delivered via Bcc header (parsed into envelope by
         Listmonk). Hidden from other recipients.
+    data : dict, optional
+        Template variables accessible as {{ .Tx.Data.* }} in the
+        Listmonk template.
+
+    Raises
+    ------
+    ValueError
+        If to_emails is empty or not provided.
     """
+    if not to_emails:
+        raise ValueError("to_emails must contain at least one recipient")
+
     to_addresses = [email for _, email in to_emails]
+
+    headers = [
+        {"To": ", ".join(f"{name} <{email}>" for name, email in to_emails)}
+    ]
+    if cc_emails:
+        headers.append(
+            {"Cc": ", ".join(f"{name} <{email}>" for name, email in cc_emails)}
+        )
+    if bcc_emails:
+        headers.append(
+            {
+                "Bcc": ", ".join(
+                    f"{name} <{email}>" for name, email in bcc_emails
+                )
+            }
+        )
 
     payload = {
         "subscriber_emails": to_addresses,
@@ -111,23 +140,7 @@ def send_transactional(
         "content_type": "html",
         "subject": subject,
         "data": data or {},
-        "headers": [
-            {
-                "To": ", ".join(
-                    [f"{name} <{email}>" for name, email in to_emails]
-                )
-            },
-            {
-                "Cc": ", ".join(
-                    [f"{name} <{email}>" for name, email in cc_emails or []]
-                )
-            },
-            {
-                "Bcc": ", ".join(
-                    [f"{name} <{email}>" for name, email in bcc_emails or []]
-                )
-            },
-        ],
+        "headers": headers,
     }
 
     r = requests.post(
