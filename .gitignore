@@ -209,6 +209,7 @@ book_afg_analysis/_freeze/*
 
 dash_explore/*
 outputs/*
+src/monitoring_2026/outputs/
 
 *.ipynb
 .idea/*
